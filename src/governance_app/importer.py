@@ -22,7 +22,7 @@ class ImportResult:
 def import_workbook(config: AppConfig, workbook_path: Path) -> ImportResult:
     wb = load_workbook(workbook_path, data_only=True)
     errors: list[ValidationErrorDetail] = []
-    parsed: dict[LedgerType, tuple[str, list[dict[str, Any]]]] = {}
+    parsed: dict[LedgerType, tuple[str, list[tuple[int, dict[str, Any]]]]] = {}
 
     for sheet_name, ledger_type in EXPECTED_SHEETS.items():
         if sheet_name not in wb.sheetnames:
@@ -48,11 +48,11 @@ def import_workbook(config: AppConfig, workbook_path: Path) -> ImportResult:
         ledger_counts: dict[str, int] = {}
         for ledger_type, (sheet_name, rows) in parsed.items():
             ledger_counts[ledger_type] = len(rows)
-            for index, row in enumerate(rows, start=HEADER_ROWS[ledger_type] + 1):
+            for row_number, row in rows:
                 row_json = json.dumps(row, ensure_ascii=False, default=str)
                 conn.execute(
                     "insert into raw_rows(batch_id, ledger_type, sheet_name, row_number, row_json) values (?, ?, ?, ?, ?)",
-                    (batch_id, ledger_type, sheet_name, index, row_json),
+                    (batch_id, ledger_type, sheet_name, row_number, row_json),
                 )
                 conn.execute(
                     """
@@ -79,26 +79,44 @@ def import_workbook(config: AppConfig, workbook_path: Path) -> ImportResult:
 def _headers(ws: Worksheet, header_rows: int) -> list[str]:
     if header_rows == 1:
         return [_clean(cell.value) for cell in ws[1] if _clean(cell.value)]
-    first = [_clean(cell.value) for cell in ws[1]]
+    first = _parent_headers(ws)
     second = [_clean(cell.value) for cell in ws[2]]
     headers: list[str] = []
     for parent, child in zip(first, second, strict=False):
-        if parent and child:
+        if parent == "发电时间" and child:
             headers.append(f"{parent} - {child}")
-        elif parent:
-            headers.append(parent)
         elif child:
             headers.append(child)
+        elif parent:
+            headers.append(parent)
     return headers
 
 
-def _data_rows(ws: Worksheet, headers: list[str], first_data_row: int) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for values in ws.iter_rows(min_row=first_data_row, values_only=True):
+def _data_rows(ws: Worksheet, headers: list[str], first_data_row: int) -> list[tuple[int, dict[str, Any]]]:
+    rows: list[tuple[int, dict[str, Any]]] = []
+    for row_number, values in enumerate(ws.iter_rows(min_row=first_data_row, values_only=True), start=first_data_row):
         row = {header: value for header, value in zip(headers, values, strict=False)}
         if any(value not in (None, "") for value in row.values()):
-            rows.append(row)
+            rows.append((row_number, row))
     return rows
+
+
+def _parent_headers(ws: Worksheet) -> list[str | None]:
+    headers: list[str | None] = []
+    for cell in ws[1]:
+        value = _clean(cell.value)
+        if value:
+            headers.append(value)
+            continue
+        headers.append(_merged_parent_value(ws, cell.column))
+    return headers
+
+
+def _merged_parent_value(ws: Worksheet, column: int) -> str | None:
+    for cell_range in ws.merged_cells.ranges:
+        if cell_range.min_row == 1 and cell_range.max_row == 1 and cell_range.min_col <= column <= cell_range.max_col:
+            return _clean(ws.cell(row=1, column=cell_range.min_col).value)
+    return None
 
 
 def _clean(value: Any) -> str | None:
