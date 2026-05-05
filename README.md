@@ -7,8 +7,8 @@
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-pip install -e ".[test]"
-python -m governance_app.server --workspace .
+.venv/bin/python -m pip install -e ".[test]"
+.venv/bin/python -m governance_app.server --workspace . --port 8765
 ```
 
 启动后在浏览器打开：
@@ -16,5 +16,7 @@ python -m governance_app.server --workspace .
 ```text
 http://127.0.0.1:8765
 ```
+
+如果尚未安装包，也可临时使用 `PYTHONPATH=src .venv/bin/python -m governance_app.server --workspace . --port 8765`。
 
 默认数据保存到 `data/governance.sqlite3`，导出文件保存到 `exports/`。不要把真实生产数据提交到 git。
