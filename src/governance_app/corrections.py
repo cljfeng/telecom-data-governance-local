@@ -16,6 +16,10 @@ class CorrectionImportResult:
 
 def import_correction_return(config: AppConfig, workbook_path: Path) -> CorrectionImportResult:
     wb = load_workbook(workbook_path, data_only=True)
+    if "整改问题清单" not in wb.sheetnames:
+        errors = ["缺少 sheet：整改问题清单"]
+        _record_return(config, workbook_path, 0, errors)
+        return CorrectionImportResult(matched_count=0, errors=errors)
     ws = wb["整改问题清单"]
     headers = [cell.value for cell in ws[1]]
     index = {name: pos for pos, name in enumerate(headers)}

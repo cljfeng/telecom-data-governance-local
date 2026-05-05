@@ -51,16 +51,16 @@ def export_city_issue_packages(config: AppConfig, batch_id: int) -> list[Path]:
             for issue in issues:
                 ws.append(
                     [
-                        issue["issue_code"],
-                        issue["city"],
-                        issue["district"],
-                        issue["telecom_site_code"],
-                        issue["telecom_site_name"],
-                        issue["ledger_type"],
-                        issue["rule_id"],
-                        issue["severity"],
-                        issue["message"],
-                        issue["suggestion"],
+                        _excel_safe(issue["issue_code"]),
+                        _excel_safe(issue["city"]),
+                        _excel_safe(issue["district"]),
+                        _excel_safe(issue["telecom_site_code"]),
+                        _excel_safe(issue["telecom_site_name"]),
+                        _excel_safe(issue["ledger_type"]),
+                        _excel_safe(issue["rule_id"]),
+                        _excel_safe(issue["severity"]),
+                        _excel_safe(issue["message"]),
+                        _excel_safe(issue["suggestion"]),
                         "",
                         "",
                         "",
@@ -89,3 +89,11 @@ def _safe_filename_part(value: str | None) -> str:
         text = text.replace("..", "_")
     text = text.strip("._")
     return text or "未填地市"
+
+
+def _excel_safe(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    if value.startswith(("=", "+", "-", "@")):
+        return f"'{value}"
+    return value

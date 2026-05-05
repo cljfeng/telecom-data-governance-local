@@ -1,4 +1,4 @@
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from governance_app.audit_engine import run_audit
 from governance_app.corrections import import_correction_return
@@ -46,6 +46,33 @@ def test_export_city_issue_packages_sanitizes_city_filename(app_config, sample_w
     wb = load_workbook(path)
     ws = wb["整改问题清单"]
     assert ws["B2"].value == unsafe_city
+
+
+def test_export_city_issue_packages_escapes_formula_like_values(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+        )
+        conn.execute(
+            """
+            update ledger_rows
+               set city = '=HYPERLINK("http://bad")',
+                   telecom_site_name = '+SUM(1,1)'
+             where ledger_type = 'electricity'
+            """
+        )
+    run_audit(app_config, imported.batch_id)
+
+    path = export_city_issue_packages(app_config, imported.batch_id)[0]
+
+    wb = load_workbook(path, data_only=False)
+    ws = wb["整改问题清单"]
+    assert ws["B2"].value == "'=HYPERLINK(\"http://bad\")"
+    assert ws["B2"].data_type == "s"
+    assert ws["E2"].value == "'+SUM(1,1)"
+    assert ws["E2"].data_type == "s"
 
 
 def test_import_correction_return_updates_issue_status(app_config, sample_workbook):
@@ -112,3 +139,19 @@ def test_import_correction_return_skips_issue_code_without_correction(app_config
     with connect(app_config) as conn:
         status = conn.execute("select status from issues limit 1").fetchone()["status"]
         assert status == "pending_correction"
+
+
+def test_import_correction_return_reports_missing_issue_sheet(app_config, tmp_path):
+    initialize_database(app_config)
+    path = tmp_path / "malformed_return.xlsx"
+    wb = Workbook()
+    wb.active.title = "其他"
+    wb.save(path)
+
+    result = import_correction_return(app_config, path)
+
+    assert result.matched_count == 0
+    assert result.errors == ["缺少 sheet：整改问题清单"]
+    with connect(app_config) as conn:
+        row = conn.execute("select error_count, errors_json from correction_returns").fetchone()
+        assert row["error_count"] == 1
