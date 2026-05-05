@@ -1,4 +1,9 @@
-from governance_app.templates import EXPECTED_SHEETS, ledger_type_for_sheet, required_headers_for
+from governance_app.templates import (
+    EXPECTED_SHEETS,
+    FIELD_GROUPS,
+    ledger_type_for_sheet,
+    required_headers_for,
+)
 
 
 def test_expected_sheets_match_governance_template():
@@ -19,3 +24,10 @@ def test_required_headers_include_site_keys():
 def test_ledger_type_for_sheet_rejects_unknown_sheet():
     assert ledger_type_for_sheet("电费台账") == "electricity"
     assert ledger_type_for_sheet("未知") is None
+
+
+def test_generator_time_fields_use_standard_end_time_label():
+    time_fields = FIELD_GROUPS["generator"]["时间时长"]
+
+    assert "发电时间 - 发电结束时间（断电传感器告警消除时间）" in time_fields
+    assert all("发点结束时间" not in field for field in time_fields)
