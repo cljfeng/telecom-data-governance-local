@@ -1,3 +1,6 @@
 .superpowers/
 __pycache__/
 *.pyc
+data/
+exports/
+.pytest_cache/
