@@ -29,7 +29,10 @@ def _route(config: AppConfig, method: str, path: str) -> tuple[int, dict[str, st
         return _json({"status": "ok"})
     if method == "GET" and parsed.path == "/api/dashboard":
         query = parse_qs(parsed.query)
-        batch_id = int(query.get("batch_id", ["1"])[0])
+        try:
+            batch_id = int(query.get("batch_id", ["1"])[0])
+        except ValueError:
+            return _json({"error": "invalid batch_id"}, status=400)
         return _json(dashboard_summary(config, batch_id))
     return _json({"error": "not found"}, status=404)
 

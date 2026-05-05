@@ -23,3 +23,14 @@ def test_dashboard_endpoint_returns_json(app_config):
     assert status == 200
     assert headers["content-type"] == "application/json; charset=utf-8"
     assert "ledger_counts" in json.loads(body)
+
+
+def test_dashboard_endpoint_rejects_invalid_batch_id(app_config):
+    initialize_database(app_config)
+    app = create_app(app_config)
+
+    status, headers, body = app.handle_test_request("GET", "/api/dashboard?batch_id=abc")
+
+    assert status == 400
+    assert headers["content-type"] == "application/json; charset=utf-8"
+    assert json.loads(body)["error"] == "invalid batch_id"
