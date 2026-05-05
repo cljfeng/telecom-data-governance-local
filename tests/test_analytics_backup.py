@@ -29,3 +29,29 @@ def test_backup_and_restore_database(app_config, sample_workbook):
     with connect(app_config) as conn:
         count = conn.execute("select count(*) as c from import_batches").fetchone()["c"]
         assert count == 1
+
+
+def test_create_backup_does_not_overwrite_same_second_backup(app_config, sample_workbook):
+    initialize_database(app_config)
+    import_workbook(app_config, sample_workbook)
+
+    first = create_backup(app_config)
+    second = create_backup(app_config)
+
+    assert first != second
+    assert first.exists()
+    assert second.exists()
+
+
+def test_restore_backup_rejects_file_outside_backup_dir(app_config, sample_workbook):
+    initialize_database(app_config)
+    import_workbook(app_config, sample_workbook)
+    outside = app_config.workspace_dir / "outside.sqlite3"
+    outside.write_text("not a backup", encoding="utf-8")
+
+    try:
+        restore_backup(app_config, outside)
+    except ValueError as exc:
+        assert "backups" in str(exc)
+    else:
+        raise AssertionError("restore_backup should reject files outside backups directory")
