@@ -30,13 +30,17 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
     errors: list[str] = []
     with connect(config) as conn:
         for row_number, values in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            if _is_blank_row(values):
+                continue
             issue_code = values[index["问题编号"]]
-            if not issue_code:
+            if _is_blank(issue_code):
                 errors.append(f"第{row_number}行缺少问题编号")
                 continue
             result = values[index["整改结果"]]
             note = values[index["整改说明"]]
             corrected = values[index["整改后值"]]
+            if _is_blank(result) and _is_blank(note) and _is_blank(corrected):
+                continue
             cursor = conn.execute(
                 """
                 update issues
@@ -61,6 +65,14 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
             (str(workbook_path), matched_count, len(errors), json.dumps(errors, ensure_ascii=False)),
         )
     return CorrectionImportResult(matched_count=matched_count, errors=errors)
+
+
+def _is_blank_row(values: tuple[object, ...]) -> bool:
+    return all(_is_blank(value) for value in values)
+
+
+def _is_blank(value: object) -> bool:
+    return value is None or (isinstance(value, str) and value.strip() == "")
 
 
 def _record_return(config: AppConfig, workbook_path: Path, matched_count: int, errors: list[str]) -> None:

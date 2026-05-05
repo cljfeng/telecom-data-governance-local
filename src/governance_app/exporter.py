@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -25,6 +26,7 @@ ISSUE_HEADERS = [
 
 def export_city_issue_packages(config: AppConfig, batch_id: int) -> list[Path]:
     config.export_dir.mkdir(parents=True, exist_ok=True)
+    export_root = config.export_dir.resolve()
     paths: list[Path] = []
     with connect(config) as conn:
         cities = conn.execute(
@@ -39,7 +41,9 @@ def export_city_issue_packages(config: AppConfig, batch_id: int) -> list[Path]:
             ).fetchall()
             if not issues:
                 continue
-            path = config.export_dir / f"{city}_整改问题清单_批次{batch_id}.xlsx"
+            path = config.export_dir / f"{_safe_filename_part(city)}_整改问题清单_批次{batch_id}.xlsx"
+            if not path.resolve().is_relative_to(export_root):
+                raise ValueError(f"导出路径越界：{path}")
             wb = Workbook()
             ws = wb.active
             ws.title = "整改问题清单"
@@ -76,3 +80,12 @@ def export_city_issue_packages(config: AppConfig, batch_id: int) -> list[Path]:
             )
             paths.append(path)
     return paths
+
+
+def _safe_filename_part(value: str | None) -> str:
+    text = str(value or "未填地市").strip()
+    text = re.sub(r'[\\/:*?"<>|\s]+', "_", text)
+    while ".." in text:
+        text = text.replace("..", "_")
+    text = text.strip("._")
+    return text or "未填地市"
