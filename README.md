@@ -11,4 +11,10 @@ pip install -e ".[test]"
 python -m governance_app.server --workspace .
 ```
 
+启动后在浏览器打开：
+
+```text
+http://127.0.0.1:8765
+```
+
 默认数据保存到 `data/governance.sqlite3`，导出文件保存到 `exports/`。不要把真实生产数据提交到 git。

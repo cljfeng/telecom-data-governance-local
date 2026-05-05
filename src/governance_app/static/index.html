@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>本地单机版基础数据治理工具</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <aside class="sidebar" aria-label="主导航">
+      <div class="brand">
+        <span class="brand-mark">治</span>
+        <span class="brand-text">基础数据治理</span>
+      </div>
+      <nav class="nav-list">
+        <button class="nav-button is-active" type="button" data-view="dashboard">专项工作台</button>
+        <button class="nav-button" type="button" data-view="import">数据导入</button>
+        <button class="nav-button" type="button" data-view="audit">稽核结果</button>
+        <button class="nav-button" type="button" data-view="export">问题包导出</button>
+        <button class="nav-button" type="button" data-view="reports">分析报表</button>
+        <button class="nav-button" type="button" data-view="settings">本地设置</button>
+      </nav>
+    </aside>
+
+    <div class="app-shell">
+      <header class="main-header">
+        <div>
+          <p class="eyebrow">本地单机版</p>
+          <h1 id="page-title">专项工作台</h1>
+        </div>
+        <span id="service-status" class="status status-pending">连接中</span>
+      </header>
+
+      <main id="main-content" class="main-content" aria-live="polite">
+        <section class="card">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Batch #1</p>
+              <h2>专项概览</h2>
+            </div>
+          </div>
+          <div id="metric-grid" class="metric-grid">
+            <div class="metric-card skeleton"></div>
+            <div class="metric-card skeleton"></div>
+            <div class="metric-card skeleton"></div>
+            <div class="metric-card skeleton"></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Issues</p>
+              <h2>地市问题分布</h2>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>地市</th>
+                  <th>问题数量</th>
+                  <th>占比</th>
+                </tr>
+              </thead>
+              <tbody id="city-issue-table">
+                <tr>
+                  <td colspan="3">正在加载工作台数据</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
