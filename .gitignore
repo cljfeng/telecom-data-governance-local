@@ -1,6 +1,7 @@
 .superpowers/
 __pycache__/
 *.pyc
+*.egg-info/
 data/
 exports/
 .pytest_cache/
