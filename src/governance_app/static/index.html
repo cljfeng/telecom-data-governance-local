@@ -4,21 +4,28 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>本地单机版基础数据治理工具</title>
-    <link rel="stylesheet" href="/styles.css?v=20260516-4">
+    <link rel="stylesheet" href="/styles.css?v=20260516-5">
   </head>
   <body>
     <aside class="sidebar" aria-label="主导航">
       <div class="brand">
         <span class="brand-mark">治</span>
-        <span class="brand-text">基础数据治理</span>
+        <span>
+          <span class="brand-text">基础数据治理</span>
+          <span class="brand-subtitle">本地专项工作台</span>
+        </span>
       </div>
       <nav class="nav-list">
+        <span class="nav-group">总览</span>
         <button class="nav-button is-active" type="button" data-view="dashboard">专项工作台</button>
+        <span class="nav-group">数据准备</span>
         <button class="nav-button" type="button" data-view="batches">批次管理</button>
         <button class="nav-button" type="button" data-view="import">数据导入</button>
+        <span class="nav-group">问题治理</span>
         <button class="nav-button" type="button" data-view="audit">稽核结果</button>
         <button class="nav-button" type="button" data-view="export">问题包导出</button>
         <button class="nav-button" type="button" data-view="corrections">整改回传</button>
+        <span class="nav-group">归档分析</span>
         <button class="nav-button" type="button" data-view="reports">分析报表</button>
       </nav>
     </aside>
@@ -29,7 +36,11 @@
           <p class="eyebrow">本地单机版</p>
           <h1 id="page-title">专项工作台</h1>
         </div>
-        <span id="service-status" class="status status-pending">连接中</span>
+        <div class="header-actions">
+          <span id="header-batch" class="header-chip">暂无批次</span>
+          <span id="last-sync" class="header-chip">最近同步 --:--</span>
+          <span id="service-status" class="status status-pending">连接中</span>
+        </div>
       </header>
 
       <main id="main-content" class="main-content" aria-live="polite">
@@ -75,6 +86,6 @@
       </main>
     </div>
 
-    <script src="/app.js?v=20260516-4" defer></script>
+    <script src="/app.js?v=20260516-5" defer></script>
   </body>
 </html>

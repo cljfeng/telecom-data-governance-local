@@ -16,6 +16,8 @@ const state = {
 const pageTitle = document.querySelector("#page-title");
 const mainContent = document.querySelector("#main-content");
 const statusPill = document.querySelector("#service-status");
+const headerBatch = document.querySelector("#header-batch");
+const lastSync = document.querySelector("#last-sync");
 const navButtons = Array.from(document.querySelectorAll(".nav-button"));
 
 function formatNumber(value) {
@@ -32,6 +34,10 @@ function escapeHtml(value) {
 function setStatus(stateName, text) {
   statusPill.textContent = text;
   statusPill.className = `status status-${stateName}`;
+  if (stateName === "online") {
+    const now = new Date();
+    lastSync.textContent = `最近同步 ${now.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
+  }
 }
 
 async function fetchJson(url, options = {}) {
@@ -62,8 +68,10 @@ async function refreshBatches() {
   const current = state.batches.find((batch) => batch.is_current) || state.batches[0];
   if (current) {
     state.batchId = current.id;
+    headerBatch.textContent = `#${current.id} 当前批次`;
   } else {
     state.batchId = null;
+    headerBatch.textContent = "暂无批次";
   }
   return state.batches;
 }
@@ -93,14 +101,70 @@ function shellHeader(title, eyebrow, actionHtml = "") {
   `;
 }
 
-function metricCard(label, value, note) {
+function metricCard(label, value, note, tone = "neutral") {
   return `
-    <article class="metric-card">
+    <article class="metric-card metric-${escapeHtml(tone)}">
       <p class="metric-label">${escapeHtml(label)}</p>
       <p class="metric-value">${formatNumber(value)}</p>
       <p class="metric-note">${escapeHtml(note)}</p>
+      <span class="metric-spark" aria-hidden="true"></span>
     </article>
   `;
+}
+
+function percentValue(value) {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.min(100, parsed));
+}
+
+function statusLabel(status) {
+  const labels = {
+    pending_export: "待导出",
+    pending_correction: "待整改",
+    returned: "已回传",
+    still_invalid: "仍异常",
+    needs_review: "待复核",
+    closed: "已关闭",
+    not_required: "无需整改",
+  };
+  return labels[status] || status || "未开始";
+}
+
+function ledgerLabel(type) {
+  const labels = {
+    site: "站址",
+    tower_rent: "铁塔租费",
+    electricity: "电费",
+    generator: "发电费",
+  };
+  return labels[type] || type || "未知";
+}
+
+function severityTone(severity) {
+  if (severity === "high" || severity === "严重" || severity === "高") return "danger";
+  if (severity === "medium" || severity === "中") return "warning";
+  return "success";
+}
+
+function cityProgressTone(row) {
+  const rate = percentValue(row.completion_rate);
+  const review = Number(row.review_count || 0);
+  const pending = Number(row.pending_count || 0);
+  if (review > 0) return { text: "需复核", tone: "warning" };
+  if (rate >= 90) return { text: "完成", tone: "success" };
+  if (rate < 35 && pending > 0) return { text: "滞后", tone: "danger" };
+  return { text: "正常", tone: "info" };
+}
+
+function actionForWorkflow(workflow) {
+  const action = workflow?.next_action || "";
+  if (action.includes("导入")) return { label: "导入台账", view: "import", secondary: "批次管理", secondaryView: "batches" };
+  if (action.includes("稽核")) return { label: "执行稽核", view: "audit", secondary: "查看问题", secondaryView: "audit" };
+  if (action.includes("导出")) return { label: "导出整改包", view: "export", secondary: "查看问题", secondaryView: "audit" };
+  if (action.includes("回传")) return { label: "导入回传", view: "corrections", secondary: "查看进度", secondaryView: "corrections" };
+  if (action.includes("归档")) return { label: "生成归档", view: "reports", secondary: "分析报表", secondaryView: "reports" };
+  return { label: "查看工作台", view: "dashboard", secondary: "数据导入", secondaryView: "import" };
 }
 
 function resultList(items) {
@@ -213,23 +277,35 @@ async function loadDashboard() {
     return;
   }
   mainContent.innerHTML = `
-    <section class="card">
-      ${shellHeader("专项治理流程", batch ? `Batch #${batch.id}` : "Batch", renderBatchSelector())}
+    <section class="card command-card">
+      ${shellHeader("专项治理闭环", batch ? `#${batch.id} ${batch.name}` : "Batch", renderBatchSelector())}
       <div id="workflow-area" class="workflow-area">正在加载流程</div>
     </section>
-    <section class="card">
-      ${shellHeader("专项概览", "Summary")}
+    <section class="card metric-section">
       <div id="metric-grid" class="metric-grid">
+        <div class="metric-card skeleton"></div>
         <div class="metric-card skeleton"></div>
         <div class="metric-card skeleton"></div>
         <div class="metric-card skeleton"></div>
         <div class="metric-card skeleton"></div>
       </div>
     </section>
-    <section class="card">
-      ${shellHeader("地市整改进度", "City Progress")}
-      <div class="table-wrap"><table><thead><tr><th>地市</th><th>问题</th><th>待整改</th><th>待复核</th><th>已关闭</th><th>完成率</th></tr></thead><tbody id="city-progress-table"><tr><td colspan="6">正在加载</td></tr></tbody></table></div>
-    </section>
+    <div class="dashboard-grid">
+      <section class="card">
+        ${shellHeader("地市整改进度", "City Progress")}
+        <div class="table-wrap"><table><thead><tr><th>地市</th><th>问题</th><th>待整改</th><th>待复核</th><th>已关闭</th><th>完成率</th><th>状态</th></tr></thead><tbody id="city-progress-table"><tr><td colspan="7">正在加载</td></tr></tbody></table></div>
+      </section>
+      <aside class="side-stack">
+        <section class="card">
+          ${shellHeader("风险摘要", "Risk")}
+          <div id="risk-summary" class="risk-summary">正在加载</div>
+        </section>
+        <section class="card">
+          ${shellHeader("最近操作", "Activity")}
+          <div id="operation-log" class="operation-log operation-log-panel">正在加载</div>
+        </section>
+      </aside>
+    </div>
   `;
   bindBatchSelector(loadDashboard);
   try {
@@ -239,8 +315,10 @@ async function loadDashboard() {
       fetchJson(`/api/city-progress?batch_id=${state.batchId}`),
     ]);
     renderWorkflow(workflow);
-    renderMetrics(summary);
+    renderMetrics(summary, progress.cities || []);
     renderCityProgress(progress.cities || []);
+    renderRiskSummary(summary.issues_by_rule || []);
+    renderOperationLog(workflow.operations || []);
   } catch (error) {
     if (error.message === "batch not found") {
       await refreshBatches().catch(() => []);
@@ -253,15 +331,18 @@ async function loadDashboard() {
       metricCard("问题总数", 0, "概览加载失败"),
       metricCard("涉及地市", 0, "概览加载失败"),
       metricCard("命中规则", 0, "概览加载失败"),
+      metricCard("完成率", 0, "概览加载失败"),
     ].join("");
     renderCityProgress([]);
+    renderRiskSummary([]);
+    renderOperationLog([]);
   }
 }
 
 function renderEmptyDashboard() {
   mainContent.innerHTML = `
-    <section class="card">
-      ${shellHeader("专项治理流程", "Batch")}
+    <section class="card command-card">
+      ${shellHeader("专项治理闭环", "Batch")}
       <div class="operation-panel">
         <p>当前还没有专项批次。可以先新建一个批次，再导入全省台账；也可以直接到“数据导入”页面导入模板，系统会自动生成批次。</p>
         <div class="form-grid">
@@ -273,13 +354,13 @@ function renderEmptyDashboard() {
         <button id="create-batch" class="primary-button" type="button">新建批次</button>
       </div>
     </section>
-    <section class="card">
-      ${shellHeader("专项概览", "Summary")}
+    <section class="card metric-section">
       <div class="metric-grid">
         ${metricCard("台账记录", 0, "等待导入台账")}
         ${metricCard("问题总数", 0, "等待执行稽核")}
-        ${metricCard("涉及地市", 0, "等待生成问题")}
-        ${metricCard("命中规则", 0, "等待执行稽核")}
+        ${metricCard("待整改", 0, "等待导出问题包")}
+        ${metricCard("待复核", 0, "等待地市回传")}
+        ${metricCard("完成率", 0, "等待闭环")}
       </div>
     </section>
     <section class="card">
@@ -368,52 +449,114 @@ function renderBatchRows() {
 }
 
 function renderWorkflow(workflow) {
+  const action = actionForWorkflow(workflow);
   document.querySelector("#workflow-area").innerHTML = `
-    <div class="workflow-steps">
-      ${workflow.steps
-        .map((step) => `<div class="workflow-step step-${step.state}"><span>${escapeHtml(step.label)}</span></div>`)
-        .join("")}
-    </div>
-    <div class="next-action">下一步：<strong>${escapeHtml(workflow.next_action)}</strong></div>
-    <div class="operation-log">
-      ${(workflow.operations || []).map((item) => `<p><strong>${escapeHtml(item.operation)}</strong> ${escapeHtml(item.message)} <span>${escapeHtml(item.created_at)}</span></p>`).join("") || "<p>暂无操作记录</p>"}
+    <div class="workflow-layout">
+      <div class="workflow-steps">
+        ${workflow.steps
+          .map((step, index) => `<div class="workflow-step step-${step.state}"><span class="step-index">${step.state === "done" ? "✓" : index + 1}</span><span>${escapeHtml(step.label)}</span></div>`)
+          .join("")}
+      </div>
+      <div class="next-action">
+        <p class="eyebrow">下一步动作</p>
+        <h3>${escapeHtml(workflow.next_action)}</h3>
+        <p>系统会按当前批次状态引导完成导入、稽核、导出、回传和归档。</p>
+        <div class="button-row">
+          <button class="primary-button" type="button" data-next-view="${escapeHtml(action.view)}">${escapeHtml(action.label)}</button>
+          <button class="secondary-button" type="button" data-next-view="${escapeHtml(action.secondaryView)}">${escapeHtml(action.secondary)}</button>
+        </div>
+      </div>
     </div>
   `;
+  document.querySelectorAll("[data-next-view]").forEach((button) => {
+    button.addEventListener("click", () => activateView(button.dataset.nextView));
+  });
 }
 
-function renderMetrics(data) {
+function renderMetrics(data, progressRows = []) {
   const ledgerCounts = data.ledger_counts || {};
   const cityRows = data.issues_by_city || [];
   const ruleRows = data.issues_by_rule || [];
   const totalLedgers = Object.values(ledgerCounts).reduce((sum, value) => sum + Number(value || 0), 0);
   const totalIssues = cityRows.reduce((sum, row) => sum + Number(row.count || 0), 0);
+  const pending = progressRows.reduce((sum, row) => sum + Number(row.pending_count || 0), 0) || totalIssues;
+  const review = progressRows.reduce((sum, row) => sum + Number(row.review_count || 0), 0);
+  const closed = progressRows.reduce((sum, row) => sum + Number(row.closed_count || 0) + Number(row.not_required_count || 0), 0);
+  const completionRate = totalIssues ? ((closed / totalIssues) * 100).toFixed(1) : "0.0";
   document.querySelector("#metric-grid").innerHTML = [
-    metricCard("台账记录", totalLedgers, "当前批次导入记录总量"),
-    metricCard("问题总数", totalIssues, "稽核规则命中的问题数量"),
-    metricCard("涉及地市", cityRows.length, `问题最多：${cityRows[0]?.city || "暂无"}`),
-    metricCard("命中规则", ruleRows.length, `最高频规则：${ruleRows[0]?.rule_id || "暂无"}`),
+    metricCard("台账记录", totalLedgers, "当前批次导入记录总量", "info"),
+    metricCard("问题总数", totalIssues, `涉及地市 ${cityRows.length} 个`, "danger"),
+    metricCard("待整改", pending, `问题最多：${cityRows[0]?.city || "暂无"}`, "warning"),
+    metricCard("待复核", review, "等待省公司人工确认", "review"),
+    metricCard("完成率", completionRate, `命中规则 ${ruleRows.length} 条`, "success"),
   ].join("");
 }
 
 function renderCityProgress(rows) {
   const tbody = document.querySelector("#city-progress-table");
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="6">当前批次暂无整改进度</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7">当前批次暂无整改进度</td></tr>';
     return;
   }
   tbody.innerHTML = rows
-    .map(
-      (row) => `
+    .map((row) => {
+      const completion = percentValue(row.completion_rate);
+      const status = cityProgressTone(row);
+      return `
         <tr>
-          <td>${escapeHtml(row.city)}</td>
+          <td><strong>${escapeHtml(row.city)}</strong></td>
           <td>${formatNumber(row.total_count)}</td>
           <td>${formatNumber(row.pending_count)}</td>
           <td>${formatNumber(row.review_count)}</td>
           <td>${formatNumber(Number(row.closed_count || 0) + Number(row.not_required_count || 0))}</td>
-          <td><span class="progress-pill">${escapeHtml(row.completion_rate)}%</span></td>
+          <td>
+            <div class="progress-cell">
+              <span class="progress-track"><span style="width: ${completion}%"></span></span>
+              <span>${escapeHtml(row.completion_rate)}%</span>
+            </div>
+          </td>
+          <td><span class="chip chip-${status.tone}">${status.text}</span></td>
         </tr>
-      `,
-    )
+      `;
+    })
+    .join("");
+}
+
+function renderRiskSummary(rows) {
+  const container = document.querySelector("#risk-summary");
+  if (!container) return;
+  if (!rows.length) {
+    container.innerHTML = '<div class="empty-state">暂无风险摘要</div>';
+    return;
+  }
+  const max = Math.max(...rows.map((row) => Number(row.count || 0)), 1);
+  container.innerHTML = rows
+    .slice(0, 5)
+    .map((row) => {
+      const count = Number(row.count || 0);
+      return `
+        <div class="risk-row">
+          <div>
+            <strong>${escapeHtml(row.rule_id)}</strong>
+            <span>${formatNumber(count)} 个问题</span>
+          </div>
+          <span class="risk-bar"><span style="width: ${(count / max) * 100}%"></span></span>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function renderOperationLog(items) {
+  const container = document.querySelector("#operation-log");
+  if (!container) return;
+  if (!items.length) {
+    container.innerHTML = "<p>暂无操作记录</p>";
+    return;
+  }
+  container.innerHTML = items
+    .slice(0, 4)
+    .map((item) => `<p><strong>${escapeHtml(item.operation)}</strong><span>${escapeHtml(item.created_at)}</span>${escapeHtml(item.message)}</p>`)
     .join("");
 }
 
@@ -610,10 +753,10 @@ function renderIssueRows(issues) {
         <tr>
           <td>${escapeHtml(issue.issue_code)}</td>
           <td>${escapeHtml(issue.city)}</td>
-          <td>${escapeHtml(issue.ledger_type)}</td>
+          <td>${escapeHtml(ledgerLabel(issue.ledger_type))}</td>
           <td>${escapeHtml(issue.rule_id)}</td>
-          <td>${escapeHtml(issue.severity)}</td>
-          <td>${escapeHtml(issue.status)}</td>
+          <td><span class="chip chip-${severityTone(issue.severity)}">${escapeHtml(issue.severity)}</span></td>
+          <td><span class="chip chip-info">${escapeHtml(statusLabel(issue.status))}</span></td>
           <td>${escapeHtml(issue.message)}</td>
           <td><button class="text-button" data-close="${escapeHtml(issue.issue_code)}" type="button">关闭</button></td>
         </tr>
@@ -669,7 +812,7 @@ async function renderCorrections() {
     buttonText: "导入回传",
     resultTitle: "回传结果",
   });
-  mainContent.insertAdjacentHTML("beforeend", `<section class="card">${shellHeader("地市整改进度", "Progress")}<div class="table-wrap"><table><thead><tr><th>地市</th><th>问题</th><th>待整改</th><th>待复核</th><th>已关闭</th><th>完成率</th></tr></thead><tbody id="city-progress-table"></tbody></table></div></section>`);
+  mainContent.insertAdjacentHTML("beforeend", `<section class="card">${shellHeader("地市整改进度", "Progress")}<div class="table-wrap"><table><thead><tr><th>地市</th><th>问题</th><th>待整改</th><th>待复核</th><th>已关闭</th><th>完成率</th><th>状态</th></tr></thead><tbody id="city-progress-table"></tbody></table></div></section>`);
   document.querySelector("#operation-submit").addEventListener("click", async () => {
     const path = fieldValue("correction-path");
     if (!path) return setOperationResult("error", "请填写回传文件路径");

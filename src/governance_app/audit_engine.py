@@ -2,7 +2,14 @@ import hashlib
 import json
 from dataclasses import dataclass
 
-from governance_app.audit_rules import all_rules, parse_row
+from governance_app.audit_rules import (
+    AuditLedgerRow,
+    BatchRuleFinding,
+    RuleFinding,
+    all_batch_rules,
+    all_rules,
+    parse_row,
+)
 from governance_app.config import AppConfig
 from governance_app.db import connect
 
@@ -15,16 +22,29 @@ class AuditRunResult:
 
 def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
     rules = all_rules()
+    batch_rules = all_batch_rules()
     with connect(config) as conn:
         audit_run_id = conn.execute(
             "insert into audit_runs(batch_id, rule_count) values (?, ?)",
-            (batch_id, len(rules)),
+            (batch_id, len(rules) + len(batch_rules)),
         ).lastrowid
         rows = conn.execute(
             "select * from ledger_rows where batch_id = ? order by id",
             (batch_id,),
         ).fetchall()
         issue_count = 0
+        audit_rows = [
+            AuditLedgerRow(
+                ledger_row_id=ledger_row["id"],
+                ledger_type=ledger_row["ledger_type"],
+                city=ledger_row["city"],
+                district=ledger_row["district"],
+                telecom_site_code=ledger_row["telecom_site_code"],
+                telecom_site_name=ledger_row["telecom_site_name"],
+                row=parse_row(ledger_row["row_json"]),
+            )
+            for ledger_row in rows
+        ]
         for ledger_row in rows:
             row_data = parse_row(ledger_row["row_json"])
             for rule in rules:
@@ -33,45 +53,29 @@ def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
                 finding = rule.evaluate(row_data)
                 if finding is None:
                     continue
-                severity = rule.severity
-                result_json = json.dumps({"field": finding.field_name, "message": finding.message}, ensure_ascii=False)
-                audit_result_id = conn.execute(
-                    """
-                    insert into audit_results(audit_run_id, ledger_row_id, rule_id, severity, message, field_name, result_json)
-                    values (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        audit_run_id,
-                        ledger_row["id"],
-                        rule.rule_id,
-                        severity,
-                        finding.message,
-                        finding.field_name,
-                        result_json,
-                    ),
-                ).lastrowid
-                issue_code = _issue_code(batch_id, ledger_row["id"], rule.rule_id)
-                conn.execute(
-                    """
-                    insert or ignore into issues(
-                        issue_code, audit_result_id, batch_id, city, district, telecom_site_code, telecom_site_name,
-                        ledger_type, rule_id, severity, message, suggestion
-                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        issue_code,
-                        audit_result_id,
-                        batch_id,
-                        ledger_row["city"],
-                        ledger_row["district"],
-                        ledger_row["telecom_site_code"],
-                        ledger_row["telecom_site_name"],
-                        ledger_row["ledger_type"],
-                        rule.rule_id,
-                        severity,
-                        finding.message,
-                        finding.suggestion,
-                    ),
+                _insert_finding(
+                    conn,
+                    audit_run_id,
+                    batch_id,
+                    ledger_row,
+                    rule.rule_id,
+                    rule.severity,
+                    finding,
+                )
+                issue_count += 1
+        ledger_rows_by_id = {ledger_row["id"]: ledger_row for ledger_row in rows}
+        for rule in batch_rules:
+            matching_rows = [row for row in audit_rows if row.ledger_type == rule.ledger_type]
+            for finding in rule.evaluate(matching_rows):
+                ledger_row = ledger_rows_by_id[finding.ledger_row_id]
+                _insert_finding(
+                    conn,
+                    audit_run_id,
+                    batch_id,
+                    ledger_row,
+                    rule.rule_id,
+                    rule.severity,
+                    finding,
                 )
                 issue_count += 1
         conn.execute("update import_batches set status = 'audited' where id = ?", (batch_id,))
@@ -85,3 +89,53 @@ def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
 def _issue_code(batch_id: int, ledger_row_id: int, rule_id: str) -> str:
     digest = hashlib.sha1(f"{batch_id}:{ledger_row_id}:{rule_id}".encode("utf-8")).hexdigest()[:10]
     return f"ISS-{batch_id}-{digest}"
+
+
+def _insert_finding(
+    conn,
+    audit_run_id: int,
+    batch_id: int,
+    ledger_row,
+    rule_id: str,
+    severity: str,
+    finding: RuleFinding | BatchRuleFinding,
+) -> None:
+    result_json = json.dumps({"field": finding.field_name, "message": finding.message}, ensure_ascii=False)
+    audit_result_id = conn.execute(
+        """
+        insert into audit_results(audit_run_id, ledger_row_id, rule_id, severity, message, field_name, result_json)
+        values (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            audit_run_id,
+            ledger_row["id"],
+            rule_id,
+            severity,
+            finding.message,
+            finding.field_name,
+            result_json,
+        ),
+    ).lastrowid
+    issue_code = _issue_code(batch_id, ledger_row["id"], rule_id)
+    conn.execute(
+        """
+        insert or ignore into issues(
+            issue_code, audit_result_id, batch_id, city, district, telecom_site_code, telecom_site_name,
+            ledger_type, rule_id, severity, message, suggestion
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            issue_code,
+            audit_result_id,
+            batch_id,
+            ledger_row["city"],
+            ledger_row["district"],
+            ledger_row["telecom_site_code"],
+            ledger_row["telecom_site_name"],
+            ledger_row["ledger_type"],
+            rule_id,
+            severity,
+            finding.message,
+            finding.suggestion,
+        ),
+    )
