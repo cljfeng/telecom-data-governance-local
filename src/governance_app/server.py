@@ -212,6 +212,19 @@ def _batch_id_from_query(query_string: str) -> tuple[int, tuple[int, dict[str, s
 class RequestHandler(SimpleHTTPRequestHandler):
     config: AppConfig
 
+    @staticmethod
+    def extra_static_headers() -> dict[str, str]:
+        return {
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+        }
+
+    def end_headers(self) -> None:
+        if not self.path.startswith("/api/"):
+            for key, value in self.extra_static_headers().items():
+                self.send_header(key, value)
+        super().end_headers()
+
     def do_GET(self) -> None:
         if self.path.startswith("/api/"):
             status, headers, body = _route(self.config, "GET", self.path)

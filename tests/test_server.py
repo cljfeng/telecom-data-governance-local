@@ -169,3 +169,10 @@ def test_backup_and_restore_endpoints(app_config, sample_workbook):
 
     assert status == 200
     assert json.loads(body)["status"] == "restored"
+
+
+def test_static_handler_disables_browser_cache():
+    from governance_app.server import RequestHandler
+
+    assert RequestHandler.extra_static_headers()["Cache-Control"] == "no-store, max-age=0"
+    assert RequestHandler.extra_static_headers()["Pragma"] == "no-cache"

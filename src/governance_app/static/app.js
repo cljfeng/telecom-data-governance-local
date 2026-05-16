@@ -1,5 +1,6 @@
 const views = {
   dashboard: "专项工作台",
+  batches: "批次管理",
   import: "数据导入",
   audit: "稽核结果",
   export: "问题包导出",
@@ -166,10 +167,39 @@ function bindBatchSelector(afterSelect) {
   const button = document.querySelector("#select-batch");
   if (!selector || !button) return;
   button.addEventListener("click", async () => {
+    if (!selector.value) {
+      renderNoBatchPrompt("还没有可切换的专项批次。");
+      return;
+    }
     state.batchId = Number(selector.value);
     await postJson("/api/batches/current", { batch_id: state.batchId });
     await refreshBatches();
     afterSelect();
+  });
+}
+
+function renderNoBatchPrompt(message = "当前还没有专项批次。") {
+  mainContent.innerHTML = `
+    <section class="card">
+      ${shellHeader("没有可用批次", "Batch")}
+      <div class="operation-panel">
+        <p>${escapeHtml(message)}可以先新建一个批次，再导入全省台账；也可以直接到“数据导入”页面导入模板，系统会自动生成批次。</p>
+        <div class="form-grid">
+          <label class="form-field">
+            <span>批次名称</span>
+            <input id="new-batch-name" value="2026年基站电费租费基础数据核查" placeholder="请输入专项批次名称">
+          </label>
+        </div>
+        <button id="create-batch" class="primary-button" type="button">新建批次</button>
+      </div>
+    </section>
+  `;
+  document.querySelector("#create-batch").addEventListener("click", async () => {
+    const name = fieldValue("new-batch-name");
+    if (!name) return;
+    await postJson("/api/batches", { name });
+    await refreshBatches();
+    await loadDashboard();
   });
 }
 
@@ -210,7 +240,19 @@ async function loadDashboard() {
     renderMetrics(summary);
     renderCityProgress(progress.cities || []);
   } catch (error) {
+    if (error.message === "batch not found") {
+      await refreshBatches().catch(() => []);
+      renderEmptyDashboard();
+      return;
+    }
     document.querySelector("#workflow-area").textContent = `流程加载失败：${error.message}`;
+    document.querySelector("#metric-grid").innerHTML = [
+      metricCard("台账记录", 0, "概览加载失败"),
+      metricCard("问题总数", 0, "概览加载失败"),
+      metricCard("涉及地市", 0, "概览加载失败"),
+      metricCard("命中规则", 0, "概览加载失败"),
+    ].join("");
+    renderCityProgress([]);
   }
 }
 
@@ -248,6 +290,78 @@ function renderEmptyDashboard() {
     if (!name) return;
     await postJson("/api/batches", { name });
     await loadDashboard();
+  });
+}
+
+async function renderBatches() {
+  await refreshBatches().catch(() => []);
+  mainContent.innerHTML = `
+    <section class="card">
+      ${shellHeader("批次管理", "Batches")}
+      <div class="operation-panel">
+        <p>批次用于管理每一轮专项治理。新建批次后可以导入台账、执行稽核、导出整改包、导入回传并归档。</p>
+        <div class="form-grid">
+          <label class="form-field">
+            <span>新批次名称</span>
+            <input id="batch-name" value="2026年基站电费租费基础数据核查" placeholder="请输入专项批次名称">
+          </label>
+        </div>
+        <button id="create-batch-page" class="primary-button" type="button">新建批次</button>
+      </div>
+    </section>
+    <section class="card">
+      ${shellHeader("历史批次", "History")}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>批次</th>
+              <th>状态</th>
+              <th>创建时间</th>
+              <th>来源文件</th>
+              <th>当前</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="batch-table"></tbody>
+        </table>
+      </div>
+    </section>
+  `;
+  document.querySelector("#create-batch-page").addEventListener("click", async () => {
+    const name = fieldValue("batch-name");
+    if (!name) return;
+    await postJson("/api/batches", { name });
+    await renderBatches();
+  });
+  renderBatchRows();
+}
+
+function renderBatchRows() {
+  const tbody = document.querySelector("#batch-table");
+  if (!state.batches.length) {
+    tbody.innerHTML = '<tr><td colspan="6">暂无批次，可以先新建批次或直接导入台账。</td></tr>';
+    return;
+  }
+  tbody.innerHTML = state.batches
+    .map(
+      (batch) => `
+        <tr>
+          <td>#${batch.id} ${escapeHtml(batch.name)}</td>
+          <td>${escapeHtml(batch.status)}${batch.is_archived ? " / 已归档" : ""}</td>
+          <td>${escapeHtml(batch.created_at)}</td>
+          <td>${escapeHtml(batch.source_file || "手动创建")}</td>
+          <td>${batch.is_current ? '<span class="progress-pill">当前</span>' : ""}</td>
+          <td><button class="text-button" data-select-batch="${batch.id}" type="button">设为当前</button></td>
+        </tr>
+      `,
+    )
+    .join("");
+  tbody.querySelectorAll("[data-select-batch]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await postJson("/api/batches/current", { batch_id: Number(button.dataset.selectBatch) });
+      await renderBatches();
+    });
   });
 }
 
@@ -329,6 +443,10 @@ async function renderImport() {
 
 async function renderAudit() {
   await refreshBatches().catch(() => []);
+  if (!currentBatch()) {
+    renderNoBatchPrompt("没有批次时无法执行稽核。");
+    return;
+  }
   mainContent.innerHTML = `
     <section class="card">
       ${shellHeader("稽核结果", "Issues", renderBatchSelector())}
@@ -352,6 +470,10 @@ async function renderAudit() {
 }
 
 async function loadIssues() {
+  if (!state.batchId) {
+    renderNoBatchPrompt("没有批次时无法查询问题。");
+    return;
+  }
   const params = new URLSearchParams({ batch_id: state.batchId });
   const city = fieldValue("filter-city");
   const ledger = document.querySelector("#filter-ledger").value;
@@ -395,6 +517,10 @@ function renderIssueRows(issues) {
 
 async function renderExport() {
   await refreshBatches().catch(() => []);
+  if (!currentBatch()) {
+    renderNoBatchPrompt("没有批次时无法导出整改包。");
+    return;
+  }
   operationCard({
     title: "问题包导出",
     eyebrow: "Export",
@@ -418,6 +544,10 @@ async function renderExport() {
 
 async function renderCorrections() {
   await refreshBatches().catch(() => []);
+  if (!currentBatch()) {
+    renderNoBatchPrompt("没有批次时无法导入整改回传。");
+    return;
+  }
   operationCard({
     title: "整改回传",
     eyebrow: "Correction Return",
@@ -446,6 +576,10 @@ async function renderCorrections() {
 
 async function renderReports() {
   await refreshBatches().catch(() => []);
+  if (!currentBatch()) {
+    renderNoBatchPrompt("没有批次时无法生成归档汇总。");
+    return;
+  }
   mainContent.innerHTML = `
     <section class="card">
       ${shellHeader("专项归档导出", "Archive", renderBatchSelector())}
@@ -482,6 +616,7 @@ function activateView(view) {
   pageTitle.textContent = views[view];
   navButtons.forEach((button) => button.classList.toggle("is-active", button.dataset.view === view));
   if (view === "dashboard") return loadDashboard();
+  if (view === "batches") return renderBatches();
   if (view === "import") return renderImport();
   if (view === "audit") return renderAudit();
   if (view === "export") return renderExport();
