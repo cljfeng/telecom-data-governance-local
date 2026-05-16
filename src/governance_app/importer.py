@@ -9,6 +9,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 from governance_app.config import AppConfig
 from governance_app.db import connect
 from governance_app.models import LedgerType, ValidationErrorDetail
+from governance_app.recent_files import record_recent_file
 from governance_app.templates import EXPECTED_SHEETS, HEADER_ROWS, required_headers_for
 
 
@@ -82,7 +83,8 @@ def import_workbook(config: AppConfig, workbook_path: Path) -> ImportResult:
                         row_json,
                     ),
                 )
-        return ImportResult(batch_id=batch_id, ledger_counts=ledger_counts)
+    record_recent_file(config, workbook_path, "import", True, ledger_counts, 0)
+    return ImportResult(batch_id=batch_id, ledger_counts=ledger_counts)
 
 
 def _headers(ws: Worksheet, header_rows: int) -> list[str]:

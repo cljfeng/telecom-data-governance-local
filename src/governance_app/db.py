@@ -114,6 +114,15 @@ def initialize_database(config: AppConfig) -> None:
                 message text not null,
                 created_at text not null default current_timestamp
             );
+
+            create table if not exists recent_files (
+                path text primary key,
+                kind text not null,
+                ok integer not null,
+                ledger_counts_json text not null,
+                error_count integer not null,
+                last_used_at text not null default current_timestamp
+            );
             """
         )
         _ensure_column(conn, "import_batches", "name", "text")

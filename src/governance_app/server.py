@@ -14,8 +14,9 @@ from governance_app.config import AppConfig
 from governance_app.corrections import import_correction_return
 from governance_app.db import initialize_database
 from governance_app.exporter import export_city_issue_packages
-from governance_app.import_preview import preview_workbook
+from governance_app.import_preview import export_preview_errors, preview_workbook
 from governance_app.importer import import_workbook
+from governance_app.recent_files import list_recent_files
 from governance_app.workflow import (
     city_progress,
     create_batch,
@@ -121,15 +122,21 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         if not isinstance(path_value, str) or not path_value:
             return _json({"error": "path is required"}, status=400)
         result = preview_workbook(config, Path(path_value))
+        error_export_path = ""
+        if result.errors:
+            error_export_path = str(export_preview_errors(config, Path(path_value), result))
         return _json(
             {
                 "ok": result.ok,
                 "batch_name": result.batch_name,
                 "ledger_counts": result.ledger_counts,
                 "errors": [error.__dict__ for error in result.errors],
+                "error_export_path": error_export_path,
             },
             status=200 if result.ok else 400,
         )
+    if method == "GET" and parsed.path == "/api/import/recent":
+        return _json({"files": list_recent_files(config)})
     if method == "POST" and parsed.path == "/api/audit":
         payload, error = _json_body(body)
         if error:

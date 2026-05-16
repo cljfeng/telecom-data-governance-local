@@ -559,6 +559,22 @@ tbody tr:last-child td {
   font-weight: 700;
 }
 
+.risk-pill {
+  display: inline-flex;
+  min-width: 58px;
+  justify-content: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: var(--danger);
+  background: #fdecea;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.recent-files {
+  min-height: 86px;
+}
+
 @media (max-width: 820px) {
   .sidebar {
     position: static;

@@ -102,6 +102,28 @@ def test_import_preview_endpoint_returns_counts_without_creating_batch(app_confi
         assert conn.execute("select count(*) as c from import_batches").fetchone()["c"] == 0
 
 
+def test_import_recent_files_and_error_export_endpoints(app_config, workbook_missing_site_code):
+    initialize_database(app_config)
+    app = create_app(app_config)
+
+    status, headers, body = app.handle_test_request(
+        "POST",
+        "/api/import/preview",
+        json.dumps({"path": str(workbook_missing_site_code)}),
+    )
+
+    assert status == 400
+    preview = json.loads(body)
+    assert preview["error_export_path"].endswith(".xlsx")
+
+    status, headers, body = app.handle_test_request("GET", "/api/import/recent")
+
+    assert status == 200
+    recent = json.loads(body)["files"]
+    assert recent[0]["path"] == str(workbook_missing_site_code)
+    assert recent[0]["ok"] is False
+
+
 def test_workbench_management_endpoints(app_config, sample_workbook):
     initialize_database(app_config)
     app = create_app(app_config)

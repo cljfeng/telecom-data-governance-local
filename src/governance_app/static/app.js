@@ -41,7 +41,9 @@ async function fetchJson(url, options = {}) {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data.error || `HTTP ${response.status}`);
+    const error = new Error(data.error || `HTTP ${response.status}`);
+    error.data = data;
+    throw error;
   }
   return data;
 }
@@ -417,6 +419,7 @@ function renderCityProgress(rows) {
 
 async function renderImport() {
   await refreshBatches().catch(() => []);
+  const recent = await fetchJson("/api/import/recent").catch(() => ({ files: [] }));
   mainContent.innerHTML = `
     <section class="card">
       ${shellHeader("数据导入", "Workbook Import")}
@@ -438,7 +441,12 @@ async function renderImport() {
       ${shellHeader("预检与导入结果", "Result")}
       <div id="operation-result" class="result-box">请先填写文件路径并执行预检</div>
     </section>
+    <section class="card">
+      ${shellHeader("最近文件", "Recent Files")}
+      <div id="recent-files" class="recent-files"></div>
+    </section>
   `;
+  renderRecentFiles(recent.files || []);
   document.querySelector("#preview-import").addEventListener("click", async () => {
     const path = fieldValue("workbook-path");
     if (!path) return setOperationResult("error", "请填写台账文件路径");
@@ -446,8 +454,16 @@ async function renderImport() {
     try {
       const data = await postJson("/api/import/preview", { path });
       setOperationResult("success", renderImportPreviewResult(data, "预检通过，可以正式导入"));
+      const recentData = await fetchJson("/api/import/recent").catch(() => ({ files: [] }));
+      renderRecentFiles(recentData.files || []);
     } catch (error) {
-      setOperationResult("error", error.message);
+      if (error.data) {
+        setOperationResult("error", renderImportPreviewResult(error.data, "预检未通过，请按错误明细修正后重试"));
+      } else {
+        setOperationResult("error", error.message);
+      }
+      const recentData = await fetchJson("/api/import/recent").catch(() => ({ files: [] }));
+      renderRecentFiles(recentData.files || []);
     }
   });
   document.querySelector("#operation-submit").addEventListener("click", async () => {
@@ -460,6 +476,8 @@ async function renderImport() {
       await refreshBatches();
       const counts = data.ledger_counts || {};
       setOperationResult("success", `<p>导入成功，批次号：<strong>${escapeHtml(data.batch_id)}</strong>。即将进入专项工作台，下一步执行稽核。</p><div class="mini-grid"><span>站址 ${formatNumber(counts.site)}</span><span>铁塔租费 ${formatNumber(counts.tower_rent)}</span><span>电费 ${formatNumber(counts.electricity)}</span><span>发电费 ${formatNumber(counts.generator)}</span></div>`);
+      const recentData = await fetchJson("/api/import/recent").catch(() => ({ files: [] }));
+      renderRecentFiles(recentData.files || []);
       window.setTimeout(() => activateView("dashboard"), 800);
     } catch (error) {
       setOperationResult("error", error.message);
@@ -484,7 +502,56 @@ function renderImportPreviewResult(data, message) {
         ? `<ul class="path-list">${errors.map((error) => `<li>${escapeHtml(error.field_name)}：${escapeHtml(error.message)}</li>`).join("")}</ul>`
         : ""
     }
+    ${data.error_export_path ? `<p>错误明细：${escapeHtml(data.error_export_path)}</p>` : ""}
   `;
+}
+
+function renderRecentFiles(files) {
+  const container = document.querySelector("#recent-files");
+  if (!container) return;
+  if (!files.length) {
+    container.innerHTML = '<div class="empty-state">暂无最近文件</div>';
+    return;
+  }
+  container.innerHTML = `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>文件路径</th>
+            <th>结果</th>
+            <th>台账记录</th>
+            <th>错误</th>
+            <th>时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${files
+            .map((file) => {
+              const counts = file.ledger_counts || {};
+              const total = Number(counts.site || 0) + Number(counts.tower_rent || 0) + Number(counts.electricity || 0) + Number(counts.generator || 0);
+              return `
+                <tr>
+                  <td>${escapeHtml(file.path)}</td>
+                  <td>${file.ok ? '<span class="progress-pill">通过</span>' : '<span class="risk-pill">异常</span>'}</td>
+                  <td>${formatNumber(total)}</td>
+                  <td>${formatNumber(file.error_count)}</td>
+                  <td>${escapeHtml(file.last_used_at)}</td>
+                  <td><button class="text-button" data-use-path="${escapeHtml(file.path)}" type="button">填入</button></td>
+                </tr>
+              `;
+            })
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+  container.querySelectorAll("[data-use-path]").forEach((button) => {
+    button.addEventListener("click", () => {
+      document.querySelector("#workbook-path").value = button.dataset.usePath;
+    });
+  });
 }
 
 async function renderAudit() {
