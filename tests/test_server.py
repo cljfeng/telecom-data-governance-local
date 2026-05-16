@@ -83,6 +83,75 @@ def test_import_audit_export_and_correction_endpoints(app_config, sample_workboo
     assert "matched_count" in json.loads(body)
 
 
+def test_workbench_management_endpoints(app_config, sample_workbook):
+    initialize_database(app_config)
+    app = create_app(app_config)
+
+    status, headers, body = app.handle_test_request(
+        "POST",
+        "/api/batches",
+        json.dumps({"name": "2026年专项治理"}),
+    )
+
+    assert status == 200
+    batch_id = json.loads(body)["batch_id"]
+
+    status, headers, body = app.handle_test_request("GET", "/api/batches")
+
+    assert status == 200
+    assert json.loads(body)["batches"][0]["name"] == "2026年专项治理"
+
+    status, headers, body = app.handle_test_request(
+        "POST",
+        "/api/batches/current",
+        json.dumps({"batch_id": batch_id}),
+    )
+
+    assert status == 200
+    assert json.loads(body)["status"] == "selected"
+
+    status, headers, body = app.handle_test_request("GET", f"/api/workflow?batch_id={batch_id}")
+
+    assert status == 200
+    assert json.loads(body)["next_action"] == "导入台账"
+
+
+def test_issue_city_progress_status_and_archive_endpoints(app_config, sample_workbook):
+    initialize_database(app_config)
+    app = create_app(app_config)
+
+    status, headers, body = app.handle_test_request("POST", "/api/import", json.dumps({"path": str(sample_workbook)}))
+    batch_id = json.loads(body)["batch_id"]
+    with connect(app_config) as conn:
+        conn.execute("update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
+    app.handle_test_request("POST", "/api/audit", json.dumps({"batch_id": batch_id}))
+
+    status, headers, body = app.handle_test_request("GET", f"/api/issues?batch_id={batch_id}&city=杭州")
+
+    assert status == 200
+    issue = json.loads(body)["issues"][0]
+    assert issue["city"] == "杭州"
+
+    status, headers, body = app.handle_test_request(
+        "POST",
+        "/api/issues/status",
+        json.dumps({"issue_code": issue["issue_code"], "status": "closed"}),
+    )
+
+    assert status == 200
+    assert json.loads(body)["status"] == "updated"
+
+    status, headers, body = app.handle_test_request("GET", f"/api/city-progress?batch_id={batch_id}")
+
+    assert status == 200
+    assert json.loads(body)["cities"][0]["completion_rate"] == 100.0
+
+    status, headers, body = app.handle_test_request("POST", "/api/archive", json.dumps({"batch_id": batch_id}))
+
+    assert status == 200
+    assert json.loads(body)["path"].endswith("专项治理归档汇总.xlsx")
+
+
 def test_backup_and_restore_endpoints(app_config, sample_workbook):
     initialize_database(app_config)
     app = create_app(app_config)

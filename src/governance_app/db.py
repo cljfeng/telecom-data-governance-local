@@ -106,10 +106,27 @@ def initialize_database(config: AppConfig) -> None:
                 key text primary key,
                 value_json text not null
             );
+
+            create table if not exists operation_logs (
+                id integer primary key autoincrement,
+                batch_id integer references import_batches(id) on delete cascade,
+                operation text not null,
+                message text not null,
+                created_at text not null default current_timestamp
+            );
             """
         )
+        _ensure_column(conn, "import_batches", "name", "text")
+        _ensure_column(conn, "import_batches", "is_archived", "integer not null default 0")
+        _ensure_column(conn, "import_batches", "archived_at", "text")
 
 
 def table_names(conn: sqlite3.Connection) -> set[str]:
     rows = conn.execute("select name from sqlite_master where type = 'table'").fetchall()
     return {row["name"] for row in rows}
+
+
+def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:
+    columns = {row["name"] for row in conn.execute(f"pragma table_info({table_name})")}
+    if column_name not in columns:
+        conn.execute(f"alter table {table_name} add column {column_name} {definition}")

@@ -79,6 +79,12 @@ def export_city_issue_packages(config: AppConfig, batch_id: int) -> list[Path]:
                 (batch_id, city),
             )
             paths.append(path)
+        if paths:
+            conn.execute("update import_batches set status = 'distributed' where id = ?", (batch_id,))
+            conn.execute(
+                "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
+                (batch_id, "export", f"导出地市整改包 {len(paths)} 个"),
+            )
     return paths
 
 

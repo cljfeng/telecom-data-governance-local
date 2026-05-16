@@ -32,6 +32,7 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
 
     matched_count = 0
     errors: list[str] = []
+    matched_batch_ids: set[int] = set()
     with connect(config) as conn:
         for row_number, values in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
             if _is_blank_row(values):
@@ -63,11 +64,21 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
             if cursor.rowcount == 0:
                 errors.append(f"第{row_number}行问题编号无法匹配：{issue_code}")
             else:
+                batch_row = conn.execute("select batch_id from issues where issue_code = ?", (str(issue_code),)).fetchone()
+                if batch_row is not None:
+                    matched_batch_ids.add(batch_row["batch_id"])
                 matched_count += 1
         conn.execute(
             "insert into correction_returns(source_file, matched_count, error_count, errors_json) values (?, ?, ?, ?)",
             (str(workbook_path), matched_count, len(errors), json.dumps(errors, ensure_ascii=False)),
         )
+        if matched_batch_ids:
+            for batch_id in matched_batch_ids:
+                conn.execute("update import_batches set status = 'returning' where id = ?", (batch_id,))
+                conn.execute(
+                    "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
+                    (batch_id, "correction_return", f"导入整改回传，匹配 {matched_count} 条"),
+                )
     return CorrectionImportResult(matched_count=matched_count, errors=errors)
 
 

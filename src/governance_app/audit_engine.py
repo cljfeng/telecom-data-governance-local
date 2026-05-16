@@ -74,6 +74,11 @@ def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
                     ),
                 )
                 issue_count += 1
+        conn.execute("update import_batches set status = 'audited' where id = ?", (batch_id,))
+        conn.execute(
+            "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
+            (batch_id, "audit", f"执行稽核，生成问题 {issue_count} 条"),
+        )
         return AuditRunResult(audit_run_id=audit_run_id, issue_count=issue_count)
 
 

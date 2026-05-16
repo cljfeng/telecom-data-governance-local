@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from governance_app.analytics import dashboard_summary
+from governance_app.archive import archive_batch
 from governance_app.audit_engine import run_audit
 from governance_app.backup import create_backup, restore_backup
 from governance_app.config import AppConfig
@@ -14,6 +15,16 @@ from governance_app.corrections import import_correction_return
 from governance_app.db import initialize_database
 from governance_app.exporter import export_city_issue_packages
 from governance_app.importer import import_workbook
+from governance_app.workflow import (
+    city_progress,
+    create_batch,
+    get_batch_workflow,
+    list_batches,
+    list_issues,
+    record_operation,
+    set_current_batch,
+    update_issue_status,
+)
 
 
 @dataclass(frozen=True)
@@ -39,6 +50,52 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         except ValueError:
             return _json({"error": "invalid batch_id"}, status=400)
         return _json(dashboard_summary(config, batch_id))
+    if method == "GET" and parsed.path == "/api/batches":
+        return _json({"batches": list_batches(config)})
+    if method == "POST" and parsed.path == "/api/batches":
+        payload, error = _json_body(body)
+        if error:
+            return error
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return _json({"error": "name is required"}, status=400)
+        try:
+            batch_id = create_batch(config, name)
+        except ValueError as exc:
+            return _json({"error": str(exc)}, status=400)
+        return _json({"batch_id": batch_id})
+    if method == "POST" and parsed.path == "/api/batches/current":
+        payload, error = _json_body(body)
+        if error:
+            return error
+        batch_id, error = _batch_id_from_payload(payload)
+        if error:
+            return error
+        try:
+            set_current_batch(config, batch_id)
+        except ValueError as exc:
+            return _json({"error": str(exc)}, status=404)
+        return _json({"status": "selected"})
+    if method == "GET" and parsed.path == "/api/workflow":
+        batch_id, error = _batch_id_from_query(parsed.query)
+        if error:
+            return error
+        try:
+            return _json(get_batch_workflow(config, batch_id))
+        except ValueError as exc:
+            return _json({"error": str(exc)}, status=404)
+    if method == "GET" and parsed.path == "/api/issues":
+        batch_id, error = _batch_id_from_query(parsed.query)
+        if error:
+            return error
+        query = parse_qs(parsed.query)
+        filters = {key: values[0] for key, values in query.items() if key != "batch_id" and values and values[0]}
+        return _json({"issues": list_issues(config, batch_id, filters)})
+    if method == "GET" and parsed.path == "/api/city-progress":
+        batch_id, error = _batch_id_from_query(parsed.query)
+        if error:
+            return error
+        return _json({"cities": city_progress(config, batch_id)})
     if method == "POST" and parsed.path == "/api/import":
         payload, error = _json_body(body)
         if error:
@@ -82,6 +139,28 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
             return _json({"error": "path is required"}, status=400)
         result = import_correction_return(config, Path(path_value))
         return _json({"matched_count": result.matched_count, "errors": result.errors}, status=200 if not result.errors else 400)
+    if method == "POST" and parsed.path == "/api/issues/status":
+        payload, error = _json_body(body)
+        if error:
+            return error
+        issue_code = payload.get("issue_code")
+        status_value = payload.get("status")
+        if not isinstance(issue_code, str) or not isinstance(status_value, str):
+            return _json({"error": "issue_code and status are required"}, status=400)
+        try:
+            update_issue_status(config, issue_code, status_value)
+        except ValueError as exc:
+            return _json({"error": str(exc)}, status=404)
+        return _json({"status": "updated"})
+    if method == "POST" and parsed.path == "/api/archive":
+        payload, error = _json_body(body)
+        if error:
+            return error
+        batch_id, error = _batch_id_from_payload(payload)
+        if error:
+            return error
+        path = archive_batch(config, batch_id)
+        return _json({"path": str(path)})
     if method == "POST" and parsed.path == "/api/backup":
         path = create_backup(config)
         return _json({"path": str(path)})
@@ -119,6 +198,14 @@ def _batch_id_from_payload(payload: dict) -> tuple[int, tuple[int, dict[str, str
     try:
         return int(payload.get("batch_id")), None
     except (TypeError, ValueError):
+        return 0, _json({"error": "invalid batch_id"}, status=400)
+
+
+def _batch_id_from_query(query_string: str) -> tuple[int, tuple[int, dict[str, str], str] | None]:
+    query = parse_qs(query_string)
+    try:
+        return int(query.get("batch_id", ["1"])[0]), None
+    except ValueError:
         return 0, _json({"error": "invalid batch_id"}, status=400)
 
 

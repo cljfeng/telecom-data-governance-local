@@ -42,9 +42,18 @@ def import_workbook(config: AppConfig, workbook_path: Path) -> ImportResult:
 
     with connect(config) as conn:
         batch_id = conn.execute(
-            "insert into import_batches(source_file) values (?)",
-            (str(workbook_path),),
+            "insert into import_batches(source_file, name, status) values (?, ?, ?)",
+            (str(workbook_path), workbook_path.stem, "imported"),
         ).lastrowid
+        conn.execute(
+            "insert into settings(key, value_json) values ('current_batch_id', ?) "
+            "on conflict(key) do update set value_json = excluded.value_json",
+            (str(batch_id),),
+        )
+        conn.execute(
+            "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
+            (batch_id, "import", f"导入台账：{workbook_path.name}"),
+        )
         ledger_counts: dict[str, int] = {}
         for ledger_type, (sheet_name, rows) in parsed.items():
             ledger_counts[ledger_type] = len(rows)
