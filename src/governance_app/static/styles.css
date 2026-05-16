@@ -379,6 +379,12 @@ tbody tr:last-child td {
   gap: 10px;
 }
 
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .primary-button {
   width: fit-content;
   min-width: 128px;
@@ -625,6 +631,7 @@ tbody tr:last-child td {
   }
 
   .toolbar,
+  .button-row,
   .compact-field,
   .secondary-button {
     width: 100%;

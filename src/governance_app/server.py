@@ -14,6 +14,7 @@ from governance_app.config import AppConfig
 from governance_app.corrections import import_correction_return
 from governance_app.db import initialize_database
 from governance_app.exporter import export_city_issue_packages
+from governance_app.import_preview import preview_workbook
 from governance_app.importer import import_workbook
 from governance_app.workflow import (
     city_progress,
@@ -111,6 +112,23 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
                 "errors": [error.__dict__ for error in result.errors],
             },
             status=200 if result.batch_id is not None else 400,
+        )
+    if method == "POST" and parsed.path == "/api/import/preview":
+        payload, error = _json_body(body)
+        if error:
+            return error
+        path_value = payload.get("path")
+        if not isinstance(path_value, str) or not path_value:
+            return _json({"error": "path is required"}, status=400)
+        result = preview_workbook(config, Path(path_value))
+        return _json(
+            {
+                "ok": result.ok,
+                "batch_name": result.batch_name,
+                "ledger_counts": result.ledger_counts,
+                "errors": [error.__dict__ for error in result.errors],
+            },
+            status=200 if result.ok else 400,
         )
     if method == "POST" and parsed.path == "/api/audit":
         payload, error = _json_body(body)

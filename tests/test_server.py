@@ -83,6 +83,25 @@ def test_import_audit_export_and_correction_endpoints(app_config, sample_workboo
     assert "matched_count" in json.loads(body)
 
 
+def test_import_preview_endpoint_returns_counts_without_creating_batch(app_config, sample_workbook):
+    initialize_database(app_config)
+    app = create_app(app_config)
+
+    status, headers, body = app.handle_test_request(
+        "POST",
+        "/api/import/preview",
+        json.dumps({"path": str(sample_workbook)}),
+    )
+
+    data = json.loads(body)
+    assert status == 200
+    assert data["ok"] is True
+    assert data["batch_name"] == "sample_template"
+    assert data["ledger_counts"]["site"] == 1
+    with connect(app_config) as conn:
+        assert conn.execute("select count(*) as c from import_batches").fetchone()["c"] == 0
+
+
 def test_workbench_management_endpoints(app_config, sample_workbook):
     initialize_database(app_config)
     app = create_app(app_config)

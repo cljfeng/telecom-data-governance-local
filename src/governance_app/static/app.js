@@ -417,13 +417,38 @@ function renderCityProgress(rows) {
 
 async function renderImport() {
   await refreshBatches().catch(() => []);
-  operationCard({
-    title: "数据导入",
-    eyebrow: "Workbook Import",
-    description: "输入本机 Excel 台账文件完整路径，系统会校验四类台账模板并写入本地数据库，同时自动设为当前批次。",
-    fields: [{ id: "workbook-path", label: "台账文件路径", placeholder: "/Users/.../附件：基站电费、租费基础数据治理台账模板.xlsx" }],
-    buttonText: "导入台账",
-    resultTitle: "导入结果",
+  mainContent.innerHTML = `
+    <section class="card">
+      ${shellHeader("数据导入", "Workbook Import")}
+      <div class="operation-panel">
+        <p>输入本机 Excel 台账文件完整路径，先进行模板预检。预检通过后再正式入库，系统会自动生成并选中当前批次。</p>
+        <div class="form-grid">
+          <label class="form-field">
+            <span>台账文件路径</span>
+            <input id="workbook-path" placeholder="/Users/.../附件：基站电费、租费基础数据治理台账模板.xlsx">
+          </label>
+        </div>
+        <div class="button-row">
+          <button id="preview-import" class="secondary-button" type="button">预检模板</button>
+          <button id="operation-submit" class="primary-button" type="button">导入台账</button>
+        </div>
+      </div>
+    </section>
+    <section class="card">
+      ${shellHeader("预检与导入结果", "Result")}
+      <div id="operation-result" class="result-box">请先填写文件路径并执行预检</div>
+    </section>
+  `;
+  document.querySelector("#preview-import").addEventListener("click", async () => {
+    const path = fieldValue("workbook-path");
+    if (!path) return setOperationResult("error", "请填写台账文件路径");
+    setOperationResult("pending", "正在预检模板...");
+    try {
+      const data = await postJson("/api/import/preview", { path });
+      setOperationResult("success", renderImportPreviewResult(data, "预检通过，可以正式导入"));
+    } catch (error) {
+      setOperationResult("error", error.message);
+    }
   });
   document.querySelector("#operation-submit").addEventListener("click", async () => {
     const path = fieldValue("workbook-path");
@@ -434,11 +459,32 @@ async function renderImport() {
       state.batchId = data.batch_id;
       await refreshBatches();
       const counts = data.ledger_counts || {};
-      setOperationResult("success", `<p>导入成功，批次号：<strong>${escapeHtml(data.batch_id)}</strong></p><div class="mini-grid"><span>站址 ${formatNumber(counts.site)}</span><span>铁塔租费 ${formatNumber(counts.tower_rent)}</span><span>电费 ${formatNumber(counts.electricity)}</span><span>发电费 ${formatNumber(counts.generator)}</span></div>`);
+      setOperationResult("success", `<p>导入成功，批次号：<strong>${escapeHtml(data.batch_id)}</strong>。即将进入专项工作台，下一步执行稽核。</p><div class="mini-grid"><span>站址 ${formatNumber(counts.site)}</span><span>铁塔租费 ${formatNumber(counts.tower_rent)}</span><span>电费 ${formatNumber(counts.electricity)}</span><span>发电费 ${formatNumber(counts.generator)}</span></div>`);
+      window.setTimeout(() => activateView("dashboard"), 800);
     } catch (error) {
       setOperationResult("error", error.message);
     }
   });
+}
+
+function renderImportPreviewResult(data, message) {
+  const counts = data.ledger_counts || {};
+  const errors = data.errors || [];
+  return `
+    <p><strong>${escapeHtml(message)}</strong></p>
+    <p>建议批次名称：${escapeHtml(data.batch_name || "未命名批次")}</p>
+    <div class="mini-grid">
+      <span>站址 ${formatNumber(counts.site)}</span>
+      <span>铁塔租费 ${formatNumber(counts.tower_rent)}</span>
+      <span>电费 ${formatNumber(counts.electricity)}</span>
+      <span>发电费 ${formatNumber(counts.generator)}</span>
+    </div>
+    ${
+      errors.length
+        ? `<ul class="path-list">${errors.map((error) => `<li>${escapeHtml(error.field_name)}：${escapeHtml(error.message)}</li>`).join("")}</ul>`
+        : ""
+    }
+  `;
 }
 
 async function renderAudit() {
