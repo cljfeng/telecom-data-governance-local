@@ -8,7 +8,7 @@ const views = {
 };
 
 const state = {
-  batchId: 1,
+  batchId: null,
   batches: [],
 };
 
@@ -59,6 +59,8 @@ async function refreshBatches() {
   const current = state.batches.find((batch) => batch.is_current) || state.batches[0];
   if (current) {
     state.batchId = current.id;
+  } else {
+    state.batchId = null;
   }
   return state.batches;
 }
@@ -69,7 +71,7 @@ function currentBatch() {
 
 function batchOptions() {
   if (!state.batches.length) {
-    return '<option value="1">批次 1</option>';
+    return '<option value="">暂无批次</option>';
   }
   return state.batches
     .map((batch) => `<option value="${batch.id}" ${batch.id === state.batchId ? "selected" : ""}>#${batch.id} ${escapeHtml(batch.name)}</option>`)
@@ -174,6 +176,10 @@ function bindBatchSelector(afterSelect) {
 async function loadDashboard() {
   await refreshBatches().catch(() => []);
   const batch = currentBatch();
+  if (!batch) {
+    renderEmptyDashboard();
+    return;
+  }
   mainContent.innerHTML = `
     <section class="card">
       ${shellHeader("专项治理流程", batch ? `Batch #${batch.id}` : "Batch", renderBatchSelector())}
@@ -206,6 +212,43 @@ async function loadDashboard() {
   } catch (error) {
     document.querySelector("#workflow-area").textContent = `流程加载失败：${error.message}`;
   }
+}
+
+function renderEmptyDashboard() {
+  mainContent.innerHTML = `
+    <section class="card">
+      ${shellHeader("专项治理流程", "Batch")}
+      <div class="operation-panel">
+        <p>当前还没有专项批次。可以先新建一个批次，再导入全省台账；也可以直接到“数据导入”页面导入模板，系统会自动生成批次。</p>
+        <div class="form-grid">
+          <label class="form-field">
+            <span>批次名称</span>
+            <input id="new-batch-name" value="2026年基站电费租费基础数据核查" placeholder="请输入专项批次名称">
+          </label>
+        </div>
+        <button id="create-batch" class="primary-button" type="button">新建批次</button>
+      </div>
+    </section>
+    <section class="card">
+      ${shellHeader("专项概览", "Summary")}
+      <div class="metric-grid">
+        ${metricCard("台账记录", 0, "等待导入台账")}
+        ${metricCard("问题总数", 0, "等待执行稽核")}
+        ${metricCard("涉及地市", 0, "等待生成问题")}
+        ${metricCard("命中规则", 0, "等待执行稽核")}
+      </div>
+    </section>
+    <section class="card">
+      ${shellHeader("地市整改进度", "City Progress")}
+      <div class="empty-state">暂无批次数据</div>
+    </section>
+  `;
+  document.querySelector("#create-batch").addEventListener("click", async () => {
+    const name = fieldValue("new-batch-name");
+    if (!name) return;
+    await postJson("/api/batches", { name });
+    await loadDashboard();
+  });
 }
 
 function renderWorkflow(workflow) {
