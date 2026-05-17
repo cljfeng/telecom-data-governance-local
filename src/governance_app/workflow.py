@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
 from governance_app.db import connect
 from governance_app.models import IssueStatus
@@ -156,7 +157,12 @@ def list_issues(config: AppConfig, batch_id: int, filters: dict[str, str] | None
          limit 500
     """
     with connect(config) as conn:
-        return [dict(row) for row in conn.execute(sql, params)]
+        issues = []
+        for row in conn.execute(sql, params):
+            item = dict(row)
+            item["rule_name"] = rule_metadata(item["rule_id"]).name
+            issues.append(item)
+        return issues
 
 
 def city_progress(config: AppConfig, batch_id: int) -> list[dict[str, Any]]:
@@ -192,9 +198,19 @@ def update_issue_status(config: AppConfig, issue_code: str, status: IssueStatus)
     if status not in ISSUE_STATUSES:
         raise ValueError("invalid issue status")
     with connect(config) as conn:
-        row = conn.execute("select batch_id from issues where issue_code = ?", (issue_code,)).fetchone()
+        row = conn.execute(
+            """
+            select i.batch_id, b.is_archived
+              from issues i
+              join import_batches b on b.id = i.batch_id
+             where i.issue_code = ?
+            """,
+            (issue_code,),
+        ).fetchone()
         if row is None:
             raise ValueError("issue not found")
+        if row["is_archived"]:
+            raise ValueError("batch is archived")
         conn.execute(
             "update issues set status = ?, updated_at = current_timestamp where issue_code = ?",
             (status, issue_code),

@@ -24,6 +24,24 @@ class AuditRule:
 
 
 @dataclass(frozen=True)
+class RuleMetadata:
+    rule_id: str
+    name: str
+    ledger_type: LedgerType | str
+    severity: Severity | str
+    description: str
+    default_suggestion: str
+
+
+@dataclass(frozen=True)
+class RuleThresholds:
+    electricity_price_min: float = 0
+    electricity_price_max: float = 2
+    share_percent_min: float = 0
+    share_percent_max: float = 100
+
+
+@dataclass(frozen=True)
 class AuditLedgerRow:
     ledger_row_id: int
     ledger_type: LedgerType
@@ -54,6 +72,41 @@ def parse_row(row_json: str) -> dict[str, Any]:
     return json.loads(row_json)
 
 
+RULE_CATALOG: dict[str, RuleMetadata] = {
+    "required_site_code": RuleMetadata("required_site_code", "站址编码必填", "site", "high", "检查站址台账电信站址编码是否为空。", "补充电信站址编码"),
+    "required_city": RuleMetadata("required_city", "地市信息必填", "site", "medium", "检查站址台账地市字段是否为空。", "补充地市"),
+    "electricity_price_range": RuleMetadata("electricity_price_range", "电费单价合理性", "electricity", "high", "检查电费单价是否超出默认合理区间。", "核实电费单价或转供电合同"),
+    "electricity_share_percent": RuleMetadata("electricity_share_percent", "电费分摊比例范围", "electricity", "medium", "检查电费分摊比例是否在 0-100 范围内。", "核实共享情况和分摊比例"),
+    "generator_duration_positive": RuleMetadata("generator_duration_positive", "发电时长有效性", "generator", "high", "检查发电时长是否为正数。", "核实发电起止时间和时长"),
+    "electricity_price_benchmark": RuleMetadata("electricity_price_benchmark", "电费单价同类基准偏离", "electricity", "high", "按供电方式比较电费单价，识别明显高于同类基准的记录。", "核实电价依据、合同和报账口径"),
+    "electricity_contract_share_variance": RuleMetadata("electricity_contract_share_variance", "合同分摊比例偏差", "electricity", "medium", "比较实际分摊比例与合同约定分摊比例。", "核对合同约定和实际分摊比例"),
+    "electricity_duplicate_payment": RuleMetadata("electricity_duplicate_payment", "电费重复报账", "electricity", "high", "识别同站址、同电表、同账期的重复电费记录。", "核实同账期是否重复报账"),
+    "electricity_usage_spike_drop": RuleMetadata("electricity_usage_spike_drop", "用电量异常波动", "electricity", "high", "识别同站址电表用电量较历史记录的异常上升或下降。", "核实抄表数据、设备变化和报账周期"),
+    "electricity_capacity_mismatch": RuleMetadata("electricity_capacity_mismatch", "合同容量与实际容量不一致", "electricity", "medium", "比较合同申报容量与实际用电容量。", "核对合同容量和现场实际容量"),
+    "tower_mount_height_exceeds_tower_height": RuleMetadata("tower_mount_height_exceeds_tower_height", "挂高超过塔高", "tower_rent", "high", "检查设备挂高是否超过铁塔塔高。", "核对设备挂高和塔高基础属性"),
+    "tower_site_height_inconsistent": RuleMetadata("tower_site_height_inconsistent", "同站址塔高不一致", "tower_rent", "medium", "识别同一电信站址多订单塔高不一致。", "核对铁塔站址基础属性和订单塔高"),
+    "tower_confirmation_product_changed": RuleMetadata("tower_confirmation_product_changed", "业务确认单产品不一致", "tower_rent", "medium", "识别同一业务确认单前后账期铁塔产品不一致。", "核对业务确认单产品变更依据"),
+    "tower_product_shared_users_inconsistent": RuleMetadata("tower_product_shared_users_inconsistent", "铁塔共享用户数不一致", "tower_rent", "medium", "识别同站址同铁塔产品共享用户数不一致。", "核对同站址多订单的铁塔共享用户数"),
+    "tower_room_shared_users_inconsistent": RuleMetadata("tower_room_shared_users_inconsistent", "机房共享用户数不一致", "tower_rent", "medium", "识别同站址同机房产品共享用户数不一致。", "核对同站址多订单的机房共享用户数"),
+    "tower_duplicate_product_service_fee": RuleMetadata("tower_duplicate_product_service_fee", "产品服务费重复计费", "tower_rent", "high", "识别同账期同站址产品服务费多次计费。", "核实产品服务费是否重复计费"),
+    "tower_duplicate_maintenance_fee": RuleMetadata("tower_duplicate_maintenance_fee", "维护费重复计费", "tower_rent", "high", "识别同账期同站址维护费多次计费。", "核实维护费是否重复计费"),
+    "tower_duplicate_site_fee": RuleMetadata("tower_duplicate_site_fee", "场地费重复计费", "tower_rent", "high", "识别同账期同站址场地费多次计费。", "核实场地费是否重复计费"),
+    "tower_duplicate_power_intro_fee": RuleMetadata("tower_duplicate_power_intro_fee", "电力引入费重复计费", "tower_rent", "high", "识别同账期同站址电力引入费多次计费。", "核实电力引入费是否重复计费"),
+    "tower_product_units_zero_fee_nonzero": RuleMetadata("tower_product_units_zero_fee_nonzero", "产品单元为零但费用非零", "tower_rent", "high", "检查产品单元数为零时是否仍产生产品服务费。", "核对产品配置和费用生成口径"),
+    "tower_maintenance_discount_not_lowest": RuleMetadata("tower_maintenance_discount_not_lowest", "维护费共享折扣非最优惠", "tower_rent", "medium", "检查共享场景下维护费共享折扣是否异常。", "核对共享折扣政策和适用用户数"),
+    "tower_original_owner_power_intro_fee_nonzero": RuleMetadata("tower_original_owner_power_intro_fee_nonzero", "原产权方电力引入费非零", "tower_rent", "high", "检查原产权方站址是否仍收取电力引入费。", "核实站址产权属性和电力引入费依据"),
+}
+
+DEFAULT_THRESHOLDS = RuleThresholds()
+
+
+def rule_metadata(rule_id: str) -> RuleMetadata:
+    return RULE_CATALOG.get(
+        rule_id,
+        RuleMetadata(rule_id, rule_id, "unknown", "medium", f"未登记规则：{rule_id}", "按规则编号核实问题明细"),
+    )
+
+
 def all_rules() -> list[AuditRule]:
     return [
         AuditRule("required_site_code", "site", "high", _required("电信站址编码", "站址编码为空", "补充电信站址编码")),
@@ -62,13 +115,25 @@ def all_rules() -> list[AuditRule]:
             "electricity_price_range",
             "electricity",
             "high",
-            _number_range("电费单价", 0, 2, "电费单价超出 0-2 元合理范围", "核实电费单价或转供电合同"),
+            _number_range(
+                "电费单价",
+                DEFAULT_THRESHOLDS.electricity_price_min,
+                DEFAULT_THRESHOLDS.electricity_price_max,
+                "电费单价超出 0-2 元合理范围",
+                "核实电费单价或转供电合同",
+            ),
         ),
         AuditRule(
             "electricity_share_percent",
             "electricity",
             "medium",
-            _number_range("分摊比例(%)", 0, 100, "分摊比例不在 0-100 范围", "核实共享情况和分摊比例"),
+            _number_range(
+                "分摊比例(%)",
+                DEFAULT_THRESHOLDS.share_percent_min,
+                DEFAULT_THRESHOLDS.share_percent_max,
+                "分摊比例不在 0-100 范围",
+                "核实共享情况和分摊比例",
+            ),
         ),
         AuditRule(
             "generator_duration_positive",

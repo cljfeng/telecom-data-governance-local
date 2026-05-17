@@ -153,7 +153,10 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         batch_id, error = _batch_id_from_payload(payload)
         if error:
             return error
-        paths = export_city_issue_packages(config, batch_id)
+        try:
+            paths = export_city_issue_packages(config, batch_id)
+        except ValueError as exc:
+            return _json({"error": str(exc)}, status=400)
         return _json({"paths": [str(path) for path in paths]})
     if method == "POST" and parsed.path == "/api/corrections":
         payload, error = _json_body(body)
@@ -162,7 +165,10 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         path_value = payload.get("path")
         if not isinstance(path_value, str) or not path_value:
             return _json({"error": "path is required"}, status=400)
-        result = import_correction_return(config, Path(path_value))
+        try:
+            result = import_correction_return(config, Path(path_value))
+        except ValueError as exc:
+            return _json({"error": str(exc)}, status=400)
         return _json({"matched_count": result.matched_count, "errors": result.errors}, status=200 if not result.errors else 400)
     if method == "POST" and parsed.path == "/api/issues/status":
         payload, error = _json_body(body)
@@ -175,7 +181,7 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         try:
             update_issue_status(config, issue_code, status_value)
         except ValueError as exc:
-            return _json({"error": str(exc)}, status=404)
+            return _json({"error": str(exc)}, status=400)
         return _json({"status": "updated"})
     if method == "POST" and parsed.path == "/api/archive":
         payload, error = _json_body(body)
@@ -184,7 +190,10 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         batch_id, error = _batch_id_from_payload(payload)
         if error:
             return error
-        path = archive_batch(config, batch_id)
+        try:
+            path = archive_batch(config, batch_id)
+        except ValueError as exc:
+            return _json({"error": str(exc)}, status=400)
         return _json({"path": str(path)})
     if method == "POST" and parsed.path == "/api/backup":
         path = create_backup(config)

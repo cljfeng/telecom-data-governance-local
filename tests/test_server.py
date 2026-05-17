@@ -1,5 +1,7 @@
 import json
+from pathlib import Path
 
+from governance_app.config import AppConfig
 from governance_app.db import connect, initialize_database
 from governance_app.server import create_app
 
@@ -166,6 +168,8 @@ def test_issue_city_progress_status_and_archive_endpoints(app_config, sample_wor
     with connect(app_config) as conn:
         conn.execute("update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
     app.handle_test_request("POST", "/api/audit", json.dumps({"batch_id": batch_id}))
+    status, headers, body = app.handle_test_request("POST", "/api/export", json.dumps({"batch_id": batch_id}))
+    exported = json.loads(body)["paths"][0]
 
     status, headers, body = app.handle_test_request("GET", f"/api/issues?batch_id={batch_id}&city=杭州")
 
@@ -187,10 +191,46 @@ def test_issue_city_progress_status_and_archive_endpoints(app_config, sample_wor
     assert status == 200
     assert json.loads(body)["cities"][0]["completion_rate"] == 100.0
 
+    from openpyxl import load_workbook
+
+    wb = load_workbook(exported)
+    ws = wb["整改问题清单"]
+    ws["L2"] = "已修复"
+    ws["M2"] = "已补正"
+    wb.save(exported)
+
+    status, headers, body = app.handle_test_request("POST", "/api/corrections", json.dumps({"path": exported}))
+
+    assert status == 200
+
     status, headers, body = app.handle_test_request("POST", "/api/archive", json.dumps({"batch_id": batch_id}))
 
     assert status == 200
     assert json.loads(body)["path"].endswith("专项治理归档汇总.xlsx")
+
+
+def test_export_endpoint_returns_json_error_before_audit(app_config, sample_workbook):
+    initialize_database(app_config)
+    app = create_app(app_config)
+    status, headers, body = app.handle_test_request("POST", "/api/import", json.dumps({"path": str(sample_workbook)}))
+    batch_id = json.loads(body)["batch_id"]
+
+    status, headers, body = app.handle_test_request("POST", "/api/export", json.dumps({"batch_id": batch_id}))
+
+    assert status == 400
+    assert json.loads(body)["error"] == "batch must be audited before export"
+
+
+def test_archive_endpoint_returns_json_error_before_return(app_config, sample_workbook):
+    initialize_database(app_config)
+    app = create_app(app_config)
+    status, headers, body = app.handle_test_request("POST", "/api/import", json.dumps({"path": str(sample_workbook)}))
+    batch_id = json.loads(body)["batch_id"]
+
+    status, headers, body = app.handle_test_request("POST", "/api/archive", json.dumps({"batch_id": batch_id}))
+
+    assert status == 400
+    assert json.loads(body)["error"] == "batch must be ready for archive"
 
 
 def test_backup_and_restore_endpoints(app_config, sample_workbook):
@@ -217,3 +257,25 @@ def test_static_handler_disables_browser_cache():
 
     assert RequestHandler.extra_static_headers()["Cache-Control"] == "no-store, max-age=0"
     assert RequestHandler.extra_static_headers()["Pragma"] == "no-cache"
+
+
+def test_workbench_static_assets_use_lightweight_modules():
+    static_dir = AppConfig.for_workspace(Path(".")).static_dir
+    index_html = (static_dir / "index.html").read_text(encoding="utf-8")
+    app_js = (static_dir / "app.js").read_text(encoding="utf-8")
+
+    assert '<script type="module" src="/app.js' in index_html
+    assert 'from "/api.js' in app_js
+    assert 'from "/state.js' in app_js
+    assert 'from "/ui.js' in app_js
+    assert (static_dir / "api.js").exists()
+    assert (static_dir / "state.js").exists()
+    assert (static_dir / "ui.js").exists()
+
+
+def test_readme_includes_operator_flow_and_faq():
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "业务人员使用流程" in readme
+    assert "常见问题" in readme
+    assert "验收流程" in readme

@@ -57,6 +57,7 @@ def test_issue_filters_and_city_progress(app_config, sample_workbook):
     assert len(issues) == 1
     assert issues[0]["city"] == "杭州"
     assert issues[0]["ledger_type"] == "electricity"
+    assert issues[0]["rule_name"] == "电费单价合理性"
     assert progress[0]["city"] == "杭州"
     assert progress[0]["total_count"] == 1
     assert progress[0]["closed_count"] == 1
@@ -83,3 +84,17 @@ def test_update_issue_status_rejects_unknown_status(app_config, sample_workbook)
 
     with pytest.raises(ValueError, match="invalid issue status"):
         update_issue_status(app_config, issue["issue_code"], "bad_status")
+
+
+def test_update_issue_status_rejects_archived_batch(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute("update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
+    run_audit(app_config, imported.batch_id)
+    issue = list_issues(app_config, imported.batch_id, {})[0]
+    with connect(app_config) as conn:
+        conn.execute("update import_batches set status = 'archived', is_archived = 1 where id = ?", (imported.batch_id,))
+
+    with pytest.raises(ValueError, match="batch is archived"):
+        update_issue_status(app_config, issue["issue_code"], "closed")

@@ -3,12 +3,22 @@ from pathlib import Path
 from openpyxl import Workbook
 
 from governance_app.analytics import dashboard_summary
+from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
 from governance_app.db import connect
 from governance_app.workflow import city_progress
 
 
 def archive_batch(config: AppConfig, batch_id: int) -> Path:
+    with connect(config) as conn:
+        batch = conn.execute("select status, is_archived from import_batches where id = ?", (batch_id,)).fetchone()
+        if batch is None:
+            raise ValueError("batch not found")
+        if batch["is_archived"]:
+            raise ValueError("batch is archived")
+        if batch["status"] != "returning":
+            raise ValueError("batch must be ready for archive")
+
     archive_dir = config.export_dir / f"archive_batch_{batch_id}"
     archive_dir.mkdir(parents=True, exist_ok=True)
     path = archive_dir / f"批次{batch_id}_专项治理归档汇总.xlsx"
@@ -43,7 +53,7 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
         )
 
     ws = wb.create_sheet("问题清单")
-    ws.append(["问题编号", "地市", "区县", "站址编码", "站址名称", "台账类型", "规则", "风险", "状态", "问题说明", "整改说明"])
+    ws.append(["问题编号", "地市", "区县", "站址编码", "站址名称", "台账类型", "规则编号", "规则名称", "风险", "状态", "问题说明", "整改说明"])
     with connect(config) as conn:
         for issue in conn.execute(
             """
@@ -64,12 +74,29 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
                     issue["telecom_site_name"],
                     issue["ledger_type"],
                     issue["rule_id"],
+                    rule_metadata(issue["rule_id"]).name,
                     issue["severity"],
                     issue["status"],
                     issue["message"],
                     issue["correction_note"],
                 ]
             )
+
+        ws = wb.create_sheet("操作日志")
+        ws.append(["操作", "说明", "时间"])
+        for log in conn.execute(
+            """
+            select operation, message, created_at
+              from operation_logs
+             where batch_id = ?
+             order by id
+            """,
+            (batch_id,),
+        ):
+            ws.append([log["operation"], log["message"], log["created_at"]])
+
+    wb.save(path)
+    with connect(config) as conn:
         conn.execute(
             "update import_batches set status = 'archived', is_archived = 1, archived_at = current_timestamp where id = ?",
             (batch_id,),
@@ -78,6 +105,4 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
             "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
             (batch_id, "archive", f"生成归档汇总：{path.name}"),
         )
-
-    wb.save(path)
     return path

@@ -1,6 +1,7 @@
 import json
 
 from governance_app.audit_engine import run_audit
+from governance_app.audit_rules import DEFAULT_THRESHOLDS, all_batch_rules, all_rules, rule_metadata
 from governance_app.db import connect, initialize_database
 from governance_app.importer import import_workbook
 
@@ -20,6 +21,31 @@ def test_run_audit_generates_issue_for_invalid_electricity_price(app_config, sam
     with connect(app_config) as conn:
         issue = conn.execute("select rule_id, status from issues where rule_id = 'electricity_price_range'").fetchone()
         assert issue["status"] == "pending_export"
+
+
+def test_rule_catalog_covers_all_audit_rules():
+    rule_ids = {rule.rule_id for rule in all_rules()} | {rule.rule_id for rule in all_batch_rules()}
+
+    metadata = {rule_id: rule_metadata(rule_id) for rule_id in rule_ids}
+
+    assert metadata["electricity_price_range"].name == "电费单价合理性"
+    assert all(item.name for item in metadata.values())
+    assert all(item.description for item in metadata.values())
+    assert all(item.default_suggestion for item in metadata.values())
+
+
+def test_unknown_rule_metadata_falls_back_to_rule_id():
+    metadata = rule_metadata("future_rule_not_registered")
+
+    assert metadata.rule_id == "future_rule_not_registered"
+    assert metadata.name == "future_rule_not_registered"
+
+
+def test_default_rule_thresholds_document_key_ranges():
+    assert DEFAULT_THRESHOLDS.electricity_price_min == 0
+    assert DEFAULT_THRESHOLDS.electricity_price_max == 2
+    assert DEFAULT_THRESHOLDS.share_percent_min == 0
+    assert DEFAULT_THRESHOLDS.share_percent_max == 100
 
 
 def test_run_audit_generates_stable_issue_codes(app_config, sample_workbook):

@@ -1,3 +1,7 @@
+import { fetchJson, postJson } from "/api.js?v=20260517-1";
+import { state } from "/state.js?v=20260517-1";
+import { escapeHtml, formatNumber, withBusy } from "/ui.js?v=20260517-1";
+
 const views = {
   dashboard: "专项工作台",
   batches: "批次管理",
@@ -8,28 +12,12 @@ const views = {
   reports: "分析报表",
 };
 
-const state = {
-  batchId: null,
-  batches: [],
-};
-
 const pageTitle = document.querySelector("#page-title");
 const mainContent = document.querySelector("#main-content");
 const statusPill = document.querySelector("#service-status");
 const headerBatch = document.querySelector("#header-batch");
 const lastSync = document.querySelector("#last-sync");
 const navButtons = Array.from(document.querySelectorAll(".nav-button"));
-
-function formatNumber(value) {
-  return new Intl.NumberFormat("zh-CN").format(Number(value || 0));
-}
-
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (character) => {
-    const entities = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-    return entities[character];
-  });
-}
 
 function setStatus(stateName, text) {
   statusPill.textContent = text;
@@ -38,28 +26,6 @@ function setStatus(stateName, text) {
     const now = new Date();
     lastSync.textContent = `最近同步 ${now.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
   }
-}
-
-async function fetchJson(url, options = {}) {
-  const response = await fetch(url, {
-    ...options,
-    headers: { Accept: "application/json", ...(options.headers || {}) },
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(data.error || `HTTP ${response.status}`);
-    error.data = data;
-    throw error;
-  }
-  return data;
-}
-
-async function postJson(url, payload) {
-  return fetchJson(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
 }
 
 async function refreshBatches() {
@@ -537,7 +503,7 @@ function renderRiskSummary(rows) {
       return `
         <div class="risk-row">
           <div>
-            <strong>${escapeHtml(row.rule_id)}</strong>
+            <strong>${escapeHtml(row.rule_name || row.rule_id)}</strong>
             <span>${formatNumber(count)} 个问题</span>
           </div>
           <span class="risk-bar"><span style="width: ${(count / max) * 100}%"></span></span>
@@ -590,41 +556,45 @@ async function renderImport() {
     </section>
   `;
   renderRecentFiles(recent.files || []);
-  document.querySelector("#preview-import").addEventListener("click", async () => {
+  document.querySelector("#preview-import").addEventListener("click", async (event) => {
     const path = fieldValue("workbook-path");
     if (!path) return setOperationResult("error", "请填写台账文件路径");
-    setOperationResult("pending", "正在预检模板...");
-    try {
-      const data = await postJson("/api/import/preview", { path });
-      setOperationResult("success", renderImportPreviewResult(data, "预检通过，可以正式导入"));
-      const recentData = await fetchJson("/api/import/recent").catch(() => ({ files: [] }));
-      renderRecentFiles(recentData.files || []);
-    } catch (error) {
-      if (error.data) {
-        setOperationResult("error", renderImportPreviewResult(error.data, "预检未通过，请按错误明细修正后重试"));
-      } else {
+    await withBusy(event.currentTarget, "预检中...", async () => {
+      setOperationResult("pending", "正在预检模板...");
+      try {
+        const data = await postJson("/api/import/preview", { path });
+        setOperationResult("success", renderImportPreviewResult(data, "预检通过，可以正式导入"));
+        const recentData = await fetchJson("/api/import/recent").catch(() => ({ files: [] }));
+        renderRecentFiles(recentData.files || []);
+      } catch (error) {
+        if (error.data) {
+          setOperationResult("error", renderImportPreviewResult(error.data, "预检未通过，请按错误明细修正后重试"));
+        } else {
+          setOperationResult("error", error.message);
+        }
+        const recentData = await fetchJson("/api/import/recent").catch(() => ({ files: [] }));
+        renderRecentFiles(recentData.files || []);
+      }
+    });
+  });
+  document.querySelector("#operation-submit").addEventListener("click", async (event) => {
+    const path = fieldValue("workbook-path");
+    if (!path) return setOperationResult("error", "请填写台账文件路径");
+    await withBusy(event.currentTarget, "导入中...", async () => {
+      setOperationResult("pending", "正在导入...");
+      try {
+        const data = await postJson("/api/import", { path });
+        state.batchId = data.batch_id;
+        await refreshBatches();
+        const counts = data.ledger_counts || {};
+        setOperationResult("success", `<p>导入成功，批次号：<strong>${escapeHtml(data.batch_id)}</strong>。即将进入专项工作台，下一步执行稽核。</p><div class="mini-grid"><span>站址 ${formatNumber(counts.site)}</span><span>铁塔租费 ${formatNumber(counts.tower_rent)}</span><span>电费 ${formatNumber(counts.electricity)}</span><span>发电费 ${formatNumber(counts.generator)}</span></div>`);
+        const recentData = await fetchJson("/api/import/recent").catch(() => ({ files: [] }));
+        renderRecentFiles(recentData.files || []);
+        window.setTimeout(() => activateView("dashboard"), 800);
+      } catch (error) {
         setOperationResult("error", error.message);
       }
-      const recentData = await fetchJson("/api/import/recent").catch(() => ({ files: [] }));
-      renderRecentFiles(recentData.files || []);
-    }
-  });
-  document.querySelector("#operation-submit").addEventListener("click", async () => {
-    const path = fieldValue("workbook-path");
-    if (!path) return setOperationResult("error", "请填写台账文件路径");
-    setOperationResult("pending", "正在导入...");
-    try {
-      const data = await postJson("/api/import", { path });
-      state.batchId = data.batch_id;
-      await refreshBatches();
-      const counts = data.ledger_counts || {};
-      setOperationResult("success", `<p>导入成功，批次号：<strong>${escapeHtml(data.batch_id)}</strong>。即将进入专项工作台，下一步执行稽核。</p><div class="mini-grid"><span>站址 ${formatNumber(counts.site)}</span><span>铁塔租费 ${formatNumber(counts.tower_rent)}</span><span>电费 ${formatNumber(counts.electricity)}</span><span>发电费 ${formatNumber(counts.generator)}</span></div>`);
-      const recentData = await fetchJson("/api/import/recent").catch(() => ({ files: [] }));
-      renderRecentFiles(recentData.files || []);
-      window.setTimeout(() => activateView("dashboard"), 800);
-    } catch (error) {
-      setOperationResult("error", error.message);
-    }
+    });
   });
 }
 
@@ -717,9 +687,11 @@ async function renderAudit() {
     </section>
   `;
   bindBatchSelector(renderAudit);
-  document.querySelector("#run-audit").addEventListener("click", async () => {
-    await postJson("/api/audit", { batch_id: state.batchId });
-    await loadIssues();
+  document.querySelector("#run-audit").addEventListener("click", async (event) => {
+    await withBusy(event.currentTarget, "稽核中...", async () => {
+      await postJson("/api/audit", { batch_id: state.batchId });
+      await loadIssues();
+    });
   });
   document.querySelector("#load-issues").addEventListener("click", loadIssues);
   await loadIssues();
@@ -754,7 +726,7 @@ function renderIssueRows(issues) {
           <td>${escapeHtml(issue.issue_code)}</td>
           <td>${escapeHtml(issue.city)}</td>
           <td>${escapeHtml(ledgerLabel(issue.ledger_type))}</td>
-          <td>${escapeHtml(issue.rule_id)}</td>
+          <td>${escapeHtml(issue.rule_name || issue.rule_id)}</td>
           <td><span class="chip chip-${severityTone(issue.severity)}">${escapeHtml(issue.severity)}</span></td>
           <td><span class="chip chip-info">${escapeHtml(statusLabel(issue.status))}</span></td>
           <td>${escapeHtml(issue.message)}</td>
@@ -785,16 +757,18 @@ async function renderExport() {
     buttonText: "导出整改包",
     resultTitle: "导出路径",
   });
-  document.querySelector("#operation-submit").addEventListener("click", async () => {
+  document.querySelector("#operation-submit").addEventListener("click", async (event) => {
     const batchId = Number(fieldValue("export-batch-id"));
     if (!Number.isInteger(batchId) || batchId <= 0) return setOperationResult("error", "请填写有效批次号");
-    setOperationResult("pending", "正在导出...");
-    try {
-      const data = await postJson("/api/export", { batch_id: batchId });
-      setOperationResult("success", data.paths?.length ? resultList(data.paths) : "当前批次没有可导出的问题");
-    } catch (error) {
-      setOperationResult("error", error.message);
-    }
+    await withBusy(event.currentTarget, "导出中...", async () => {
+      setOperationResult("pending", "正在导出...");
+      try {
+        const data = await postJson("/api/export", { batch_id: batchId });
+        setOperationResult("success", data.paths?.length ? resultList(data.paths) : "当前批次没有可导出的问题");
+      } catch (error) {
+        setOperationResult("error", error.message);
+      }
+    });
   });
 }
 
@@ -813,18 +787,20 @@ async function renderCorrections() {
     resultTitle: "回传结果",
   });
   mainContent.insertAdjacentHTML("beforeend", `<section class="card">${shellHeader("地市整改进度", "Progress")}<div class="table-wrap"><table><thead><tr><th>地市</th><th>问题</th><th>待整改</th><th>待复核</th><th>已关闭</th><th>完成率</th><th>状态</th></tr></thead><tbody id="city-progress-table"></tbody></table></div></section>`);
-  document.querySelector("#operation-submit").addEventListener("click", async () => {
+  document.querySelector("#operation-submit").addEventListener("click", async (event) => {
     const path = fieldValue("correction-path");
     if (!path) return setOperationResult("error", "请填写回传文件路径");
-    setOperationResult("pending", "正在导入回传...");
-    try {
-      const data = await postJson("/api/corrections", { path });
-      setOperationResult("success", `匹配问题数：${formatNumber(data.matched_count)}${data.errors?.length ? `；错误：${data.errors.map(escapeHtml).join("；")}` : ""}`);
-      const progress = await fetchJson(`/api/city-progress?batch_id=${state.batchId}`);
-      renderCityProgress(progress.cities || []);
-    } catch (error) {
-      setOperationResult("error", error.message);
-    }
+    await withBusy(event.currentTarget, "导入中...", async () => {
+      setOperationResult("pending", "正在导入回传...");
+      try {
+        const data = await postJson("/api/corrections", { path });
+        setOperationResult("success", `匹配问题数：${formatNumber(data.matched_count)}${data.errors?.length ? `；错误：${data.errors.map(escapeHtml).join("；")}` : ""}`);
+        const progress = await fetchJson(`/api/city-progress?batch_id=${state.batchId}`);
+        renderCityProgress(progress.cities || []);
+      } catch (error) {
+        setOperationResult("error", error.message);
+      }
+    });
   });
   const progress = await fetchJson(`/api/city-progress?batch_id=${state.batchId}`).catch(() => ({ cities: [] }));
   renderCityProgress(progress.cities || []);
@@ -847,14 +823,16 @@ async function renderReports() {
     </section>
   `;
   bindBatchSelector(renderReports);
-  document.querySelector("#archive-batch").addEventListener("click", async () => {
-    setOperationResult("pending", "正在生成归档汇总...");
-    try {
-      const data = await postJson("/api/archive", { batch_id: state.batchId });
-      setOperationResult("success", resultList([data.path]));
-    } catch (error) {
-      setOperationResult("error", error.message);
-    }
+  document.querySelector("#archive-batch").addEventListener("click", async (event) => {
+    await withBusy(event.currentTarget, "归档中...", async () => {
+      setOperationResult("pending", "正在生成归档汇总...");
+      try {
+        const data = await postJson("/api/archive", { batch_id: state.batchId });
+        setOperationResult("success", resultList([data.path]));
+      } catch (error) {
+        setOperationResult("error", error.message);
+      }
+    });
   });
 }
 

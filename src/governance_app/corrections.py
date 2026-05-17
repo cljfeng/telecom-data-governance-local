@@ -33,6 +33,7 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
     matched_count = 0
     errors: list[str] = []
     matched_batch_ids: set[int] = set()
+    seen_issue_codes: set[str] = set()
     with connect(config) as conn:
         for row_number, values in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
             if _is_blank_row(values):
@@ -46,6 +47,22 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
             corrected = values[index["整改后值"]]
             if _is_blank(result) and _is_blank(note) and _is_blank(corrected):
                 continue
+            issue_code_text = str(issue_code)
+            if issue_code_text in seen_issue_codes:
+                errors.append(f"第{row_number}行问题编号重复：{issue_code_text}")
+                continue
+            seen_issue_codes.add(issue_code_text)
+            batch_row = conn.execute(
+                """
+                select i.batch_id, b.is_archived
+                  from issues i
+                  join import_batches b on b.id = i.batch_id
+                 where i.issue_code = ?
+                """,
+                (issue_code_text,),
+            ).fetchone()
+            if batch_row is not None and batch_row["is_archived"]:
+                raise ValueError("batch is archived")
             cursor = conn.execute(
                 """
                 update issues
@@ -58,13 +75,12 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
                 (
                     None if corrected is None else str(corrected),
                     None if note is None else str(note or result or ""),
-                    str(issue_code),
+                    issue_code_text,
                 ),
             )
             if cursor.rowcount == 0:
                 errors.append(f"第{row_number}行问题编号无法匹配：{issue_code}")
             else:
-                batch_row = conn.execute("select batch_id from issues where issue_code = ?", (str(issue_code),)).fetchone()
                 if batch_row is not None:
                     matched_batch_ids.add(batch_row["batch_id"])
                 matched_count += 1
