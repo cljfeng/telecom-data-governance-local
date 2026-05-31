@@ -104,6 +104,35 @@ def test_import_preview_endpoint_returns_counts_without_creating_batch(app_confi
         assert conn.execute("select count(*) as c from import_batches").fetchone()["c"] == 0
 
 
+def test_import_endpoint_accepts_append_and_replace_strategy(app_config, sample_workbook):
+    initialize_database(app_config)
+    app = create_app(app_config)
+    status, headers, body = app.handle_test_request("POST", "/api/import", json.dumps({"path": str(sample_workbook)}))
+    batch_id = json.loads(body)["batch_id"]
+
+    status, headers, body = app.handle_test_request(
+        "POST",
+        "/api/import",
+        json.dumps({"path": str(sample_workbook), "strategy": "append", "batch_id": batch_id}),
+    )
+
+    assert status == 200
+    assert json.loads(body)["batch_id"] == batch_id
+    with connect(app_config) as conn:
+        assert conn.execute("select count(*) as c from ledger_rows where batch_id = ?", (batch_id,)).fetchone()["c"] == 8
+
+    status, headers, body = app.handle_test_request(
+        "POST",
+        "/api/import",
+        json.dumps({"path": str(sample_workbook), "strategy": "replace", "batch_id": batch_id}),
+    )
+
+    assert status == 200
+    assert json.loads(body)["batch_id"] == batch_id
+    with connect(app_config) as conn:
+        assert conn.execute("select count(*) as c from ledger_rows where batch_id = ?", (batch_id,)).fetchone()["c"] == 4
+
+
 def test_import_recent_files_and_error_export_endpoints(app_config, workbook_missing_site_code):
     initialize_database(app_config)
     app = create_app(app_config)
@@ -233,6 +262,70 @@ def test_archive_endpoint_returns_json_error_before_return(app_config, sample_wo
     assert json.loads(body)["error"] == "batch must be ready for archive"
 
 
+def test_archive_precheck_endpoint_reports_blockers(app_config, sample_workbook):
+    initialize_database(app_config)
+    app = create_app(app_config)
+    status, headers, body = app.handle_test_request("POST", "/api/import", json.dumps({"path": str(sample_workbook)}))
+    batch_id = json.loads(body)["batch_id"]
+    with connect(app_config) as conn:
+        conn.execute("update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
+    app.handle_test_request("POST", "/api/audit", json.dumps({"batch_id": batch_id}))
+    app.handle_test_request("POST", "/api/export", json.dumps({"batch_id": batch_id}))
+    with connect(app_config) as conn:
+        conn.execute("update import_batches set status = 'returning' where id = ?", (batch_id,))
+
+    status, headers, body = app.handle_test_request("GET", f"/api/archive/precheck?batch_id={batch_id}")
+
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["ready"] is False
+    assert payload["open_issue_count"] == 1
+
+
+def test_rules_api_lists_settings_and_updates_rule_config(app_config):
+    initialize_database(app_config)
+    app = create_app(app_config)
+
+    status, headers, body = app.handle_test_request("GET", "/api/rules")
+
+    assert status == 200
+    payload = json.loads(body)
+    price_rule = next(rule for rule in payload["rules"] if rule["rule_id"] == "electricity_price_range")
+    assert price_rule["enabled"] is True
+    assert price_rule["config"] == {}
+
+    status, headers, body = app.handle_test_request(
+        "POST",
+        "/api/rules/settings",
+        json.dumps({"rule_id": "electricity_price_range", "enabled": False, "config": {"max": 3}}, ensure_ascii=False),
+    )
+
+    assert status == 200
+    assert json.loads(body) == {"status": "updated"}
+    status, headers, body = app.handle_test_request("GET", "/api/rules")
+    payload = json.loads(body)
+    price_rule = next(rule for rule in payload["rules"] if rule["rule_id"] == "electricity_price_range")
+    assert price_rule["enabled"] is False
+    assert price_rule["config"] == {"max": 3}
+
+
+def test_ledger_rows_endpoint_filters_current_batch_data(app_config, sample_workbook):
+    initialize_database(app_config)
+    app = create_app(app_config)
+    status, headers, body = app.handle_test_request("POST", "/api/import", json.dumps({"path": str(sample_workbook)}))
+    batch_id = json.loads(body)["batch_id"]
+
+    status, headers, body = app.handle_test_request(
+        "GET",
+        f"/api/ledger-rows?batch_id={batch_id}&ledger_type=electricity&city=杭州&site_code=HZ001",
+    )
+
+    assert status == 200
+    rows = json.loads(body)["rows"]
+    assert len(rows) == 1
+    assert rows[0]["field_groups"]["电表报账"]["电表户号"] == "M001"
+
+
 def test_backup_and_restore_endpoints(app_config, sample_workbook):
     initialize_database(app_config)
     app = create_app(app_config)
@@ -252,6 +345,36 @@ def test_backup_and_restore_endpoints(app_config, sample_workbook):
     assert json.loads(body)["status"] == "restored"
 
 
+def test_settings_endpoint_reports_local_paths(app_config):
+    initialize_database(app_config)
+    app = create_app(app_config)
+
+    status, headers, body = app.handle_test_request("GET", "/api/settings")
+
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["database_path"].endswith("governance.sqlite3")
+    assert payload["export_dir"].endswith("exports")
+    assert payload["backup_dir"].endswith("backups")
+    assert payload["template_version"] == "2026-05-05"
+
+
+def test_restore_endpoint_creates_safety_backup(app_config, sample_workbook):
+    initialize_database(app_config)
+    app = create_app(app_config)
+    app.handle_test_request("POST", "/api/import", json.dumps({"path": str(sample_workbook)}))
+    status, headers, body = app.handle_test_request("POST", "/api/backup", "{}")
+    backup_path = json.loads(body)["path"]
+
+    status, headers, body = app.handle_test_request("POST", "/api/restore", json.dumps({"path": backup_path}))
+
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["status"] == "restored"
+    assert payload["safety_backup_path"].endswith(".sqlite3")
+    assert Path(payload["safety_backup_path"]).exists()
+
+
 def test_static_handler_disables_browser_cache():
     from governance_app.server import RequestHandler
 
@@ -263,14 +386,64 @@ def test_workbench_static_assets_use_lightweight_modules():
     static_dir = AppConfig.for_workspace(Path(".")).static_dir
     index_html = (static_dir / "index.html").read_text(encoding="utf-8")
     app_js = (static_dir / "app.js").read_text(encoding="utf-8")
+    ledger_data_js = (static_dir / "ledger-data.js").read_text(encoding="utf-8")
 
     assert '<script type="module" src="/app.js' in index_html
+    assert 'data-view="ledgerData">数据整理' in index_html
     assert 'from "/api.js' in app_js
     assert 'from "/state.js' in app_js
     assert 'from "/ui.js' in app_js
+    assert 'from "/ledger-data.js' in app_js
+    assert 'from "/rules.js' in app_js
+    assert 'from "/settings.js' in app_js
+    assert 'from "/analytics.js' in app_js
+    assert "/api/ledger-rows?" in ledger_data_js
+    assert 'data-view="rules">规则设置' in index_html
+    assert 'data-view="settings">本地设置' in index_html
     assert (static_dir / "api.js").exists()
     assert (static_dir / "state.js").exists()
     assert (static_dir / "ui.js").exists()
+    assert (static_dir / "ledger-data.js").exists()
+    assert (static_dir / "rules.js").exists()
+    assert (static_dir / "settings.js").exists()
+    assert (static_dir / "analytics.js").exists()
+
+
+def test_rules_static_module_calls_rules_api():
+    static_dir = AppConfig.for_workspace(Path(".")).static_dir
+    rules_js = (static_dir / "rules.js").read_text(encoding="utf-8")
+
+    assert "/api/rules" in rules_js
+    assert "/api/rules/settings" in rules_js
+    assert "electricity_price_range" in rules_js
+
+
+def test_import_page_exposes_import_strategies():
+    static_dir = AppConfig.for_workspace(Path(".")).static_dir
+    app_js = (static_dir / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="import-strategy"' in app_js
+    assert 'value="new"' in app_js
+    assert 'value="append"' in app_js
+    assert 'value="replace"' in app_js
+
+
+def test_settings_static_module_calls_settings_and_backup_api():
+    static_dir = AppConfig.for_workspace(Path(".")).static_dir
+    settings_js = (static_dir / "settings.js").read_text(encoding="utf-8")
+
+    assert "/api/settings" in settings_js
+    assert "/api/backup" in settings_js
+    assert "/api/restore" in settings_js
+
+
+def test_analytics_static_module_uses_dashboard_summary():
+    static_dir = AppConfig.for_workspace(Path(".")).static_dir
+    analytics_js = (static_dir / "analytics.js").read_text(encoding="utf-8")
+
+    assert "/api/dashboard?batch_id=" in analytics_js
+    assert "issues_by_severity" in analytics_js
+    assert "closure_rate" in analytics_js
 
 
 def test_readme_includes_operator_flow_and_faq():
@@ -279,3 +452,23 @@ def test_readme_includes_operator_flow_and_faq():
     assert "业务人员使用流程" in readme
     assert "常见问题" in readme
     assert "验收流程" in readme
+
+
+def test_start_script_documents_local_launch_command():
+    script = Path("scripts/start.sh")
+
+    assert script.exists()
+    content = script.read_text(encoding="utf-8")
+    assert "PYTHONPATH=src" in content
+    assert "governance_app.server" in content
+    assert "--port" in content
+
+
+def test_check_script_runs_project_verification_commands():
+    script = Path("scripts/check.sh")
+
+    assert script.exists()
+    content = script.read_text(encoding="utf-8")
+    assert ".venv/bin/python -m pytest -q" in content
+    assert "node --check src/governance_app/static/app.js" in content
+    assert "bash -n scripts/start.sh" in content

@@ -7,6 +7,38 @@ EXPECTED_SHEETS: dict[str, LedgerType] = {
     "发电费台账": "generator",
 }
 
+SHEET_ALIASES: dict[LedgerType, tuple[str, ...]] = {
+    "site": ("站址台账", "站址清单", "站址基础台账", "站址基础信息"),
+    "tower_rent": ("铁塔租费台账", "铁塔租费清单", "租费台账", "铁塔租赁费台账"),
+    "electricity": ("电费台账", "电费清单", "电费报账台账", "基站电费台账"),
+    "generator": ("发电费台账", "发电费清单", "油机发电费台账", "发电台账"),
+}
+
+HEADER_ALIASES: dict[str, str] = {
+    "所属地市": "地市",
+    "本地网": "地市",
+    "地市公司": "地市",
+    "所属区县": "区县",
+    "县区": "区县",
+    "站址编码": "电信站址编码",
+    "电信站点编码": "电信站址编码",
+    "站点编码": "电信站址编码",
+    "站址名称": "电信站址名称",
+    "电信站点名称": "电信站址名称",
+    "站点名称": "电信站址名称",
+    "铁塔编码": "铁塔站址编码",
+    "铁塔站点编码": "铁塔站址编码",
+    "铁塔名称": "铁塔站址名称",
+    "铁塔站点名称": "铁塔站址名称",
+    "电表号": "电表户号",
+    "电表编号": "电表编码",
+    "账期": "报账周期",
+    "月份": "账单月份",
+    "工单号": "运维系统工单号",
+    "分摊比例": "分摊比例(%)",
+    "PUE系数": "PUE 系数",
+}
+
 REQUIRED_HEADERS: dict[LedgerType, tuple[str, ...]] = {
     "site": ("地市", "区县", "电信站址编码", "电信站址名称"),
     "tower_rent": ("电信站址编码", "电信站址名称", "地市", "区县", "铁塔站址编码", "铁塔站址名称"),
@@ -47,8 +79,37 @@ FIELD_GROUPS: dict[LedgerType, dict[str, tuple[str, ...]]] = {
 
 
 def ledger_type_for_sheet(sheet_name: str) -> LedgerType | None:
+    normalized = _normalize_name(sheet_name)
+    for ledger_type, aliases in SHEET_ALIASES.items():
+        if normalized in {_normalize_name(alias) for alias in aliases}:
+            return ledger_type
     return EXPECTED_SHEETS.get(sheet_name)
 
 
 def required_headers_for(ledger_type: LedgerType) -> tuple[str, ...]:
     return REQUIRED_HEADERS[ledger_type]
+
+
+def workbook_sheet_for(sheetnames: list[str], ledger_type: LedgerType) -> str | None:
+    aliases = {_normalize_name(alias) for alias in SHEET_ALIASES[ledger_type]}
+    for sheet_name in sheetnames:
+        if _normalize_name(sheet_name) in aliases:
+            return sheet_name
+    return None
+
+
+def canonical_header(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    compact = _normalize_name(text)
+    for alias, canonical in HEADER_ALIASES.items():
+        if compact == _normalize_name(alias):
+            return canonical
+    return text
+
+
+def _normalize_name(value: object) -> str:
+    return "".join(str(value or "").split()).replace("（", "(").replace("）", ")")

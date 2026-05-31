@@ -1,5 +1,5 @@
 from governance_app.analytics import dashboard_summary
-from governance_app.archive import archive_batch
+from governance_app.archive import archive_batch, archive_precheck
 from governance_app.audit_engine import run_audit
 from governance_app.backup import create_backup, restore_backup
 from governance_app.db import connect, initialize_database
@@ -22,6 +22,9 @@ def test_dashboard_summary_counts_batch_and_issues(app_config, sample_workbook):
     assert summary["ledger_counts"]["site"] == 1
     assert "issues_by_city" in summary
     assert summary["issues_by_rule"][0]["rule_name"]
+    assert summary["issues_by_severity"][0]["severity"] == "high"
+    assert summary["open_issue_count"] >= 1
+    assert summary["closure_rate"] == 0.0
 
 
 def test_backup_and_restore_database(app_config, sample_workbook):
@@ -103,3 +106,53 @@ def test_archive_batch_writes_operation_log_sheet_and_locks_batch(app_config, sa
         batch = conn.execute("select status, is_archived from import_batches where id = ?", (imported.batch_id,)).fetchone()
         assert batch["status"] == "archived"
         assert batch["is_archived"] == 1
+
+
+def test_archive_precheck_reports_open_issues_before_archive(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+        )
+    run_audit(app_config, imported.batch_id)
+    export_city_issue_packages(app_config, imported.batch_id)
+    with connect(app_config) as conn:
+        conn.execute("update import_batches set status = 'returning' where id = ?", (imported.batch_id,))
+
+    result = archive_precheck(app_config, imported.batch_id)
+
+    assert result["ready"] is False
+    assert result["open_issue_count"] == 1
+    assert result["status_counts"]["pending_correction"] == 1
+    assert result["blockers"][0]["type"] == "open_issues"
+
+
+def test_archive_batch_adds_risk_rule_and_open_issue_sheets(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+        )
+    run_audit(app_config, imported.batch_id)
+    export_city_issue_packages(app_config, imported.batch_id)
+    with connect(app_config) as conn:
+        conn.execute("update issues set status = 'closed' where batch_id = ?", (imported.batch_id,))
+        conn.execute("update import_batches set status = 'returning' where id = ?", (imported.batch_id,))
+
+    path = archive_batch(app_config, imported.batch_id)
+
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path)
+    overview = wb["归档总览"]
+    overview_values = {row[0].value: row[1].value for row in overview.iter_rows(min_row=1, max_col=2)}
+    assert overview_values["闭环率"] == 100.0
+    assert overview_values["待复核问题数"] == 0
+    assert "规则命中排行" in wb.sheetnames
+    assert "风险等级分布" in wb.sheetnames
+    assert "未闭环问题" in wb.sheetnames
+    assert wb["规则命中排行"]["B2"].value == "电费单价合理性"
+    assert wb["风险等级分布"]["A2"].value == "high"
+    assert wb["未闭环问题"]["A2"].value is None

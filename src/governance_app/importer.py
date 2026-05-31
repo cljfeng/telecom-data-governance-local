@@ -1,4 +1,5 @@
 import json
+from time import perf_counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ from governance_app.config import AppConfig
 from governance_app.db import connect
 from governance_app.models import LedgerType, ValidationErrorDetail
 from governance_app.recent_files import record_recent_file
-from governance_app.templates import EXPECTED_SHEETS, HEADER_ROWS, required_headers_for
+from governance_app.templates import EXPECTED_SHEETS, HEADER_ROWS, canonical_header, required_headers_for, workbook_sheet_for
 
 
 @dataclass(frozen=True)
@@ -20,14 +21,16 @@ class ImportResult:
     ledger_counts: dict[str, int] = field(default_factory=dict)
 
 
-def import_workbook(config: AppConfig, workbook_path: Path) -> ImportResult:
+def import_workbook(config: AppConfig, workbook_path: Path, strategy: str = "new", batch_id: int | None = None) -> ImportResult:
+    started_at = perf_counter()
     wb = load_workbook(workbook_path, data_only=True)
     errors: list[ValidationErrorDetail] = []
     parsed: dict[LedgerType, tuple[str, list[tuple[int, dict[str, Any]]]]] = {}
 
-    for sheet_name, ledger_type in EXPECTED_SHEETS.items():
-        if sheet_name not in wb.sheetnames:
-            errors.append(ValidationErrorDetail(0, sheet_name, "缺少必需 sheet"))
+    for canonical_sheet_name, ledger_type in EXPECTED_SHEETS.items():
+        sheet_name = workbook_sheet_for(wb.sheetnames, ledger_type)
+        if sheet_name is None:
+            errors.append(ValidationErrorDetail(0, canonical_sheet_name, "缺少必需 sheet"))
             continue
         ws = wb[sheet_name]
         headers = _headers(ws, HEADER_ROWS[ledger_type])
@@ -41,19 +44,40 @@ def import_workbook(config: AppConfig, workbook_path: Path) -> ImportResult:
     if errors:
         return ImportResult(batch_id=None, errors=errors)
 
+    if strategy not in {"new", "append", "replace"}:
+        raise ValueError("invalid import strategy")
+    if strategy in {"append", "replace"} and batch_id is None:
+        raise ValueError("batch_id is required")
+
     with connect(config) as conn:
-        batch_id = conn.execute(
-            "insert into import_batches(source_file, name, status) values (?, ?, ?)",
-            (str(workbook_path), workbook_path.stem, "imported"),
-        ).lastrowid
+        if strategy == "new":
+            batch_id = conn.execute(
+                "insert into import_batches(source_file, name, status) values (?, ?, ?)",
+                (str(workbook_path), workbook_path.stem, "imported"),
+            ).lastrowid
+            operation = "import"
+            message = f"导入台账：{workbook_path.name}"
+        else:
+            batch = conn.execute("select id, is_archived from import_batches where id = ?", (batch_id,)).fetchone()
+            if batch is None:
+                raise ValueError("batch not found")
+            if batch["is_archived"]:
+                raise ValueError("batch is archived")
+            if strategy == "replace":
+                _clear_batch_data(conn, batch_id)
+                operation = "import_replace"
+                message = f"覆盖导入台账：{workbook_path.name}"
+            else:
+                operation = "import_append"
+                message = f"追加导入台账：{workbook_path.name}"
+            conn.execute(
+                "update import_batches set source_file = ?, name = coalesce(name, ?), status = 'imported' where id = ?",
+                (str(workbook_path), workbook_path.stem, batch_id),
+            )
         conn.execute(
             "insert into settings(key, value_json) values ('current_batch_id', ?) "
             "on conflict(key) do update set value_json = excluded.value_json",
             (str(batch_id),),
-        )
-        conn.execute(
-            "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
-            (batch_id, "import", f"导入台账：{workbook_path.name}"),
         )
         ledger_counts: dict[str, int] = {}
         for ledger_type, (sheet_name, rows) in parsed.items():
@@ -83,18 +107,34 @@ def import_workbook(config: AppConfig, workbook_path: Path) -> ImportResult:
                         row_json,
                     ),
                 )
+        total_records = sum(ledger_counts.values())
+        elapsed = perf_counter() - started_at
+        conn.execute(
+            "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
+            (batch_id, operation, f"{message}；记录 {total_records} 条；耗时 {elapsed:.2f} 秒"),
+        )
     record_recent_file(config, workbook_path, "import", True, ledger_counts, 0)
     return ImportResult(batch_id=batch_id, ledger_counts=ledger_counts)
 
 
+def _clear_batch_data(conn, batch_id: int) -> None:
+    audit_run_ids = [row["id"] for row in conn.execute("select id from audit_runs where batch_id = ?", (batch_id,))]
+    conn.execute("delete from issues where batch_id = ?", (batch_id,))
+    if audit_run_ids:
+        conn.executemany("delete from audit_results where audit_run_id = ?", [(audit_run_id,) for audit_run_id in audit_run_ids])
+    conn.execute("delete from audit_runs where batch_id = ?", (batch_id,))
+    conn.execute("delete from ledger_rows where batch_id = ?", (batch_id,))
+    conn.execute("delete from raw_rows where batch_id = ?", (batch_id,))
+
+
 def _headers(ws: Worksheet, header_rows: int) -> list[str]:
     if header_rows == 1:
-        return [_clean(cell.value) for cell in ws[1] if _clean(cell.value)]
+        return [header for cell in ws[1] if (header := canonical_header(cell.value))]
     first = _parent_headers(ws)
-    second = [_clean(cell.value) for cell in ws[2]]
+    second = [canonical_header(cell.value) for cell in ws[2]]
     headers: list[str] = []
     for parent, child in zip(first, second, strict=False):
-        if parent == "发电时间" and child:
+        if parent == "发电时间" and child and child != "发电时长":
             headers.append(f"{parent} - {child}")
         elif child:
             headers.append(child)
@@ -115,7 +155,7 @@ def _data_rows(ws: Worksheet, headers: list[str], first_data_row: int) -> list[t
 def _parent_headers(ws: Worksheet) -> list[str | None]:
     headers: list[str | None] = []
     for cell in ws[1]:
-        value = _clean(cell.value)
+        value = canonical_header(cell.value)
         if value:
             headers.append(value)
             continue
@@ -126,7 +166,7 @@ def _parent_headers(ws: Worksheet) -> list[str | None]:
 def _merged_parent_value(ws: Worksheet, column: int) -> str | None:
     for cell_range in ws.merged_cells.ranges:
         if cell_range.min_row == 1 and cell_range.max_row == 1 and cell_range.min_col <= column <= cell_range.max_col:
-            return _clean(ws.cell(row=1, column=cell_range.min_col).value)
+            return canonical_header(ws.cell(row=1, column=cell_range.min_col).value)
     return None
 
 

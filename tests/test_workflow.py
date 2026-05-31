@@ -10,6 +10,7 @@ from governance_app.workflow import (
     get_batch_workflow,
     list_batches,
     list_issues,
+    list_ledger_rows,
     set_current_batch,
     update_issue_status,
 )
@@ -62,6 +63,24 @@ def test_issue_filters_and_city_progress(app_config, sample_workbook):
     assert progress[0]["total_count"] == 1
     assert progress[0]["closed_count"] == 1
     assert progress[0]["completion_rate"] == 100.0
+
+
+def test_list_ledger_rows_filters_and_exposes_grouped_fields(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+
+    rows = list_ledger_rows(
+        app_config,
+        imported.batch_id,
+        {"ledger_type": "electricity", "city": "杭州", "site_code": "HZ001"},
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["ledger_type"] == "electricity"
+    assert rows[0]["city"] == "杭州"
+    assert rows[0]["telecom_site_code"] == "HZ001"
+    assert rows[0]["field_groups"]["电表报账"]["电表户号"] == "M001"
+    assert rows[0]["field_groups"]["供电分摊"]["电费单价"] == 0.8
 
 
 def test_workflow_returns_recent_operations(app_config):

@@ -1,17 +1,20 @@
 import hashlib
 import json
 from dataclasses import dataclass
+from time import perf_counter
 
 from governance_app.audit_rules import (
     AuditLedgerRow,
     BatchRuleFinding,
     RuleFinding,
+    RuleThresholds,
     all_batch_rules,
     all_rules,
     parse_row,
 )
 from governance_app.config import AppConfig
 from governance_app.db import connect
+from governance_app.rule_settings import RuleSetting, load_rule_settings
 
 
 @dataclass(frozen=True)
@@ -21,8 +24,10 @@ class AuditRunResult:
 
 
 def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
-    rules = all_rules()
-    batch_rules = all_batch_rules()
+    started_at = perf_counter()
+    rule_settings = load_rule_settings(config)
+    rules = _enabled_rules(all_rules(_thresholds_from_settings(rule_settings)), rule_settings)
+    batch_rules = _enabled_rules(all_batch_rules(), rule_settings)
     with connect(config) as conn:
         audit_run_id = conn.execute(
             "insert into audit_runs(batch_id, rule_count) values (?, ?)",
@@ -65,7 +70,7 @@ def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
                 issue_count += 1
         ledger_rows_by_id = {ledger_row["id"]: ledger_row for ledger_row in rows}
         for rule in batch_rules:
-            matching_rows = [row for row in audit_rows if row.ledger_type == rule.ledger_type]
+            matching_rows = audit_rows if rule.ledger_type == "all" else [row for row in audit_rows if row.ledger_type == rule.ledger_type]
             for finding in rule.evaluate(matching_rows):
                 ledger_row = ledger_rows_by_id[finding.ledger_row_id]
                 _insert_finding(
@@ -79,11 +84,25 @@ def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
                 )
                 issue_count += 1
         conn.execute("update import_batches set status = 'audited' where id = ?", (batch_id,))
+        elapsed = perf_counter() - started_at
         conn.execute(
             "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
-            (batch_id, "audit", f"执行稽核，生成问题 {issue_count} 条"),
+            (batch_id, "audit", f"执行稽核，生成问题 {issue_count} 条，规则 {len(rules) + len(batch_rules)} 条，耗时 {elapsed:.2f} 秒"),
         )
         return AuditRunResult(audit_run_id=audit_run_id, issue_count=issue_count)
+
+
+def _enabled_rules(rules, settings: dict[str, RuleSetting]):
+    return [rule for rule in rules if settings.get(rule.rule_id, RuleSetting(rule.rule_id)).enabled]
+
+
+def _thresholds_from_settings(settings: dict[str, RuleSetting]) -> RuleThresholds:
+    price_range = settings.get("electricity_price_range")
+    config = price_range.config if price_range else {}
+    return RuleThresholds(
+        electricity_price_min=float(config.get("min", 0)),
+        electricity_price_max=float(config.get("max", 2)),
+    )
 
 
 def _issue_code(batch_id: int, ledger_row_id: int, rule_id: str) -> str:

@@ -123,6 +123,19 @@ def initialize_database(config: AppConfig) -> None:
                 error_count integer not null,
                 last_used_at text not null default current_timestamp
             );
+
+            create table if not exists audit_rule_settings (
+                rule_id text primary key,
+                enabled integer not null default 1,
+                config_json text not null default '{}',
+                updated_at text not null default current_timestamp
+            );
+
+            create index if not exists idx_ledger_rows_batch_type_city_site
+                on ledger_rows(batch_id, ledger_type, city, telecom_site_code);
+
+            create index if not exists idx_issues_batch_city_status_rule
+                on issues(batch_id, city, status, rule_id);
             """
         )
         _ensure_column(conn, "import_batches", "name", "text")

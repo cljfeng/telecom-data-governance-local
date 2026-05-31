@@ -4,6 +4,7 @@ from governance_app.audit_engine import run_audit
 from governance_app.audit_rules import DEFAULT_THRESHOLDS, all_batch_rules, all_rules, rule_metadata
 from governance_app.db import connect, initialize_database
 from governance_app.importer import import_workbook
+from governance_app.rule_settings import upsert_rule_setting
 
 
 def test_run_audit_generates_issue_for_invalid_electricity_price(app_config, sample_workbook):
@@ -241,6 +242,133 @@ def test_run_audit_applies_tower_rent_governance_rules(app_config):
         "tower_product_units_zero_fee_nonzero",
         "tower_maintenance_discount_not_lowest",
         "tower_original_owner_power_intro_fee_nonzero",
+    }
+
+
+def test_run_audit_respects_disabled_rule_setting(app_config):
+    initialize_database(app_config)
+    batch_id = _create_batch(app_config)
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "electricity",
+        {
+            "地市": "杭州",
+            "区县": "西湖",
+            "电信站址编码": "E001",
+            "电信站址名称": "一站",
+            "电表户号": "M001",
+            "报账周期": "2026-04",
+            "电费单价": 9.9,
+            "分摊比例(%)": 100,
+        },
+    )
+    upsert_rule_setting(app_config, "electricity_price_range", enabled=False)
+
+    run_audit(app_config, batch_id)
+
+    assert "electricity_price_range" not in _rule_ids(app_config)
+
+
+def test_run_audit_uses_configured_electricity_price_threshold(app_config):
+    initialize_database(app_config)
+    batch_id = _create_batch(app_config)
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "electricity",
+        {
+            "地市": "杭州",
+            "区县": "西湖",
+            "电信站址编码": "E001",
+            "电信站址名称": "一站",
+            "电表户号": "M001",
+            "报账周期": "2026-04",
+            "电费单价": 2.5,
+            "分摊比例(%)": 100,
+        },
+    )
+    upsert_rule_setting(app_config, "electricity_price_range", enabled=True, config={"max": 3})
+
+    run_audit(app_config, batch_id)
+
+    assert "electricity_price_range" not in _rule_ids(app_config)
+
+
+def test_run_audit_applies_cross_ledger_governance_rules(app_config):
+    initialize_database(app_config)
+    batch_id = _create_batch(app_config)
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "site",
+        {
+            "地市": "杭州",
+            "区县": "西湖",
+            "电信站址编码": "S001",
+            "电信站址名称": "站址主数据名称",
+            "站址发电责任方": "",
+        },
+    )
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "electricity",
+        {
+            "地市": "杭州",
+            "区县": "西湖",
+            "电信站址编码": "S001",
+            "电信站址名称": "电费台账名称",
+            "电表户号": "M001",
+            "报账周期": "2026-04",
+            "电费单价": 0.8,
+            "分摊比例(%)": 100,
+            "供电方式": "转供电",
+            "转供电合同情况": "",
+            "是否包干站址": "是",
+            "是否报账": "是",
+        },
+    )
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "tower_rent",
+        {
+            "地市": "杭州",
+            "区县": "西湖",
+            "电信站址编码": "S002",
+            "电信站址名称": "缺失站址",
+            "铁塔站址编码": "TT002",
+            "铁塔站址名称": "铁塔缺失站址",
+            "账期": "2026-04",
+            "停租日期": "2026-03-31",
+            "产品服务费合计（元/年）（不含税）": 100,
+        },
+    )
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "generator",
+        {
+            "地市": "杭州",
+            "区县": "西湖",
+            "电信站址编码": "S001",
+            "电信站址名称": "站址主数据名称",
+            "运维系统工单号": "WO001",
+            "发电时长": 3,
+            "最终分摊金额": 50,
+        },
+    )
+
+    run_audit(app_config, batch_id)
+
+    assert _rule_ids(app_config) >= {
+        "site_code_missing_in_master",
+        "site_name_mismatch_across_ledgers",
+        "tower_stopped_site_still_charged",
+        "electricity_lump_sum_still_reimbursed",
+        "electricity_transfer_without_contract",
+        "generator_missing_responsible_party",
     }
 
 

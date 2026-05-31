@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from governance_app.analytics import dashboard_summary
-from governance_app.archive import archive_batch
+from governance_app.archive import archive_batch, archive_precheck
 from governance_app.audit_engine import run_audit
 from governance_app.backup import create_backup, restore_backup
 from governance_app.config import AppConfig
@@ -17,12 +17,16 @@ from governance_app.exporter import export_city_issue_packages
 from governance_app.import_preview import export_preview_errors, preview_workbook
 from governance_app.importer import import_workbook
 from governance_app.recent_files import list_recent_files
+from governance_app.rule_settings import load_rule_settings, upsert_rule_setting
+from governance_app.audit_rules import all_batch_rules, all_rules, rule_metadata
+from governance_app.settings_service import local_settings, restore_backup_safely
 from governance_app.workflow import (
     city_progress,
     create_batch,
     get_batch_workflow,
     list_batches,
     list_issues,
+    list_ledger_rows,
     record_operation,
     set_current_batch,
     update_issue_status,
@@ -93,11 +97,37 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         query = parse_qs(parsed.query)
         filters = {key: values[0] for key, values in query.items() if key != "batch_id" and values and values[0]}
         return _json({"issues": list_issues(config, batch_id, filters)})
+    if method == "GET" and parsed.path == "/api/ledger-rows":
+        batch_id, error = _batch_id_from_query(parsed.query)
+        if error:
+            return error
+        query = parse_qs(parsed.query)
+        filters = {key: values[0] for key, values in query.items() if key != "batch_id" and values and values[0]}
+        return _json({"rows": list_ledger_rows(config, batch_id, filters)})
     if method == "GET" and parsed.path == "/api/city-progress":
         batch_id, error = _batch_id_from_query(parsed.query)
         if error:
             return error
         return _json({"cities": city_progress(config, batch_id)})
+    if method == "GET" and parsed.path == "/api/rules":
+        return _json({"rules": _rule_settings_payload(config)})
+    if method == "GET" and parsed.path == "/api/settings":
+        return _json(local_settings(config))
+    if method == "POST" and parsed.path == "/api/rules/settings":
+        payload, error = _json_body(body)
+        if error:
+            return error
+        rule_id = payload.get("rule_id")
+        enabled = payload.get("enabled", True)
+        config_values = payload.get("config", {})
+        if not isinstance(rule_id, str) or not rule_id.strip():
+            return _json({"error": "rule_id is required"}, status=400)
+        if not isinstance(enabled, bool):
+            return _json({"error": "enabled must be boolean"}, status=400)
+        if not isinstance(config_values, dict):
+            return _json({"error": "config must be object"}, status=400)
+        upsert_rule_setting(config, rule_id, enabled=enabled, config_values=config_values)
+        return _json({"status": "updated"})
     if method == "POST" and parsed.path == "/api/import":
         payload, error = _json_body(body)
         if error:
@@ -105,7 +135,19 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         path_value = payload.get("path")
         if not isinstance(path_value, str) or not path_value:
             return _json({"error": "path is required"}, status=400)
-        result = import_workbook(config, Path(path_value))
+        strategy = payload.get("strategy", "new")
+        if not isinstance(strategy, str):
+            return _json({"error": "strategy must be string"}, status=400)
+        batch_id = payload.get("batch_id")
+        try:
+            result = import_workbook(
+                config,
+                Path(path_value),
+                strategy=strategy,
+                batch_id=int(batch_id) if batch_id is not None else None,
+            )
+        except (TypeError, ValueError) as exc:
+            return _json({"error": str(exc)}, status=400)
         return _json(
             {
                 "batch_id": result.batch_id,
@@ -195,6 +237,14 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         except ValueError as exc:
             return _json({"error": str(exc)}, status=400)
         return _json({"path": str(path)})
+    if method == "GET" and parsed.path == "/api/archive/precheck":
+        batch_id, error = _batch_id_from_query(parsed.query)
+        if error:
+            return error
+        try:
+            return _json(archive_precheck(config, batch_id))
+        except ValueError as exc:
+            return _json({"error": str(exc)}, status=400)
     if method == "POST" and parsed.path == "/api/backup":
         path = create_backup(config)
         return _json({"path": str(path)})
@@ -205,8 +255,8 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         path_value = payload.get("path")
         if not isinstance(path_value, str) or not path_value:
             return _json({"error": "path is required"}, status=400)
-        restore_backup(config, Path(path_value))
-        return _json({"status": "restored"})
+        safety_backup_path, status_text = restore_backup_safely(config, Path(path_value))
+        return _json({"status": status_text, "safety_backup_path": str(safety_backup_path)})
     return _json({"error": "not found"}, status=404)
 
 
@@ -241,6 +291,28 @@ def _batch_id_from_query(query_string: str) -> tuple[int, tuple[int, dict[str, s
         return int(query.get("batch_id", ["1"])[0]), None
     except ValueError:
         return 0, _json({"error": "invalid batch_id"}, status=400)
+
+
+def _rule_settings_payload(config: AppConfig) -> list[dict]:
+    settings = load_rule_settings(config)
+    rule_ids = sorted({rule.rule_id for rule in all_rules()} | {rule.rule_id for rule in all_batch_rules()})
+    payload = []
+    for rule_id in rule_ids:
+        metadata = rule_metadata(rule_id)
+        setting = settings.get(rule_id)
+        payload.append(
+            {
+                "rule_id": rule_id,
+                "name": metadata.name,
+                "ledger_type": metadata.ledger_type,
+                "severity": metadata.severity,
+                "description": metadata.description,
+                "default_suggestion": metadata.default_suggestion,
+                "enabled": True if setting is None else setting.enabled,
+                "config": {} if setting is None else setting.config,
+            }
+        )
+    return payload
 
 
 class RequestHandler(SimpleHTTPRequestHandler):

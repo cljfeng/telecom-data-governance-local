@@ -1,15 +1,22 @@
 import { fetchJson, postJson } from "/api.js?v=20260517-1";
 import { state } from "/state.js?v=20260517-1";
 import { escapeHtml, formatNumber, withBusy } from "/ui.js?v=20260517-1";
+import { renderLedgerData } from "/ledger-data.js?v=20260517-1";
+import { renderRules } from "/rules.js?v=20260517-1";
+import { renderSettings } from "/settings.js?v=20260517-1";
+import { renderAnalytics } from "/analytics.js?v=20260517-1";
 
 const views = {
   dashboard: "专项工作台",
   batches: "批次管理",
   import: "数据导入",
+  ledgerData: "数据整理",
+  rules: "规则设置",
   audit: "稽核结果",
   export: "问题包导出",
   corrections: "整改回传",
   reports: "分析报表",
+  settings: "本地设置",
 };
 
 const pageTitle = document.querySelector("#page-title");
@@ -539,6 +546,14 @@ async function renderImport() {
             <span>台账文件路径</span>
             <input id="workbook-path" placeholder="/Users/.../附件：基站电费、租费基础数据治理台账模板.xlsx">
           </label>
+          <label class="form-field">
+            <span>导入策略</span>
+            <select id="import-strategy">
+              <option value="new">新建批次</option>
+              <option value="append">追加到当前批次</option>
+              <option value="replace">覆盖当前批次</option>
+            </select>
+          </label>
         </div>
         <div class="button-row">
           <button id="preview-import" class="secondary-button" type="button">预检模板</button>
@@ -583,7 +598,10 @@ async function renderImport() {
     await withBusy(event.currentTarget, "导入中...", async () => {
       setOperationResult("pending", "正在导入...");
       try {
-        const data = await postJson("/api/import", { path });
+        const strategy = document.querySelector("#import-strategy").value;
+        const payload = { path, strategy };
+        if (strategy !== "new") payload.batch_id = state.batchId;
+        const data = await postJson("/api/import", payload);
         state.batchId = data.batch_id;
         await refreshBatches();
         const counts = data.ledger_counts || {};
@@ -807,32 +825,17 @@ async function renderCorrections() {
 }
 
 async function renderReports() {
-  await refreshBatches().catch(() => []);
-  if (!currentBatch()) {
-    renderNoBatchPrompt("没有批次时无法生成归档汇总。");
-    return;
-  }
-  mainContent.innerHTML = `
-    <section class="card">
-      ${shellHeader("专项归档导出", "Archive", renderBatchSelector())}
-      <div class="operation-panel">
-        <p>归档会生成当前批次的汇总 Excel，包括归档总览、地市整改进度和问题清单，并将批次标记为已归档。</p>
-        <button id="archive-batch" class="primary-button" type="button">生成归档汇总</button>
-      </div>
-      <div id="operation-result" class="result-box">等待操作</div>
-    </section>
-  `;
-  bindBatchSelector(renderReports);
-  document.querySelector("#archive-batch").addEventListener("click", async (event) => {
-    await withBusy(event.currentTarget, "归档中...", async () => {
-      setOperationResult("pending", "正在生成归档汇总...");
-      try {
-        const data = await postJson("/api/archive", { batch_id: state.batchId });
-        setOperationResult("success", resultList([data.path]));
-      } catch (error) {
-        setOperationResult("error", error.message);
-      }
-    });
+  return renderAnalytics({
+    mainContent,
+    state,
+    refreshBatches,
+    currentBatch,
+    renderNoBatchPrompt,
+    shellHeader,
+    renderBatchSelector,
+    bindBatchSelector,
+    resultList,
+    setOperationResult,
   });
 }
 
@@ -852,10 +855,24 @@ function activateView(view) {
   if (view === "dashboard") return loadDashboard();
   if (view === "batches") return renderBatches();
   if (view === "import") return renderImport();
+  if (view === "ledgerData")
+    return renderLedgerData({
+      mainContent,
+      refreshBatches,
+      currentBatch,
+      renderNoBatchPrompt,
+      shellHeader,
+      renderBatchSelector,
+      bindBatchSelector,
+      fieldValue,
+      ledgerLabel,
+    });
+  if (view === "rules") return renderRules({ mainContent, shellHeader });
   if (view === "audit") return renderAudit();
   if (view === "export") return renderExport();
   if (view === "corrections") return renderCorrections();
   if (view === "reports") return renderReports();
+  if (view === "settings") return renderSettings({ mainContent, shellHeader });
 }
 
 navButtons.forEach((button) => {

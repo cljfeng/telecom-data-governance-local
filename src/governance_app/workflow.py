@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
 from governance_app.db import connect
 from governance_app.models import IssueStatus
+from governance_app.templates import FIELD_GROUPS
 
 ISSUE_STATUSES = {
     "pending_export",
@@ -194,6 +196,51 @@ def city_progress(config: AppConfig, batch_id: int) -> list[dict[str, Any]]:
     return progress
 
 
+def list_ledger_rows(config: AppConfig, batch_id: int, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    filters = filters or {}
+    where = ["batch_id = ?"]
+    params: list[Any] = [batch_id]
+    for key, column in {
+        "ledger_type": "ledger_type",
+        "city": "coalesce(city, '未填地市')",
+        "district": "coalesce(district, '')",
+        "site_code": "coalesce(telecom_site_code, '')",
+    }.items():
+        value = filters.get(key)
+        if value:
+            where.append(f"{column} = ?")
+            params.append(value)
+    sql = f"""
+        select id, ledger_type, coalesce(city, '未填地市') as city, district,
+               telecom_site_code, telecom_site_name, tower_site_code, tower_site_name, row_json
+          from ledger_rows
+         where {" and ".join(where)}
+         order by ledger_type, city, telecom_site_code, id
+         limit 500
+    """
+    with connect(config) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        raw = json.loads(row["row_json"])
+        ledger_type = row["ledger_type"]
+        result.append(
+            {
+                "id": row["id"],
+                "ledger_type": ledger_type,
+                "city": row["city"],
+                "district": row["district"],
+                "telecom_site_code": row["telecom_site_code"],
+                "telecom_site_name": row["telecom_site_name"],
+                "tower_site_code": row["tower_site_code"],
+                "tower_site_name": row["tower_site_name"],
+                "field_groups": _field_groups(ledger_type, raw),
+                "raw": raw,
+            }
+        )
+    return result
+
+
 def update_issue_status(config: AppConfig, issue_code: str, status: IssueStatus) -> None:
     if status not in ISSUE_STATUSES:
         raise ValueError("invalid issue status")
@@ -219,6 +266,21 @@ def update_issue_status(config: AppConfig, issue_code: str, status: IssueStatus)
             "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
             (row["batch_id"], "update_issue_status", f"更新问题状态：{issue_code} -> {status}"),
         )
+
+
+def _field_groups(ledger_type: str, raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    configured = FIELD_GROUPS.get(ledger_type, {})
+    groups: dict[str, dict[str, Any]] = {}
+    used: set[str] = set()
+    for group_name, fields in configured.items():
+        values = {field: raw[field] for field in fields if field in raw}
+        if values:
+            groups[group_name] = values
+            used.update(values)
+    remaining = {field: value for field, value in raw.items() if field not in used}
+    if remaining:
+        groups["其他字段"] = remaining
+    return groups
 
 
 def record_operation(config: AppConfig, batch_id: int, operation: str, message: str, status: str | None = None) -> None:

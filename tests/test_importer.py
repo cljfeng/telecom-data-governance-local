@@ -2,6 +2,7 @@ import json
 
 from openpyxl import Workbook
 
+from governance_app.audit_engine import run_audit
 from governance_app.db import connect, initialize_database
 from governance_app.importer import import_workbook
 
@@ -63,6 +64,57 @@ def test_import_workbook_preserves_excel_row_number_after_blank_rows(app_config,
     assert row_number == 3
 
 
+def test_import_workbook_accepts_sheet_and_header_aliases(app_config, tmp_path):
+    initialize_database(app_config)
+    workbook_path = _save_alias_workbook(tmp_path / "alias_template.xlsx")
+
+    result = import_workbook(app_config, workbook_path)
+
+    assert result.errors == []
+    assert result.ledger_counts == {"site": 1, "tower_rent": 1, "electricity": 1, "generator": 1}
+    with connect(app_config) as conn:
+        site = conn.execute(
+            "select city, telecom_site_code, telecom_site_name from ledger_rows where ledger_type = 'site'"
+        ).fetchone()
+    assert dict(site) == {
+        "city": "杭州",
+        "telecom_site_code": "HZ001",
+        "telecom_site_name": "西湖一站",
+    }
+
+
+def test_import_workbook_can_append_to_existing_batch(app_config, sample_workbook):
+    initialize_database(app_config)
+    first = import_workbook(app_config, sample_workbook)
+
+    second = import_workbook(app_config, sample_workbook, strategy="append", batch_id=first.batch_id)
+
+    assert second.batch_id == first.batch_id
+    with connect(app_config) as conn:
+        assert conn.execute("select count(*) as c from import_batches").fetchone()["c"] == 1
+        assert conn.execute("select count(*) as c from ledger_rows where batch_id = ?", (first.batch_id,)).fetchone()["c"] == 8
+        log = conn.execute("select message from operation_logs where operation = 'import_append'").fetchone()
+    assert "追加导入" in log["message"]
+
+
+def test_import_workbook_can_replace_existing_batch_data(app_config, sample_workbook):
+    initialize_database(app_config)
+    first = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute("update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where batch_id = ? and ledger_type = 'electricity'", (first.batch_id,))
+    run_audit(app_config, first.batch_id)
+
+    replaced = import_workbook(app_config, sample_workbook, strategy="replace", batch_id=first.batch_id)
+
+    assert replaced.batch_id == first.batch_id
+    with connect(app_config) as conn:
+        assert conn.execute("select count(*) as c from import_batches").fetchone()["c"] == 1
+        assert conn.execute("select count(*) as c from ledger_rows where batch_id = ?", (first.batch_id,)).fetchone()["c"] == 4
+        assert conn.execute("select count(*) as c from issues where batch_id = ?", (first.batch_id,)).fetchone()["c"] == 0
+        log = conn.execute("select message from operation_logs where operation = 'import_replace'").fetchone()
+    assert "覆盖导入" in log["message"]
+
+
 def _save_grouped_generator_workbook(path):
     wb = _base_workbook()
     ws = wb["发电费台账"]
@@ -102,6 +154,33 @@ def _save_workbook_with_blank_site_row(path):
     wb = _base_workbook()
     ws = wb["站址台账"]
     ws.insert_rows(2)
+    wb.save(path)
+    return path
+
+
+def _save_alias_workbook(path):
+    wb = Workbook()
+    default = wb.active
+    wb.remove(default)
+
+    ws = wb.create_sheet("站址清单")
+    ws.append(["序号", "所属地市", "所属区县", "站址编码", "站址名称"])
+    ws.append([1, "杭州", "西湖", "HZ001", "西湖一站"])
+
+    ws = wb.create_sheet("铁塔租费清单")
+    ws.append(["站址编码", "站址名称", "所属地市", "所属区县", "铁塔编码", "铁塔名称"])
+    ws.append(["HZ001", "西湖一站", "杭州", "西湖", "TT001", "铁塔西湖一站"])
+
+    ws = wb.create_sheet("电费清单")
+    ws.append(["所属地市", "所属区县", "站址编码", "站址名称", "电表号", "账期"])
+    ws.append(["杭州", "西湖", "HZ001", "西湖一站", "M001", "2026-04"])
+
+    ws = wb.create_sheet("发电费清单")
+    ws.append(["发电事件", None, None, None, None, "发电时间"])
+    ws.append(["发电日期", "账单月份", "站址编码", "站址名称", "工单号", "发电时长"])
+    ws.merge_cells("A1:E1")
+    ws.append(["2026-04-10", "2026-04", "HZ001", "西湖一站", "WO001", 3])
+
     wb.save(path)
     return path
 

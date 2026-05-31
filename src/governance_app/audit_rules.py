@@ -63,7 +63,7 @@ class BatchRuleFinding:
 @dataclass(frozen=True)
 class BatchAuditRule:
     rule_id: str
-    ledger_type: LedgerType
+    ledger_type: LedgerType | str
     severity: Severity
     evaluate: Callable[[list[AuditLedgerRow]], list[BatchRuleFinding]]
 
@@ -95,6 +95,12 @@ RULE_CATALOG: dict[str, RuleMetadata] = {
     "tower_product_units_zero_fee_nonzero": RuleMetadata("tower_product_units_zero_fee_nonzero", "产品单元为零但费用非零", "tower_rent", "high", "检查产品单元数为零时是否仍产生产品服务费。", "核对产品配置和费用生成口径"),
     "tower_maintenance_discount_not_lowest": RuleMetadata("tower_maintenance_discount_not_lowest", "维护费共享折扣非最优惠", "tower_rent", "medium", "检查共享场景下维护费共享折扣是否异常。", "核对共享折扣政策和适用用户数"),
     "tower_original_owner_power_intro_fee_nonzero": RuleMetadata("tower_original_owner_power_intro_fee_nonzero", "原产权方电力引入费非零", "tower_rent", "high", "检查原产权方站址是否仍收取电力引入费。", "核实站址产权属性和电力引入费依据"),
+    "site_code_missing_in_master": RuleMetadata("site_code_missing_in_master", "站址编码跨表不存在", "all", "high", "检查费用台账中的电信站址编码是否存在于站址台账。", "补充站址主数据或核对费用台账站址编码"),
+    "site_name_mismatch_across_ledgers": RuleMetadata("site_name_mismatch_across_ledgers", "站址名称跨表不一致", "all", "medium", "检查同一站址编码在费用台账与站址台账中的名称是否一致。", "统一站址名称或核对站址编码"),
+    "tower_stopped_site_still_charged": RuleMetadata("tower_stopped_site_still_charged", "停租后仍产生租费", "tower_rent", "high", "检查停租日期已填写但仍产生租费的记录。", "核对停租状态、账期和费用生成口径"),
+    "electricity_lump_sum_still_reimbursed": RuleMetadata("electricity_lump_sum_still_reimbursed", "包干站址仍重复报账", "electricity", "high", "检查包干站址是否仍标记为报账。", "核对包干电费和报账口径，避免重复报账"),
+    "electricity_transfer_without_contract": RuleMetadata("electricity_transfer_without_contract", "转供电无合同", "electricity", "high", "检查转供电站址是否缺少转供电合同。", "补充转供电合同或核实供电方式"),
+    "generator_missing_responsible_party": RuleMetadata("generator_missing_responsible_party", "发电责任方缺失", "all", "medium", "检查存在发电费但站址发电责任方缺失的记录。", "补充站址发电责任方并核对发电费用口径"),
 }
 
 DEFAULT_THRESHOLDS = RuleThresholds()
@@ -107,7 +113,7 @@ def rule_metadata(rule_id: str) -> RuleMetadata:
     )
 
 
-def all_rules() -> list[AuditRule]:
+def all_rules(thresholds: RuleThresholds = DEFAULT_THRESHOLDS) -> list[AuditRule]:
     return [
         AuditRule("required_site_code", "site", "high", _required("电信站址编码", "站址编码为空", "补充电信站址编码")),
         AuditRule("required_city", "site", "medium", _required("地市", "地市为空", "补充地市")),
@@ -117,9 +123,9 @@ def all_rules() -> list[AuditRule]:
             "high",
             _number_range(
                 "电费单价",
-                DEFAULT_THRESHOLDS.electricity_price_min,
-                DEFAULT_THRESHOLDS.electricity_price_max,
-                "电费单价超出 0-2 元合理范围",
+                thresholds.electricity_price_min,
+                thresholds.electricity_price_max,
+                f"电费单价超出 {thresholds.electricity_price_min:g}-{thresholds.electricity_price_max:g} 元合理范围",
                 "核实电费单价或转供电合同",
             ),
         ),
@@ -129,9 +135,9 @@ def all_rules() -> list[AuditRule]:
             "medium",
             _number_range(
                 "分摊比例(%)",
-                DEFAULT_THRESHOLDS.share_percent_min,
-                DEFAULT_THRESHOLDS.share_percent_max,
-                "分摊比例不在 0-100 范围",
+                thresholds.share_percent_min,
+                thresholds.share_percent_max,
+                f"分摊比例不在 {thresholds.share_percent_min:g}-{thresholds.share_percent_max:g} 范围",
                 "核实共享情况和分摊比例",
             ),
         ),
@@ -272,6 +278,12 @@ def all_batch_rules() -> list[BatchAuditRule]:
             "high",
             _tower_original_owner_power_intro_fee_nonzero,
         ),
+        BatchAuditRule("site_code_missing_in_master", "all", "high", _site_code_missing_in_master),
+        BatchAuditRule("site_name_mismatch_across_ledgers", "all", "medium", _site_name_mismatch_across_ledgers),
+        BatchAuditRule("tower_stopped_site_still_charged", "tower_rent", "high", _tower_stopped_site_still_charged),
+        BatchAuditRule("electricity_lump_sum_still_reimbursed", "electricity", "high", _electricity_lump_sum_still_reimbursed),
+        BatchAuditRule("electricity_transfer_without_contract", "electricity", "high", _electricity_transfer_without_contract),
+        BatchAuditRule("generator_missing_responsible_party", "all", "medium", _generator_missing_responsible_party),
     ]
 
 
@@ -324,9 +336,12 @@ _MOUNT_HEIGHT_FIELDS = ("挂高", "天线挂高", "设备挂高")
 _TOWER_TYPE_FIELDS = ("塔桅类型", "铁塔类型", "铁塔产品", "铁塔产品类型")
 _POWER_INTRO_FEE_FIELDS = ("电力引入费(元/年)", "电力引入费", "电力引入费（元/年）")
 _PRODUCT_SERVICE_FEE_FIELDS = ("产品服务费合计（元/年）（不含税）", "产品服务费合计", "产品服务费")
+_TOWER_FEE_FIELDS = _PRODUCT_SERVICE_FEE_FIELDS + ("维护费(元/年)", "场地费(元/年)", "电力引入费(元/年)")
 _UNIT_COUNT_FIELDS = ("铁塔产品单元数", "机房产品单元数", "配套产品单元数", "产品单元数")
 _MAINTENANCE_DISCOUNT_FIELDS = ("维护费共享折扣", "维护费最低折扣", "维护费折扣", "维护费折扣系数")
 _SHARING_INFO_FIELDS = ("站址共享信息", "铁塔共享信息", "共享信息")
+_TRANSFER_CONTRACT_FIELDS = ("转供电合同情况", "转供电合同", "合同情况")
+_GENERATOR_AMOUNT_FIELDS = ("最终分摊金额", "分摊金额", "非5G金额", "5G金额")
 
 
 def _electricity_price_benchmark(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
@@ -524,6 +539,131 @@ def _tower_original_owner_power_intro_fee_nonzero(rows: list[AuditLedgerRow]) ->
                     "电力引入费(元/年)",
                     "站址共享信息为原产权方，电力引入费不为0",
                     "按原产权方共享规则核对电力引入费是否应减免",
+                )
+            )
+    return findings
+
+
+def _site_code_missing_in_master(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
+    site_codes = {
+        _text(row.telecom_site_code or row.row.get("电信站址编码"))
+        for row in rows
+        if row.ledger_type == "site"
+    }
+    findings: list[BatchRuleFinding] = []
+    for ledger_row in rows:
+        if ledger_row.ledger_type == "site":
+            continue
+        site_code = _text(ledger_row.telecom_site_code or ledger_row.row.get("电信站址编码"))
+        if site_code and site_code not in site_codes:
+            findings.append(
+                BatchRuleFinding(
+                    ledger_row.ledger_row_id,
+                    "电信站址编码",
+                    f"费用台账站址编码未在站址台账中找到：{site_code}",
+                    "补充站址主数据或核对费用台账站址编码",
+                )
+            )
+    return findings
+
+
+def _site_name_mismatch_across_ledgers(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
+    master_names = {
+        _text(row.telecom_site_code or row.row.get("电信站址编码")): _text(row.telecom_site_name or row.row.get("电信站址名称"))
+        for row in rows
+        if row.ledger_type == "site"
+    }
+    findings: list[BatchRuleFinding] = []
+    for ledger_row in rows:
+        if ledger_row.ledger_type == "site":
+            continue
+        site_code = _text(ledger_row.telecom_site_code or ledger_row.row.get("电信站址编码"))
+        master_name = master_names.get(site_code)
+        current_name = _text(ledger_row.telecom_site_name or ledger_row.row.get("电信站址名称"))
+        if master_name and current_name and master_name != current_name:
+            findings.append(
+                BatchRuleFinding(
+                    ledger_row.ledger_row_id,
+                    "电信站址名称",
+                    f"同一站址编码名称不一致：站址台账“{master_name}”，当前台账“{current_name}”",
+                    "统一站址名称或核对站址编码",
+                )
+            )
+    return findings
+
+
+def _tower_stopped_site_still_charged(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
+    findings: list[BatchRuleFinding] = []
+    for ledger_row in rows:
+        stop_date = _text(ledger_row.row.get("停租日期"))
+        fee = sum(_number(ledger_row.row.get(field)) or 0 for field in _TOWER_FEE_FIELDS)
+        if stop_date and fee > 0:
+            findings.append(
+                BatchRuleFinding(
+                    ledger_row.ledger_row_id,
+                    "停租日期",
+                    f"停租日期已填写但仍存在费用，费用合计{fee:g}",
+                    "核对停租日期、账期和费用生成口径",
+                )
+            )
+    return findings
+
+
+def _electricity_lump_sum_still_reimbursed(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
+    findings: list[BatchRuleFinding] = []
+    for ledger_row in rows:
+        lump_sum = _text(ledger_row.row.get("是否包干站址"))
+        reimbursed = _text(ledger_row.row.get("是否报账"))
+        if lump_sum == "是" and reimbursed == "是":
+            findings.append(
+                BatchRuleFinding(
+                    ledger_row.ledger_row_id,
+                    "是否报账",
+                    "包干站址仍标记为报账，存在重复报账风险",
+                    "核对包干电费和报账口径，避免重复报账",
+                )
+            )
+    return findings
+
+
+def _electricity_transfer_without_contract(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
+    findings: list[BatchRuleFinding] = []
+    for ledger_row in rows:
+        supply = _text(_first_value(ledger_row.row, _SUPPLY_FIELDS))
+        contract = _text(_first_value(ledger_row.row, _TRANSFER_CONTRACT_FIELDS))
+        if "转供" in supply and (not contract or contract in {"无", "否", "未签订"}):
+            findings.append(
+                BatchRuleFinding(
+                    ledger_row.ledger_row_id,
+                    "转供电合同情况",
+                    "供电方式为转供电但缺少有效合同信息",
+                    "补充转供电合同或核实供电方式",
+                )
+            )
+    return findings
+
+
+def _generator_missing_responsible_party(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
+    responsible_by_site = {
+        _text(row.telecom_site_code or row.row.get("电信站址编码")): _text(row.row.get("站址发电责任方"))
+        for row in rows
+        if row.ledger_type == "site" and "站址发电责任方" in row.row
+    }
+    findings: list[BatchRuleFinding] = []
+    for ledger_row in rows:
+        if ledger_row.ledger_type != "generator":
+            continue
+        site_code = _text(ledger_row.telecom_site_code or ledger_row.row.get("电信站址编码"))
+        has_generator_cost = (_number(ledger_row.row.get("发电时长")) or 0) > 0 or any(
+            (_number(ledger_row.row.get(field)) or 0) > 0 for field in _GENERATOR_AMOUNT_FIELDS
+        )
+        if site_code in responsible_by_site and not responsible_by_site[site_code] and has_generator_cost:
+            findings.append(
+                BatchRuleFinding(
+                    ledger_row.ledger_row_id,
+                    "站址发电责任方",
+                    "站址台账发电责任方缺失，但发电费台账存在费用或时长",
+                    "补充站址发电责任方并核对发电费用口径",
                 )
             )
     return findings
