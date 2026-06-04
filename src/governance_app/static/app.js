@@ -1,4 +1,4 @@
-import { fetchJson, postJson } from "/api.js?v=20260517-1";
+import { fetchJson, postJson, postFormData } from "/api.js?v=20260517-1";
 import { state } from "/state.js?v=20260517-1";
 import { escapeHtml, formatNumber, withBusy } from "/ui.js?v=20260517-1";
 import { renderLedgerData } from "/ledger-data.js?v=20260517-1";
@@ -151,14 +151,33 @@ function fieldValue(id) {
   return document.querySelector(`#${id}`).value.trim();
 }
 
+function selectedWorkbookFile() {
+  return document.querySelector("#workbook-file")?.files?.[0] || null;
+}
+
+function workbookFormData(extraFields = {}) {
+  const file = selectedWorkbookFile();
+  if (!file) return null;
+  const formData = new FormData();
+  formData.append("file", file);
+  Object.entries(extraFields).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      formData.append(key, value);
+    }
+  });
+  return formData;
+}
+
 function setOperationResult(stateName, content) {
   const result = document.querySelector("#operation-result");
   result.className = `result-box result-${stateName}`;
-  if (typeof content === "string") {
-    result.textContent = content;
-  } else {
-    result.innerHTML = content;
-  }
+  result.textContent = content;
+}
+
+function setOperationHtml(stateName, content) {
+  const result = document.querySelector("#operation-result");
+  result.className = `result-box result-${stateName}`;
+  result.innerHTML = content;
 }
 
 function operationCard({ title, eyebrow, description, fields, buttonText, resultTitle }) {
@@ -540,11 +559,13 @@ async function renderImport() {
     <section class="card">
       ${shellHeader("数据导入", "Workbook Import")}
       <div class="operation-panel">
-        <p>输入本机 Excel 台账文件完整路径，先进行模板预检。预检通过后再正式入库，系统会自动生成并选中当前批次。</p>
+        <p>选择本机 Excel 台账文件，先进行模板预检。预检通过后再正式入库，系统会自动生成并选中当前批次。</p>
         <div class="form-grid">
           <label class="form-field">
-            <span>台账文件路径</span>
-            <input id="workbook-path" placeholder="/Users/.../附件：基站电费、租费基础数据治理台账模板.xlsx">
+            <span>台账文件</span>
+            <input id="workbook-file" type="file" accept=".xlsx,.xlsm,.xltx,.xltm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12">
+            <input id="workbook-path" type="hidden">
+            <small id="selected-workbook-name" class="field-hint">尚未选择文件</small>
           </label>
           <label class="form-field">
             <span>导入策略</span>
@@ -563,7 +584,7 @@ async function renderImport() {
     </section>
     <section class="card">
       ${shellHeader("预检与导入结果", "Result")}
-      <div id="operation-result" class="result-box">请先填写文件路径并执行预检</div>
+      <div id="operation-result" class="result-box">请先选择文件并执行预检</div>
     </section>
     <section class="card">
       ${shellHeader("最近文件", "Recent Files")}
@@ -571,19 +592,25 @@ async function renderImport() {
     </section>
   `;
   renderRecentFiles(recent.files || []);
+  document.querySelector("#workbook-file").addEventListener("change", () => {
+    const file = selectedWorkbookFile();
+    document.querySelector("#workbook-path").value = "";
+    document.querySelector("#selected-workbook-name").textContent = file ? `${file.name} · ${(file.size / 1024 / 1024).toFixed(2)} MB` : "尚未选择文件";
+  });
   document.querySelector("#preview-import").addEventListener("click", async (event) => {
     const path = fieldValue("workbook-path");
-    if (!path) return setOperationResult("error", "请填写台账文件路径");
+    const formData = workbookFormData();
+    if (!formData && !path) return setOperationResult("error", "请选择台账文件");
     await withBusy(event.currentTarget, "预检中...", async () => {
       setOperationResult("pending", "正在预检模板...");
       try {
-        const data = await postJson("/api/import/preview", { path });
-        setOperationResult("success", renderImportPreviewResult(data, "预检通过，可以正式导入"));
+        const data = formData ? await postFormData("/api/import/preview/upload", formData) : await postJson("/api/import/preview", { path });
+        setOperationHtml("success", renderImportPreviewResult(data, "预检通过，可以正式导入"));
         const recentData = await fetchJson("/api/import/recent").catch(() => ({ files: [] }));
         renderRecentFiles(recentData.files || []);
       } catch (error) {
         if (error.data) {
-          setOperationResult("error", renderImportPreviewResult(error.data, "预检未通过，请按错误明细修正后重试"));
+          setOperationHtml("error", renderImportPreviewResult(error.data, "预检未通过，请按错误明细修正后重试"));
         } else {
           setOperationResult("error", error.message);
         }
@@ -594,23 +621,29 @@ async function renderImport() {
   });
   document.querySelector("#operation-submit").addEventListener("click", async (event) => {
     const path = fieldValue("workbook-path");
-    if (!path) return setOperationResult("error", "请填写台账文件路径");
+    const file = selectedWorkbookFile();
+    if (!file && !path) return setOperationResult("error", "请选择台账文件");
     await withBusy(event.currentTarget, "导入中...", async () => {
       setOperationResult("pending", "正在导入...");
       try {
         const strategy = document.querySelector("#import-strategy").value;
         const payload = { path, strategy };
         if (strategy !== "new") payload.batch_id = state.batchId;
-        const data = await postJson("/api/import", payload);
+        const formData = workbookFormData({ strategy, batch_id: strategy !== "new" ? state.batchId : "" });
+        const data = formData ? await postFormData("/api/import/upload", formData) : await postJson("/api/import", payload);
         state.batchId = data.batch_id;
         await refreshBatches();
         const counts = data.ledger_counts || {};
-        setOperationResult("success", `<p>导入成功，批次号：<strong>${escapeHtml(data.batch_id)}</strong>。即将进入专项工作台，下一步执行稽核。</p><div class="mini-grid"><span>站址 ${formatNumber(counts.site)}</span><span>铁塔租费 ${formatNumber(counts.tower_rent)}</span><span>电费 ${formatNumber(counts.electricity)}</span><span>发电费 ${formatNumber(counts.generator)}</span></div>`);
+        setOperationHtml("success", `<p>导入成功，批次号：<strong>${escapeHtml(data.batch_id)}</strong>。即将进入专项工作台，下一步执行稽核。</p><div class="mini-grid"><span>站址 ${formatNumber(counts.site)}</span><span>铁塔租费 ${formatNumber(counts.tower_rent)}</span><span>电费 ${formatNumber(counts.electricity)}</span><span>发电费 ${formatNumber(counts.generator)}</span></div>`);
         const recentData = await fetchJson("/api/import/recent").catch(() => ({ files: [] }));
         renderRecentFiles(recentData.files || []);
         window.setTimeout(() => activateView("dashboard"), 800);
       } catch (error) {
-        setOperationResult("error", error.message);
+        if (error.data?.errors?.length) {
+          setOperationHtml("error", renderImportPreviewResult(error.data, "导入未通过，请按错误明细修正后重试"));
+        } else {
+          setOperationResult("error", error.message);
+        }
       }
     });
   });
@@ -619,8 +652,10 @@ async function renderImport() {
 function renderImportPreviewResult(data, message) {
   const counts = data.ledger_counts || {};
   const errors = data.errors || [];
+  const detailMessage = data.error && data.error !== message ? `<p>${escapeHtml(data.error)}</p>` : "";
   return `
     <p><strong>${escapeHtml(message)}</strong></p>
+    ${detailMessage}
     <p>建议批次名称：${escapeHtml(data.batch_name || "未命名批次")}</p>
     <div class="mini-grid">
       <span>站址 ${formatNumber(counts.site)}</span>
@@ -681,6 +716,8 @@ function renderRecentFiles(files) {
   container.querySelectorAll("[data-use-path]").forEach((button) => {
     button.addEventListener("click", () => {
       document.querySelector("#workbook-path").value = button.dataset.usePath;
+      document.querySelector("#workbook-file").value = "";
+      document.querySelector("#selected-workbook-name").textContent = `使用最近文件：${button.dataset.usePath}`;
     });
   });
 }
@@ -694,14 +731,15 @@ async function renderAudit() {
   mainContent.innerHTML = `
     <section class="card">
       ${shellHeader("稽核结果", "Issues", renderBatchSelector())}
-      <div class="filter-grid">
+      <div class="filter-grid audit-filter-grid">
         <input id="filter-city" placeholder="地市">
         <select id="filter-ledger"><option value="">全部台账</option><option value="site">站址</option><option value="tower_rent">铁塔租费</option><option value="electricity">电费</option><option value="generator">发电费</option></select>
+        <select id="filter-rule"><option value="">全部规则</option></select>
         <select id="filter-status"><option value="">全部状态</option><option value="pending_export">待导出</option><option value="pending_correction">待整改</option><option value="needs_review">待人工复核</option><option value="closed">已关闭</option><option value="not_required">无需整改</option></select>
         <button id="run-audit" class="primary-button" type="button">执行稽核</button>
         <button id="load-issues" class="secondary-button" type="button">查询问题</button>
       </div>
-      <div class="table-wrap"><table><thead><tr><th>问题编号</th><th>地市</th><th>台账</th><th>规则</th><th>风险</th><th>状态</th><th>说明</th><th>操作</th></tr></thead><tbody id="issue-table"><tr><td colspan="8">点击查询问题</td></tr></tbody></table></div>
+      <div class="table-wrap issue-table-wrap"><table class="issue-table"><thead><tr><th>问题编号</th><th>地市</th><th>台账</th><th>规则</th><th>风险</th><th>状态</th><th>说明</th><th>操作</th></tr></thead><tbody id="issue-table"><tr><td colspan="8">点击查询问题</td></tr></tbody></table></div>
     </section>
   `;
   bindBatchSelector(renderAudit);
@@ -723,12 +761,28 @@ async function loadIssues() {
   const params = new URLSearchParams({ batch_id: state.batchId });
   const city = fieldValue("filter-city");
   const ledger = document.querySelector("#filter-ledger").value;
+  const rule = document.querySelector("#filter-rule").value;
   const status = document.querySelector("#filter-status").value;
   if (city) params.set("city", city);
   if (ledger) params.set("ledger_type", ledger);
+  if (rule) params.set("rule_id", rule);
   if (status) params.set("status", status);
   const data = await fetchJson(`/api/issues?${params.toString()}`);
+  renderIssueRuleOptions(data.rules || [], rule);
   renderIssueRows(data.issues || []);
+}
+
+function renderIssueRuleOptions(rules, selectedRule) {
+  const select = document.querySelector("#filter-rule");
+  if (!select) return;
+  const options = ['<option value="">全部规则</option>'].concat(
+    rules.map((rule) => {
+      const selected = rule.rule_id === selectedRule ? "selected" : "";
+      const label = `${rule.rule_name || rule.rule_id} (${formatNumber(rule.issue_count)})`;
+      return `<option value="${escapeHtml(rule.rule_id)}" ${selected}>${escapeHtml(label)}</option>`;
+    }),
+  );
+  select.innerHTML = options.join("");
 }
 
 function renderIssueRows(issues) {
@@ -744,10 +798,10 @@ function renderIssueRows(issues) {
           <td>${escapeHtml(issue.issue_code)}</td>
           <td>${escapeHtml(issue.city)}</td>
           <td>${escapeHtml(ledgerLabel(issue.ledger_type))}</td>
-          <td>${escapeHtml(issue.rule_name || issue.rule_id)}</td>
+          <td class="rule-cell"><strong>${escapeHtml(issue.rule_name || issue.rule_id)}</strong><span>${escapeHtml(issue.rule_id)}</span></td>
           <td><span class="chip chip-${severityTone(issue.severity)}">${escapeHtml(issue.severity)}</span></td>
           <td><span class="chip chip-info">${escapeHtml(statusLabel(issue.status))}</span></td>
-          <td>${escapeHtml(issue.message)}</td>
+          <td class="message-cell">${escapeHtml(issue.message)}</td>
           <td><button class="text-button" data-close="${escapeHtml(issue.issue_code)}" type="button">关闭</button></td>
         </tr>
       `,
@@ -782,7 +836,11 @@ async function renderExport() {
       setOperationResult("pending", "正在导出...");
       try {
         const data = await postJson("/api/export", { batch_id: batchId });
-        setOperationResult("success", data.paths?.length ? resultList(data.paths) : "当前批次没有可导出的问题");
+        if (data.paths?.length) {
+          setOperationHtml("success", resultList(data.paths));
+        } else {
+          setOperationResult("success", "当前批次没有可导出的问题");
+        }
       } catch (error) {
         setOperationResult("error", error.message);
       }

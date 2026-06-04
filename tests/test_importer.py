@@ -83,6 +83,29 @@ def test_import_workbook_accepts_sheet_and_header_aliases(app_config, tmp_path):
     }
 
 
+def test_import_workbook_maps_current_rent_workbook_site_columns(app_config, tmp_path):
+    initialize_database(app_config)
+    workbook_path = _save_current_rent_format_workbook(tmp_path / "current_rent_format.xlsx")
+
+    result = import_workbook(app_config, workbook_path)
+
+    assert result.errors == []
+    with connect(app_config) as conn:
+        row = conn.execute(
+            """
+            select telecom_site_code, telecom_site_name, tower_site_code, tower_site_name
+            from ledger_rows
+            where ledger_type = 'tower_rent'
+            """
+        ).fetchone()
+    assert dict(row) == {
+        "telecom_site_code": "932ADQ.ADQXSF01",
+        "telecom_site_name": "安定区新市医院",
+        "tower_site_code": "621102908000000451",
+        "tower_site_name": "市医院联通共享站",
+    }
+
+
 def test_import_workbook_can_append_to_existing_batch(app_config, sample_workbook):
     initialize_database(app_config)
     first = import_workbook(app_config, sample_workbook)
@@ -181,6 +204,55 @@ def _save_alias_workbook(path):
     ws.merge_cells("A1:E1")
     ws.append(["2026-04-10", "2026-04", "HZ001", "西湖一站", "WO001", 3])
 
+    wb.save(path)
+    return path
+
+
+def _save_current_rent_format_workbook(path):
+    wb = _base_workbook()
+    old = wb["铁塔租费台账"]
+    wb.remove(old)
+    ws = wb.create_sheet("租费台账")
+    ws.append([
+        "是否存在问题",
+        "具体问题",
+        "省份",
+        "地市",
+        "区县",
+        "需求单号",
+        "运营商",
+        "需求承接地市",
+        "站址所属地市",
+        "需求类型",
+        "起租状态",
+        "铁塔平台起租状态",
+        "业务确认单号",
+        "站址编码",
+        "站址名称",
+        "电信站址编码",
+        "电信站址名称",
+        "详细地址",
+    ])
+    ws.append([
+        "否",
+        "",
+        "甘肃省",
+        "定西市",
+        "安定区",
+        "1217052300343238",
+        "电信",
+        "定西市",
+        "定西市",
+        "塔类",
+        "起租",
+        "",
+        "CTC-CRM-GSDX-2017-001777",
+        "621102908000000451",
+        "市医院联通共享站",
+        "932ADQ.ADQXSF01",
+        "安定区新市医院",
+        "甘肃省定西市安定",
+    ])
     wb.save(path)
     return path
 

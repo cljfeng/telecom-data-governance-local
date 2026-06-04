@@ -1,6 +1,5 @@
 import json
 from dataclasses import dataclass
-from statistics import median
 from typing import Any, Callable
 
 from governance_app.models import LedgerType, Severity
@@ -36,7 +35,7 @@ class RuleMetadata:
 @dataclass(frozen=True)
 class RuleThresholds:
     electricity_price_min: float = 0
-    electricity_price_max: float = 2
+    electricity_price_max: float = 0.9
     share_percent_min: float = 0
     share_percent_max: float = 100
 
@@ -75,10 +74,9 @@ def parse_row(row_json: str) -> dict[str, Any]:
 RULE_CATALOG: dict[str, RuleMetadata] = {
     "required_site_code": RuleMetadata("required_site_code", "站址编码必填", "site", "high", "检查站址台账电信站址编码是否为空。", "补充电信站址编码"),
     "required_city": RuleMetadata("required_city", "地市信息必填", "site", "medium", "检查站址台账地市字段是否为空。", "补充地市"),
-    "electricity_price_range": RuleMetadata("electricity_price_range", "电费单价合理性", "electricity", "high", "检查电费单价是否超出默认合理区间。", "核实电费单价或转供电合同"),
+    "electricity_price_range": RuleMetadata("electricity_price_range", "电费高单价", "electricity", "high", "检查电费单价是否超过 0.9 元。", "核实电费单价、电价依据或转供电合同"),
     "electricity_share_percent": RuleMetadata("electricity_share_percent", "电费分摊比例范围", "electricity", "medium", "检查电费分摊比例是否在 0-100 范围内。", "核实共享情况和分摊比例"),
     "generator_duration_positive": RuleMetadata("generator_duration_positive", "发电时长有效性", "generator", "high", "检查发电时长是否为正数。", "核实发电起止时间和时长"),
-    "electricity_price_benchmark": RuleMetadata("electricity_price_benchmark", "电费单价同类基准偏离", "electricity", "high", "按供电方式比较电费单价，识别明显高于同类基准的记录。", "核实电价依据、合同和报账口径"),
     "electricity_contract_share_variance": RuleMetadata("electricity_contract_share_variance", "合同分摊比例偏差", "electricity", "medium", "比较实际分摊比例与合同约定分摊比例。", "核对合同约定和实际分摊比例"),
     "electricity_duplicate_payment": RuleMetadata("electricity_duplicate_payment", "电费重复报账", "electricity", "high", "识别同站址、同电表、同账期的重复电费记录。", "核实同账期是否重复报账"),
     "electricity_usage_spike_drop": RuleMetadata("electricity_usage_spike_drop", "用电量异常波动", "electricity", "high", "识别同站址电表用电量较历史记录的异常上升或下降。", "核实抄表数据、设备变化和报账周期"),
@@ -121,12 +119,11 @@ def all_rules(thresholds: RuleThresholds = DEFAULT_THRESHOLDS) -> list[AuditRule
             "electricity_price_range",
             "electricity",
             "high",
-            _number_range(
+            _number_above(
                 "电费单价",
-                thresholds.electricity_price_min,
                 thresholds.electricity_price_max,
-                f"电费单价超出 {thresholds.electricity_price_min:g}-{thresholds.electricity_price_max:g} 元合理范围",
-                "核实电费单价或转供电合同",
+                f"电费单价超过 {thresholds.electricity_price_max:g} 元",
+                "核实电费单价、电价依据或转供电合同",
             ),
         ),
         AuditRule(
@@ -152,12 +149,6 @@ def all_rules(thresholds: RuleThresholds = DEFAULT_THRESHOLDS) -> list[AuditRule
 
 def all_batch_rules() -> list[BatchAuditRule]:
     return [
-        BatchAuditRule(
-            "electricity_price_benchmark",
-            "electricity",
-            "high",
-            _electricity_price_benchmark,
-        ),
         BatchAuditRule(
             "electricity_contract_share_variance",
             "electricity",
@@ -310,6 +301,18 @@ def _number_range(field_name: str, minimum: float, maximum: float, message: str,
     return evaluate
 
 
+def _number_above(field_name: str, maximum: float, message: str, suggestion: str):
+    def evaluate(row: dict[str, Any]) -> RuleFinding | None:
+        number = _number(row.get(field_name))
+        if number is None:
+            return None
+        if number > maximum:
+            return RuleFinding("", "high", field_name, message, suggestion)
+        return None
+
+    return evaluate
+
+
 def _greater_than_zero(field_name: str, message: str, suggestion: str):
     def evaluate(row: dict[str, Any]) -> RuleFinding | None:
         value = row.get(field_name)
@@ -342,39 +345,6 @@ _MAINTENANCE_DISCOUNT_FIELDS = ("维护费共享折扣", "维护费最低折扣"
 _SHARING_INFO_FIELDS = ("站址共享信息", "铁塔共享信息", "共享信息")
 _TRANSFER_CONTRACT_FIELDS = ("转供电合同情况", "转供电合同", "合同情况")
 _GENERATOR_AMOUNT_FIELDS = ("最终分摊金额", "分摊金额", "非5G金额", "5G金额")
-
-
-def _electricity_price_benchmark(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
-    grouped: dict[tuple[str, str], list[tuple[AuditLedgerRow, float]]] = {}
-    for ledger_row in rows:
-        price = _number(_first_value(ledger_row.row, _PRICE_FIELDS))
-        supply = _text(_first_value(ledger_row.row, _SUPPLY_FIELDS))
-        district = _text(ledger_row.district or ledger_row.row.get("区县"))
-        if price is None or not supply or not district:
-            continue
-        grouped.setdefault((district, supply), []).append((ledger_row, price))
-
-    findings: list[BatchRuleFinding] = []
-    for (district, supply), peers in grouped.items():
-        if len(peers) < 2:
-            continue
-        benchmark = median(price for _, price in peers)
-        if benchmark == 0:
-            continue
-        for ledger_row, price in peers:
-            variance = (price - benchmark) / benchmark
-            if abs(variance) > 0.05:
-                findings.append(
-                    BatchRuleFinding(
-                        ledger_row.ledger_row_id,
-                        "电费单价",
-                        f"同区县同供电方式电费单价偏差超过±5%：{district}/{supply}基准{benchmark:g}，当前{price:g}",
-                        "核实供电合同、电价依据及报账单价",
-                    )
-                )
-    return findings
-
-
 def _electricity_contract_share_variance(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
     findings: list[BatchRuleFinding] = []
     for ledger_row in rows:

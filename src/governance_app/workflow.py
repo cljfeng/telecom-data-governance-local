@@ -167,6 +167,28 @@ def list_issues(config: AppConfig, batch_id: int, filters: dict[str, str] | None
         return issues
 
 
+def list_issue_rules(config: AppConfig, batch_id: int) -> list[dict[str, Any]]:
+    with connect(config) as conn:
+        rows = conn.execute(
+            """
+            select rule_id, count(*) as issue_count
+              from issues
+             where batch_id = ?
+             group by rule_id
+             order by issue_count desc, rule_id
+            """,
+            (batch_id,),
+        ).fetchall()
+    return [
+        {
+            "rule_id": row["rule_id"],
+            "rule_name": rule_metadata(row["rule_id"]).name,
+            "issue_count": row["issue_count"],
+        }
+        for row in rows
+    ]
+
+
 def city_progress(config: AppConfig, batch_id: int) -> list[dict[str, Any]]:
     with connect(config) as conn:
         rows = conn.execute(

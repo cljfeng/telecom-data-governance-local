@@ -98,17 +98,27 @@ def workbook_sheet_for(sheetnames: list[str], ledger_type: LedgerType) -> str | 
     return None
 
 
-def canonical_header(value: object) -> str | None:
+def canonical_header(value: object, ledger_type: LedgerType | None = None, raw_headers: tuple[object, ...] = ()) -> str | None:
     if value is None:
         return None
     text = str(value).strip()
     if not text:
         return None
     compact = _normalize_name(text)
+    if ledger_type == "tower_rent" and _has_explicit_telecom_site_headers(raw_headers):
+        if compact == _normalize_name("站址编码"):
+            return "铁塔站址编码"
+        if compact == _normalize_name("站址名称"):
+            return "铁塔站址名称"
     for alias, canonical in HEADER_ALIASES.items():
         if compact == _normalize_name(alias):
             return canonical
     return text
+
+
+def _has_explicit_telecom_site_headers(raw_headers: tuple[object, ...]) -> bool:
+    normalized = {_normalize_name(value) for value in raw_headers if value not in (None, "")}
+    return _normalize_name("电信站址编码") in normalized or _normalize_name("电信站址名称") in normalized
 
 
 def _normalize_name(value: object) -> str:

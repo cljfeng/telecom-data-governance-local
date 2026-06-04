@@ -6,6 +6,34 @@ from governance_app.db import connect, initialize_database
 from governance_app.server import create_app
 
 
+def _multipart_upload_body(
+    file_path: Path,
+    fields: dict[str, str] | None = None,
+    file_field: str = "file",
+) -> tuple[str, bytes]:
+    boundary = "----codex-test-boundary"
+    parts: list[bytes] = []
+    for name, value in (fields or {}).items():
+        parts.append(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                f"{value}\r\n"
+            ).encode("utf-8")
+        )
+    parts.append(
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{file_field}"; filename="{file_path.name}"\r\n'
+            "Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\r\n\r\n"
+        ).encode("utf-8")
+        + file_path.read_bytes()
+        + b"\r\n"
+    )
+    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return f"multipart/form-data; boundary={boundary}", b"".join(parts)
+
+
 def test_health_endpoint_returns_ok(app_config):
     initialize_database(app_config)
     app = create_app(app_config)
@@ -104,6 +132,56 @@ def test_import_preview_endpoint_returns_counts_without_creating_batch(app_confi
         assert conn.execute("select count(*) as c from import_batches").fetchone()["c"] == 0
 
 
+def test_import_preview_upload_endpoint_accepts_selected_file(app_config, sample_workbook):
+    initialize_database(app_config)
+    app = create_app(app_config)
+    content_type, body = _multipart_upload_body(sample_workbook)
+
+    status, headers, response_body = app.handle_test_upload_request("/api/import/preview/upload", content_type, body)
+
+    data = json.loads(response_body)
+    assert status == 200
+    assert data["ok"] is True
+    assert data["ledger_counts"]["site"] == 1
+    assert (app_config.data_dir / "uploads").exists()
+    with connect(app_config) as conn:
+        assert conn.execute("select count(*) as c from import_batches").fetchone()["c"] == 0
+
+
+def test_import_upload_endpoint_imports_selected_file(app_config, sample_workbook):
+    initialize_database(app_config)
+    app = create_app(app_config)
+    content_type, body = _multipart_upload_body(sample_workbook, {"strategy": "new"})
+
+    status, headers, response_body = app.handle_test_upload_request("/api/import/upload", content_type, body)
+
+    data = json.loads(response_body)
+    assert status == 200
+    assert data["batch_id"] == 1
+    assert data["ledger_counts"]["site"] == 1
+    with connect(app_config) as conn:
+        batch = conn.execute("select source_file from import_batches where id = 1").fetchone()
+        assert "/uploads/" in batch["source_file"]
+
+
+def test_import_upload_endpoint_reports_missing_file_without_generic_http_400(app_config):
+    initialize_database(app_config)
+    app = create_app(app_config)
+    boundary = "----codex-test-boundary"
+    content_type = f"multipart/form-data; boundary={boundary}"
+    body = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="strategy"\r\n\r\n'
+        "new\r\n"
+        f"--{boundary}--\r\n"
+    ).encode("utf-8")
+
+    status, headers, response_body = app.handle_test_upload_request("/api/import/upload", content_type, body)
+
+    assert status == 400
+    assert json.loads(response_body)["error"] == "请选择台账文件"
+
+
 def test_import_endpoint_accepts_append_and_replace_strategy(app_config, sample_workbook):
     initialize_database(app_config)
     app = create_app(app_config)
@@ -155,6 +233,22 @@ def test_import_recent_files_and_error_export_endpoints(app_config, workbook_mis
     assert recent[0]["ok"] is False
 
 
+def test_import_endpoint_returns_readable_error_with_validation_details(app_config, workbook_missing_site_code):
+    initialize_database(app_config)
+    app = create_app(app_config)
+
+    status, headers, body = app.handle_test_request(
+        "POST",
+        "/api/import",
+        json.dumps({"path": str(workbook_missing_site_code)}),
+    )
+
+    data = json.loads(body)
+    assert status == 400
+    assert data["error"] == "导入未通过，请按错误明细修正后重试"
+    assert data["errors"][0]["field_name"] == "电信站址编码"
+
+
 def test_workbench_management_endpoints(app_config, sample_workbook):
     initialize_database(app_config)
     app = create_app(app_config)
@@ -203,8 +297,16 @@ def test_issue_city_progress_status_and_archive_endpoints(app_config, sample_wor
     status, headers, body = app.handle_test_request("GET", f"/api/issues?batch_id={batch_id}&city=杭州")
 
     assert status == 200
-    issue = json.loads(body)["issues"][0]
+    payload = json.loads(body)
+    issue = payload["issues"][0]
     assert issue["city"] == "杭州"
+    assert payload["rules"][0]["rule_id"] == issue["rule_id"]
+    assert payload["rules"][0]["issue_count"] == 1
+
+    status, headers, body = app.handle_test_request("GET", f"/api/issues?batch_id={batch_id}&rule_id={issue['rule_id']}")
+
+    assert status == 200
+    assert json.loads(body)["issues"][0]["rule_id"] == issue["rule_id"]
 
     status, headers, body = app.handle_test_request(
         "POST",

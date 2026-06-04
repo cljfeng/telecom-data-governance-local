@@ -49,7 +49,6 @@ function renderRuleRows(rules) {
   tbody.innerHTML = rules
     .map((rule) => {
       const isPriceRange = rule.rule_id === "electricity_price_range";
-      const minValue = rule.config?.min ?? "";
       const maxValue = rule.config?.max ?? "";
       return `
         <tr>
@@ -63,7 +62,7 @@ function renderRuleRows(rules) {
           <td>
             ${
               isPriceRange
-                ? `<div class="inline-fields"><input data-rule-min="${escapeHtml(rule.rule_id)}" type="number" step="0.01" placeholder="最小" value="${escapeHtml(minValue)}"><input data-rule-max="${escapeHtml(rule.rule_id)}" type="number" step="0.01" placeholder="最大" value="${escapeHtml(maxValue)}"></div>`
+                ? `<div class="inline-fields"><input data-rule-max="${escapeHtml(rule.rule_id)}" type="number" step="0.01" placeholder="高于阈值" value="${escapeHtml(maxValue)}"></div>`
                 : '<span class="table-note">默认口径</span>'
             }
           </td>
@@ -79,9 +78,7 @@ function renderRuleRows(rules) {
         const enabled = document.querySelector(`[data-rule-enabled="${CSS.escape(ruleId)}"]`).checked;
         const config = {};
         if (ruleId === "electricity_price_range") {
-          const minValue = document.querySelector(`[data-rule-min="${CSS.escape(ruleId)}"]`).value;
           const maxValue = document.querySelector(`[data-rule-max="${CSS.escape(ruleId)}"]`).value;
-          if (minValue !== "") config.min = Number(minValue);
           if (maxValue !== "") config.max = Number(maxValue);
         }
         await postJson("/api/rules/settings", { rule_id: ruleId, enabled, config });

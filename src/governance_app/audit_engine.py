@@ -101,7 +101,7 @@ def _thresholds_from_settings(settings: dict[str, RuleSetting]) -> RuleThreshold
     config = price_range.config if price_range else {}
     return RuleThresholds(
         electricity_price_min=float(config.get("min", 0)),
-        electricity_price_max=float(config.get("max", 2)),
+        electricity_price_max=float(config.get("max", 0.9)),
     )
 
 

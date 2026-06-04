@@ -101,7 +101,7 @@ def test_archive_batch_writes_operation_log_sheet_and_locks_batch(app_config, sa
     assert "操作日志" in wb.sheetnames
     issue_ws = wb["问题清单"]
     assert issue_ws["H1"].value == "规则名称"
-    assert issue_ws["H2"].value == "电费单价合理性"
+    assert issue_ws["H2"].value == "电费高单价"
     with connect(app_config) as conn:
         batch = conn.execute("select status, is_archived from import_batches where id = ?", (imported.batch_id,)).fetchone()
         assert batch["status"] == "archived"
@@ -153,6 +153,6 @@ def test_archive_batch_adds_risk_rule_and_open_issue_sheets(app_config, sample_w
     assert "规则命中排行" in wb.sheetnames
     assert "风险等级分布" in wb.sheetnames
     assert "未闭环问题" in wb.sheetnames
-    assert wb["规则命中排行"]["B2"].value == "电费单价合理性"
+    assert wb["规则命中排行"]["B2"].value == "电费高单价"
     assert wb["风险等级分布"]["A2"].value == "high"
     assert wb["未闭环问题"]["A2"].value is None

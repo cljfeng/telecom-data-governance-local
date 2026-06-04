@@ -72,7 +72,9 @@ function renderLedgerDataRows(rows, ledgerLabel) {
     return;
   }
   container.className = "ledger-data-list";
-  container.innerHTML = rows
+  container.innerHTML = `
+    <div class="data-count-bar">共加载 ${rows.length} 条台账记录，单次最多显示 500 条</div>
+    ${rows
     .map(
       (row) => `
         <article class="ledger-row-card">
@@ -92,12 +94,8 @@ function renderLedgerDataRows(rows, ledgerLabel) {
             .map(
               ([groupName, fields]) => `
                 <details class="field-group" open>
-                  <summary>${escapeHtml(groupName)}</summary>
-                  <dl>
-                    ${Object.entries(fields)
-                      .map(([key, value]) => `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value ?? "")}</dd></div>`)
-                      .join("")}
-                  </dl>
+                  <summary>${escapeHtml(groupName)} <span>${Object.keys(fields).length} 项</span></summary>
+                  ${renderFieldTable(fields)}
                 </details>
               `,
             )
@@ -105,5 +103,29 @@ function renderLedgerDataRows(rows, ledgerLabel) {
         </article>
       `,
     )
-    .join("");
+    .join("")}
+  `;
+}
+
+function renderFieldTable(fields) {
+  const entries = Object.entries(fields || {});
+  if (!entries.length) return '<div class="empty-state">暂无字段</div>';
+  return `
+    <div class="field-table-wrap">
+      <table class="field-table">
+        <tbody>
+          ${entries
+            .map(
+              ([key, value]) => `
+                <tr>
+                  <th>${escapeHtml(key)}</th>
+                  <td title="${escapeHtml(value ?? "")}">${escapeHtml(value ?? "")}</td>
+                </tr>
+              `,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
 }

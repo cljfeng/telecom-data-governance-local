@@ -408,6 +408,10 @@ h3 {
   overflow-x: auto;
 }
 
+.table-wrap table {
+  white-space: normal;
+}
+
 table {
   width: 100%;
   min-width: 640px;
@@ -819,6 +823,62 @@ tbody tr:last-child td {
   border-bottom: 1px solid var(--line);
 }
 
+.audit-filter-grid {
+  grid-template-columns: minmax(120px, 1fr) minmax(128px, 0.9fr) minmax(220px, 1.35fr) minmax(150px, 1fr) auto auto;
+}
+
+.issue-table-wrap {
+  max-height: min(68vh, 720px);
+  border-top: 1px solid var(--line-soft);
+  overflow: auto;
+}
+
+.issue-table {
+  min-width: 980px;
+}
+
+.issue-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.issue-table th:nth-child(1),
+.issue-table td:nth-child(1) {
+  width: 150px;
+}
+
+.issue-table th:nth-child(4),
+.issue-table td:nth-child(4) {
+  width: 220px;
+}
+
+.issue-table th:nth-child(7),
+.issue-table td:nth-child(7) {
+  min-width: 280px;
+}
+
+.rule-cell {
+  display: grid;
+  gap: 4px;
+}
+
+.rule-cell strong {
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.rule-cell span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.message-cell {
+  min-width: 280px;
+  max-width: 520px;
+  line-height: 1.55;
+}
+
 .progress-pill,
 .risk-pill,
 .chip {
@@ -867,6 +927,28 @@ tbody tr:last-child td {
   display: grid;
   gap: 12px;
   margin-top: 18px;
+  max-height: min(72vh, 760px);
+  overflow: auto;
+  padding: 0 20px 20px;
+}
+
+.ledger-data-list.empty-state {
+  display: block;
+  max-height: none;
+  margin-top: 0;
+  overflow: visible;
+  padding: 38px 20px;
+}
+
+.data-count-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 10px 0;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.96);
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .ledger-row-card {
@@ -896,28 +978,52 @@ tbody tr:last-child td {
 }
 
 .field-group summary {
+  align-items: center;
   cursor: pointer;
+  display: flex;
+  gap: 10px;
   font-weight: 700;
+  justify-content: space-between;
 }
 
-.field-group dl {
-  display: grid;
-  gap: 8px 14px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin: 10px 0 0;
-}
-
-.field-group dl div {
-  min-width: 0;
-}
-
-.field-group dt {
+.field-group summary span {
   color: var(--muted);
   font-size: 12px;
+  font-weight: 800;
 }
 
-.field-group dd {
-  margin: 2px 0 0;
+.field-table-wrap {
+  margin: 10px 0 0;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.field-table {
+  min-width: 560px;
+}
+
+.field-table th,
+.field-table td {
+  padding: 10px 12px;
+  vertical-align: top;
+}
+
+.field-table th {
+  position: sticky;
+  left: 0;
+  width: 190px;
+  color: var(--muted);
+  background: #f7faff;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.field-table td {
+  min-width: 360px;
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 

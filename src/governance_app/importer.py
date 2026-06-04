@@ -33,7 +33,7 @@ def import_workbook(config: AppConfig, workbook_path: Path, strategy: str = "new
             errors.append(ValidationErrorDetail(0, canonical_sheet_name, "缺少必需 sheet"))
             continue
         ws = wb[sheet_name]
-        headers = _headers(ws, HEADER_ROWS[ledger_type])
+        headers = _headers(ws, HEADER_ROWS[ledger_type], ledger_type)
         missing = [name for name in required_headers_for(ledger_type) if name not in headers]
         for name in missing:
             errors.append(ValidationErrorDetail(1, name, "缺少必需字段"))
@@ -127,11 +127,13 @@ def _clear_batch_data(conn, batch_id: int) -> None:
     conn.execute("delete from raw_rows where batch_id = ?", (batch_id,))
 
 
-def _headers(ws: Worksheet, header_rows: int) -> list[str]:
+def _headers(ws: Worksheet, header_rows: int, ledger_type: LedgerType) -> list[str]:
     if header_rows == 1:
-        return [header for cell in ws[1] if (header := canonical_header(cell.value))]
-    first = _parent_headers(ws)
-    second = [canonical_header(cell.value) for cell in ws[2]]
+        raw_headers = tuple(cell.value for cell in ws[1])
+        return [header for cell in ws[1] if (header := canonical_header(cell.value, ledger_type, raw_headers))]
+    first = _parent_headers(ws, ledger_type)
+    raw_second_headers = tuple(cell.value for cell in ws[2])
+    second = [canonical_header(cell.value, ledger_type, raw_second_headers) for cell in ws[2]]
     headers: list[str] = []
     for parent, child in zip(first, second, strict=False):
         if parent == "发电时间" and child and child != "发电时长":
@@ -152,10 +154,11 @@ def _data_rows(ws: Worksheet, headers: list[str], first_data_row: int) -> list[t
     return rows
 
 
-def _parent_headers(ws: Worksheet) -> list[str | None]:
+def _parent_headers(ws: Worksheet, ledger_type: LedgerType) -> list[str | None]:
     headers: list[str | None] = []
+    raw_headers = tuple(cell.value for cell in ws[1])
     for cell in ws[1]:
-        value = canonical_header(cell.value)
+        value = canonical_header(cell.value, ledger_type, raw_headers)
         if value:
             headers.append(value)
             continue

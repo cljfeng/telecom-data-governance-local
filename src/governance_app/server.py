@@ -1,10 +1,16 @@
 import argparse
+from email.parser import BytesParser
+from email.policy import default
 import json
 from dataclasses import dataclass
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from uuid import uuid4
+from zipfile import BadZipFile
+
+from openpyxl.utils.exceptions import InvalidFileException
 
 from governance_app.analytics import dashboard_summary
 from governance_app.archive import archive_batch, archive_precheck
@@ -25,6 +31,7 @@ from governance_app.workflow import (
     create_batch,
     get_batch_workflow,
     list_batches,
+    list_issue_rules,
     list_issues,
     list_ledger_rows,
     record_operation,
@@ -39,6 +46,15 @@ class LocalApp:
 
     def handle_test_request(self, method: str, path: str, body: str = "") -> tuple[int, dict[str, str], str]:
         return _route(self.config, method, path, body)
+
+    def handle_test_upload_request(
+        self,
+        path: str,
+        content_type: str,
+        body: bytes,
+    ) -> tuple[int, dict[str, str], str]:
+        fields, files, error = _multipart_body(content_type, body)
+        return error or _route_upload(self.config, path, fields, files)
 
 
 def create_app(config: AppConfig) -> LocalApp:
@@ -96,7 +112,7 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
             return error
         query = parse_qs(parsed.query)
         filters = {key: values[0] for key, values in query.items() if key != "batch_id" and values and values[0]}
-        return _json({"issues": list_issues(config, batch_id, filters)})
+        return _json({"issues": list_issues(config, batch_id, filters), "rules": list_issue_rules(config, batch_id)})
     if method == "GET" and parsed.path == "/api/ledger-rows":
         batch_id, error = _batch_id_from_query(parsed.query)
         if error:
@@ -132,51 +148,12 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         payload, error = _json_body(body)
         if error:
             return error
-        path_value = payload.get("path")
-        if not isinstance(path_value, str) or not path_value:
-            return _json({"error": "path is required"}, status=400)
-        strategy = payload.get("strategy", "new")
-        if not isinstance(strategy, str):
-            return _json({"error": "strategy must be string"}, status=400)
-        batch_id = payload.get("batch_id")
-        try:
-            result = import_workbook(
-                config,
-                Path(path_value),
-                strategy=strategy,
-                batch_id=int(batch_id) if batch_id is not None else None,
-            )
-        except (TypeError, ValueError) as exc:
-            return _json({"error": str(exc)}, status=400)
-        return _json(
-            {
-                "batch_id": result.batch_id,
-                "ledger_counts": result.ledger_counts,
-                "errors": [error.__dict__ for error in result.errors],
-            },
-            status=200 if result.batch_id is not None else 400,
-        )
+        return _import_from_payload(config, payload)
     if method == "POST" and parsed.path == "/api/import/preview":
         payload, error = _json_body(body)
         if error:
             return error
-        path_value = payload.get("path")
-        if not isinstance(path_value, str) or not path_value:
-            return _json({"error": "path is required"}, status=400)
-        result = preview_workbook(config, Path(path_value))
-        error_export_path = ""
-        if result.errors:
-            error_export_path = str(export_preview_errors(config, Path(path_value), result))
-        return _json(
-            {
-                "ok": result.ok,
-                "batch_name": result.batch_name,
-                "ledger_counts": result.ledger_counts,
-                "errors": [error.__dict__ for error in result.errors],
-                "error_export_path": error_export_path,
-            },
-            status=200 if result.ok else 400,
-        )
+        return _preview_from_payload(config, payload)
     if method == "GET" and parsed.path == "/api/import/recent":
         return _json({"files": list_recent_files(config)})
     if method == "POST" and parsed.path == "/api/audit":
@@ -260,6 +237,98 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
     return _json({"error": "not found"}, status=404)
 
 
+def _route_upload(
+    config: AppConfig,
+    path: str,
+    fields: dict[str, str],
+    files: dict[str, tuple[str, bytes]],
+) -> tuple[int, dict[str, str], str]:
+    parsed = urlparse(path)
+    if parsed.path not in {"/api/import/upload", "/api/import/preview/upload"}:
+        return _json({"error": "not found"}, status=404)
+    uploaded = files.get("file")
+    if uploaded is None:
+        return _json({"error": "请选择台账文件"}, status=400)
+    filename, content = uploaded
+    if not content:
+        return _json({"error": "台账文件为空"}, status=400)
+    try:
+        workbook_path = _save_uploaded_workbook(config, filename, content)
+    except ValueError as exc:
+        return _json({"error": str(exc)}, status=400)
+
+    payload: dict[str, object] = {"path": str(workbook_path)}
+    payload.update(fields)
+    if parsed.path == "/api/import/upload":
+        return _import_from_payload(config, payload)
+    return _preview_from_payload(config, payload)
+
+
+def _preview_from_payload(config: AppConfig, payload: dict) -> tuple[int, dict[str, str], str]:
+    path_value = payload.get("path")
+    if not isinstance(path_value, str) or not path_value:
+        return _json({"error": "path is required"}, status=400)
+    workbook_path = Path(path_value)
+    try:
+        result = preview_workbook(config, workbook_path)
+    except (OSError, InvalidFileException, BadZipFile) as exc:
+        return _json({"error": f"无法读取 Excel 文件：{exc}"}, status=400)
+    error_export_path = ""
+    if result.errors:
+        error_export_path = str(export_preview_errors(config, workbook_path, result))
+    return _json(
+        {
+            "error": "" if result.ok else "预检未通过，请按错误明细修正后重试",
+            "ok": result.ok,
+            "batch_name": result.batch_name,
+            "ledger_counts": result.ledger_counts,
+            "errors": [error.__dict__ for error in result.errors],
+            "error_export_path": error_export_path,
+        },
+        status=200 if result.ok else 400,
+    )
+
+
+def _import_from_payload(config: AppConfig, payload: dict) -> tuple[int, dict[str, str], str]:
+    path_value = payload.get("path")
+    if not isinstance(path_value, str) or not path_value:
+        return _json({"error": "path is required"}, status=400)
+    strategy = payload.get("strategy", "new")
+    if not isinstance(strategy, str):
+        return _json({"error": "strategy must be string"}, status=400)
+    batch_id = payload.get("batch_id")
+    try:
+        result = import_workbook(
+            config,
+            Path(path_value),
+            strategy=strategy,
+            batch_id=int(batch_id) if batch_id not in (None, "") else None,
+        )
+    except (TypeError, ValueError, OSError, InvalidFileException, BadZipFile) as exc:
+        return _json({"error": str(exc)}, status=400)
+    return _json(
+        {
+            "error": "" if result.batch_id is not None else "导入未通过，请按错误明细修正后重试",
+            "batch_id": result.batch_id,
+            "ledger_counts": result.ledger_counts,
+            "errors": [error.__dict__ for error in result.errors],
+        },
+        status=200 if result.batch_id is not None else 400,
+    )
+
+
+def _save_uploaded_workbook(config: AppConfig, filename: str, content: bytes) -> Path:
+    safe_name = Path(filename or "workbook.xlsx").name
+    suffix = Path(safe_name).suffix.lower()
+    if suffix not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        raise ValueError("请选择 .xlsx 或 .xlsm 格式的 Excel 台账文件")
+    upload_dir = config.data_dir / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    target = upload_dir / f"{uuid4().hex}-{safe_name}"
+    target.write_bytes(content)
+    return target
+
+
 def _json(payload: dict, status: int = 200) -> tuple[int, dict[str, str], str]:
     return (
         status,
@@ -276,6 +345,36 @@ def _json_body(body: str) -> tuple[dict, tuple[int, dict[str, str], str] | None]
     if not isinstance(payload, dict):
         return {}, _json({"error": "json object required"}, status=400)
     return payload, None
+
+
+def _multipart_body(
+    content_type: str,
+    body: bytes,
+) -> tuple[dict[str, str], dict[str, tuple[str, bytes]], tuple[int, dict[str, str], str] | None]:
+    if "multipart/form-data" not in content_type:
+        return {}, {}, _json({"error": "content-type must be multipart/form-data"}, status=400)
+    message = BytesParser(policy=default).parsebytes(
+        f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8") + body
+    )
+    if not message.is_multipart():
+        return {}, {}, _json({"error": "invalid multipart body"}, status=400)
+
+    fields: dict[str, str] = {}
+    files: dict[str, tuple[str, bytes]] = {}
+    for part in message.iter_parts():
+        if part.get_content_disposition() != "form-data":
+            continue
+        name = part.get_param("name", header="content-disposition")
+        if not name:
+            continue
+        filename = part.get_filename()
+        content = part.get_payload(decode=True) or b""
+        if filename:
+            files[name] = (filename, content)
+        else:
+            charset = part.get_content_charset() or "utf-8"
+            fields[name] = content.decode(charset, errors="replace")
+    return fields, files, None
 
 
 def _batch_id_from_payload(payload: dict) -> tuple[int, tuple[int, dict[str, str], str] | None]:
@@ -347,8 +446,14 @@ class RequestHandler(SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         if self.path.startswith("/api/"):
             length = int(self.headers.get("content-length", "0"))
-            body = self.rfile.read(length).decode("utf-8")
-            status, headers, response_body = _route(self.config, "POST", self.path, body)
+            content_type = self.headers.get("content-type", "")
+            raw_body = self.rfile.read(length)
+            if content_type.startswith("multipart/form-data"):
+                fields, files, error = _multipart_body(content_type, raw_body)
+                status, headers, response_body = error or _route_upload(self.config, self.path, fields, files)
+            else:
+                body = raw_body.decode("utf-8")
+                status, headers, response_body = _route(self.config, "POST", self.path, body)
             self.send_response(status)
             for key, value in headers.items():
                 self.send_header(key, value)

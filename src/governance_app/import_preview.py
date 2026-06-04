@@ -33,7 +33,7 @@ def preview_workbook(config: AppConfig, workbook_path: Path) -> ImportPreviewRes
             errors.append(ValidationErrorDetail(0, canonical_sheet_name, "缺少必需 sheet"))
             continue
         ws = wb[sheet_name]
-        headers = _headers(ws, HEADER_ROWS[ledger_type])
+        headers = _headers(ws, HEADER_ROWS[ledger_type], ledger_type)
         missing = [name for name in required_headers_for(ledger_type) if name not in headers]
         for name in missing:
             errors.append(ValidationErrorDetail(1, name, "缺少必需字段"))
@@ -75,7 +75,7 @@ NUMERIC_FIELDS = {
 }
 
 DATE_FIELDS = {"发电日期", "停租日期", "协议生效时间"}
-PERIOD_FIELDS = {"报账周期", "账单月份"}
+PERIOD_FIELDS = {"账单月份"}
 YES_NO_FIELDS = {
     "是否报账",
     "是否打包报账站址",
@@ -85,6 +85,26 @@ YES_NO_FIELDS = {
     "是否有空调",
     "是否有蓄电池",
 }
+YES_NO_FIELD_VALUES = {
+    "是否有机房": {"是", "否", "有", "0", "0.7", "机柜", "迷你机柜", "室分站", "电信机房", "迷你柜", "移动机柜", "机"},
+    "是否报账": {"是", "否", "迷你机柜"},
+    "是否有蓄电池": {"是", "否", "有", "无", "否（人工派单)", "联通自维站"},
+}
+NUMERIC_TEXT_VALUES = {
+    "/",
+    "\\",
+    "-",
+    "#N/A",
+    "无",
+    "是",
+    "否",
+    "包干计价",
+    "兰州不区分4/5G",
+}
+NUMERIC_TEXT_PATTERNS = (
+    re.compile(r"^\d+(?:\.\d+)?-\d+(?:\.\d+)?$"),
+    re.compile(r".*(?:单价|市价|包月|包年|包干|线损|元/年).*"),
+)
 
 
 def _quality_errors(ledger_type: LedgerType, rows: list[tuple[int, dict[str, Any]]]) -> list[ValidationErrorDetail]:
@@ -92,7 +112,7 @@ def _quality_errors(ledger_type: LedgerType, rows: list[tuple[int, dict[str, Any
     seen_site_codes: dict[str, int] = {}
     for row_number, row in rows:
         for field_name in NUMERIC_FIELDS:
-            if field_name in row and not _is_blank(row[field_name]) and _to_number(row[field_name]) is None:
+            if field_name in row and not _is_blank(row[field_name]) and _to_number(row[field_name]) is None and not _is_current_numeric_text(row[field_name]):
                 errors.append(ValidationErrorDetail(row_number, field_name, "数字格式异常"))
         for field_name in DATE_FIELDS:
             if field_name in row and not _is_blank(row[field_name]) and not _is_date_like(row[field_name]):
@@ -101,7 +121,8 @@ def _quality_errors(ledger_type: LedgerType, rows: list[tuple[int, dict[str, Any
             if field_name in row and not _is_blank(row[field_name]) and not _is_period_like(row[field_name]):
                 errors.append(ValidationErrorDetail(row_number, field_name, "账期格式异常"))
         for field_name in YES_NO_FIELDS:
-            if field_name in row and not _is_blank(row[field_name]) and str(row[field_name]).strip() not in {"是", "否"}:
+            allowed_values = YES_NO_FIELD_VALUES.get(field_name, {"是", "否"})
+            if field_name in row and not _is_blank(row[field_name]) and str(row[field_name]).strip() not in allowed_values:
                 errors.append(ValidationErrorDetail(row_number, field_name, "枚举值异常，应为：否、是"))
         percent = _to_number(row.get("分摊比例(%)"))
         if percent is not None and not 0 <= percent <= 100:
@@ -132,6 +153,13 @@ def _to_number(value: object) -> float | None:
     return None
 
 
+def _is_current_numeric_text(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    return text in NUMERIC_TEXT_VALUES or any(pattern.match(text) for pattern in NUMERIC_TEXT_PATTERNS)
+
+
 def _is_date_like(value: object) -> bool:
     if isinstance(value, datetime | date):
         return True
@@ -153,6 +181,8 @@ def _is_period_like(value: object) -> bool:
     if not isinstance(value, str):
         return False
     text = value.strip().replace("/", "-").replace(".", "-")
+    if re.fullmatch(r"\d{1,2}月", text):
+        return True
     for fmt in ("%Y-%m", "%Y%m"):
         try:
             datetime.strptime(text, fmt)
@@ -163,7 +193,7 @@ def _is_period_like(value: object) -> bool:
 
 
 def _is_blank(value: object) -> bool:
-    return value is None or (isinstance(value, str) and value.strip() == "")
+    return value is None or (isinstance(value, str) and value.strip() in {"", "/", "\\", "-", "#N/A"})
 
 
 def export_preview_errors(config: AppConfig, workbook_path: Path, result: ImportPreviewResult) -> Path:

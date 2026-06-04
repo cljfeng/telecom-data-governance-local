@@ -75,6 +75,16 @@ def test_preview_workbook_reports_row_level_quality_errors(app_config, tmp_path)
         assert conn.execute("select count(*) as c from import_batches").fetchone()["c"] == 0
 
 
+def test_preview_workbook_accepts_current_workbook_business_values(app_config, tmp_path):
+    initialize_database(app_config)
+    workbook_path = _save_current_business_values_workbook(tmp_path / "current_business_values.xlsx")
+
+    result = preview_workbook(app_config, workbook_path)
+
+    assert result.ok is True
+    assert result.errors == []
+
+
 def test_preview_large_workbook_returns_counts_without_writing_database(app_config, tmp_path):
     initialize_database(app_config)
     workbook_path = _save_large_workbook(tmp_path / "large_template.xlsx", row_count=250)
@@ -111,6 +121,37 @@ def _save_quality_error_workbook(path):
     ws.append(["序号", "发电日期", "账单月份", "电信站址编码", "电信站址名称", "运维系统工单号", "发电时长"])
     ws.append(["", "", "", "", "", "", ""])
     ws.append([1, "2026-13-40", "2026-04", "HZ001", "西湖一站", "WO001", 3])
+
+    wb.save(path)
+    return path
+
+
+def _save_current_business_values_workbook(path):
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    default = wb.active
+    wb.remove(default)
+
+    ws = wb.create_sheet("站址台账")
+    ws.append(["地市", "区县", "电信站址编码", "电信站址名称", "是否有机房", "是否拉远"])
+    ws.append(["定西市", "安定区", "932ADQ.ADQXSF01", "安定区新市医院", "机柜", "是"])
+
+    ws = wb.create_sheet("租费台账")
+    ws.append(["地市", "区县", "站址编码", "站址名称", "电信站址编码", "电信站址名称"])
+    ws.append(["定西市", "安定区", "621102908000000451", "市医院联通共享站", "932ADQ.ADQXSF01", "安定区新市医院"])
+
+    ws = wb.create_sheet("电费台账")
+    ws.append(["地市", "区县", "电信站址编码", "电信站址名称", "电表户号", "报账周期", "电费单价", "分摊比例(%)", "是否报账", "是否有机房"])
+    ws.append(["定西市", "安定区", "932ADQ.ADQXSF01", "安定区新市医院", "M001", "月缴", "0.6-0.85", "包干计价", "是", "0"])
+    ws.append(["定西市", "安定区", "932ADQ.ADQXSF02", "安定区新市医院2", "M002", "月缴", "浮动单价", "否", "是", "有"])
+    ws.append(["定西市", "安定区", "932ADQ.ADQXSF03", "安定区新市医院3", "M003", "月缴", "包干电费", "否", "迷你机柜", "有"])
+
+    ws = wb.create_sheet("发电费台账")
+    ws.append(["是否存在问题", None, "序号", "发电日期", "账单月份", "电信站址编码", "电信站址名称", "运维系统工单号", "发电时长", "是否有蓄电池", "非5G金额", "5G金额"])
+    ws.append([None, "地市"])
+    ws.append(["否", "兰州", 1, "2026-01-01", "1月", "931GLX.ZHZGJWX01", "高家庄TD", "FS-001", 2.5, "-", "/", "兰州不区分4/5G"])
+    ws.append(["否", "兰州", 2, "2026-01-02", "1月", "931GLX.ZHZGJWX02", "高家庄TD2", "FS-002", 2.5, "否（人工派单)", "/", "兰州不区分4/5G"])
 
     wb.save(path)
     return path

@@ -29,7 +29,8 @@ def test_rule_catalog_covers_all_audit_rules():
 
     metadata = {rule_id: rule_metadata(rule_id) for rule_id in rule_ids}
 
-    assert metadata["electricity_price_range"].name == "电费单价合理性"
+    assert metadata["electricity_price_range"].name == "电费高单价"
+    assert "electricity_price_benchmark" not in rule_ids
     assert all(item.name for item in metadata.values())
     assert all(item.description for item in metadata.values())
     assert all(item.default_suggestion for item in metadata.values())
@@ -44,7 +45,7 @@ def test_unknown_rule_metadata_falls_back_to_rule_id():
 
 def test_default_rule_thresholds_document_key_ranges():
     assert DEFAULT_THRESHOLDS.electricity_price_min == 0
-    assert DEFAULT_THRESHOLDS.electricity_price_max == 2
+    assert DEFAULT_THRESHOLDS.electricity_price_max == 0.9
     assert DEFAULT_THRESHOLDS.share_percent_min == 0
     assert DEFAULT_THRESHOLDS.share_percent_max == 100
 
@@ -134,12 +135,69 @@ def test_run_audit_applies_electricity_governance_rules(app_config):
     run_audit(app_config, batch_id)
 
     assert _rule_ids(app_config) >= {
-        "electricity_price_benchmark",
+        "electricity_price_range",
         "electricity_contract_share_variance",
         "electricity_duplicate_payment",
         "electricity_usage_spike_drop",
         "electricity_capacity_mismatch",
     }
+
+
+def test_electricity_high_price_flags_only_prices_above_nine_tenths(app_config):
+    initialize_database(app_config)
+    batch_id = _create_batch(app_config)
+    rows = [
+        {
+            "地市": "杭州",
+            "区县": "西湖",
+            "电信站址编码": "E001",
+            "电信站址名称": "一站",
+            "电表户号": "M001",
+            "报账周期": "2026-04",
+            "电费单价": 0.89,
+            "供电方式": "直供电",
+            "分摊比例(%)": 100,
+        },
+        {
+            "地市": "杭州",
+            "区县": "西湖",
+            "电信站址编码": "E002",
+            "电信站址名称": "二站",
+            "电表户号": "M002",
+            "报账周期": "2026-04",
+            "电费单价": 0.91,
+            "供电方式": "直供电",
+            "分摊比例(%)": 100,
+        },
+        {
+            "地市": "杭州",
+            "区县": "西湖",
+            "电信站址编码": "E003",
+            "电信站址名称": "三站",
+            "电表户号": "M003",
+            "报账周期": "2026-04",
+            "电费单价": -1,
+            "供电方式": "直供电",
+            "分摊比例(%)": 100,
+        },
+    ]
+    for row in rows:
+        _insert_ledger_row(app_config, batch_id, "electricity", row)
+
+    run_audit(app_config, batch_id)
+
+    with connect(app_config) as conn:
+        issues = conn.execute(
+            """
+            select message, telecom_site_code, rule_id
+            from issues
+            where rule_id = 'electricity_price_range'
+            order by telecom_site_code
+            """
+        ).fetchall()
+    assert [issue["telecom_site_code"] for issue in issues] == ["E002"]
+    assert issues[0]["rule_id"] == "electricity_price_range"
+    assert "超过 0.9 元" in issues[0]["message"]
 
 
 def test_run_audit_applies_tower_rent_governance_rules(app_config):
