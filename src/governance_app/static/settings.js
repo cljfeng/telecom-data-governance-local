@@ -4,11 +4,11 @@ import { escapeHtml, withBusy } from "/ui.js?v=20260517-1";
 export async function renderSettings({ mainContent, shellHeader }) {
   mainContent.innerHTML = `
     <section class="card">
-      ${shellHeader("本地设置", "Local Settings")}
+      ${shellHeader("本地设置", "本机配置")}
       <div id="settings-summary" class="settings-summary">正在加载设置</div>
     </section>
     <section class="card">
-      ${shellHeader("备份恢复", "Backup")}
+      ${shellHeader("备份恢复", "数据安全")}
       <div class="operation-panel">
         <div class="button-row">
           <button id="create-backup" class="secondary-button" type="button">创建备份</button>
@@ -24,7 +24,7 @@ export async function renderSettings({ mainContent, shellHeader }) {
       <div id="settings-result" class="result-box">等待操作</div>
     </section>
     <section class="card">
-      ${shellHeader("系统复位", "Reset")}
+      ${shellHeader("系统复位", "初始化")}
       <div class="operation-panel">
         <p>复位会清除批次、台账、稽核问题、回传记录和当前批次选择。默认保留导出文件和备份文件。</p>
         <div class="form-grid">

@@ -93,7 +93,7 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
             """,
             (batch_id,),
         ):
-            ws.append([row["severity"], row["count"]])
+            ws.append([_severity_label(row["severity"]), row["count"]])
 
     ws = wb.create_sheet("地市整改进度")
     ws.append(["地市", "问题总数", "待整改", "已回传", "待人工复核", "仍异常", "已关闭", "无需整改", "完成率"])
@@ -132,11 +132,11 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
                     issue["district"],
                     issue["telecom_site_code"],
                     issue["telecom_site_name"],
-                    issue["ledger_type"],
+                    _ledger_label(issue["ledger_type"]),
                     issue["rule_id"],
                     rule_metadata(issue["rule_id"]).name,
-                    issue["severity"],
-                    issue["status"],
+                    _severity_label(issue["severity"]),
+                    _status_label(issue["status"]),
                     issue["message"],
                     issue["correction_note"],
                 ]
@@ -173,10 +173,10 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
                     issue["issue_code"],
                     issue["city"],
                     issue["telecom_site_code"],
-                    issue["ledger_type"],
+                    _ledger_label(issue["ledger_type"]),
                     rule_metadata(issue["rule_id"]).name,
-                    issue["severity"],
-                    issue["status"],
+                    _severity_label(issue["severity"]),
+                    _status_label(issue["status"]),
                     issue["message"],
                 ]
             )
@@ -232,11 +232,12 @@ def export_notice_report(config: AppConfig, batch_id: int) -> Path:
     ws = wb.create_sheet("分类统计")
     ws.append(["分类维度", "分类项", "规则编号", "规则名称", "风险等级", "问题数量"])
     for row in summary["issues_by_ledger_type"]:
-        ws.append(["台账类型", row["ledger_type"], "", "", "", row["count"]])
+        ws.append(["台账类型", row.get("ledger_label") or _ledger_label(row["ledger_type"]), "", "", "", row["count"]])
     for row in summary["issues_by_severity"]:
-        ws.append(["风险等级", row["severity"], "", "", row["severity"], row["count"]])
+        label = row.get("severity_label") or _severity_label(row["severity"])
+        ws.append(["风险等级", label, "", "", label, row["count"]])
     for row in summary["issue_categories"]:
-        ws.append(["规则分类", row["ledger_type"], row["rule_id"], row["rule_name"], row["severity"], row["count"]])
+        ws.append(["规则分类", row.get("ledger_label") or _ledger_label(row["ledger_type"]), row["rule_id"], row["rule_name"], row.get("severity_label") or _severity_label(row["severity"]), row["count"]])
 
     ws = wb.create_sheet("问题明细")
     ws.append(["问题编号", "地市", "区县", "站址编码", "站址名称", "台账类型", "规则编号", "规则名称", "风险", "状态", "问题说明", "建议整改方向"])
@@ -258,11 +259,11 @@ def export_notice_report(config: AppConfig, batch_id: int) -> Path:
                     issue["district"],
                     issue["telecom_site_code"],
                     issue["telecom_site_name"],
-                    issue["ledger_type"],
+                    _ledger_label(issue["ledger_type"]),
                     issue["rule_id"],
                     rule_metadata(issue["rule_id"]).name,
-                    issue["severity"],
-                    issue["status"],
+                    _severity_label(issue["severity"]),
+                    _status_label(issue["status"]),
                     issue["message"],
                     issue["suggestion"],
                 ]
@@ -283,3 +284,29 @@ def _batch_code(config: AppConfig, batch_id: int) -> str:
         if row is None:
             raise ValueError("batch not found")
         return row["batch_code"] or f"批次{batch_id}"
+
+
+def _ledger_label(value: str | None) -> str:
+    return {
+        "site": "站址",
+        "tower_rent": "铁塔租费",
+        "electricity": "电费",
+        "generator": "发电费",
+        "all": "跨台账",
+    }.get(str(value or ""), str(value or "未知"))
+
+
+def _severity_label(value: str | None) -> str:
+    return {"high": "高", "medium": "中", "low": "低"}.get(str(value or ""), str(value or "未知"))
+
+
+def _status_label(value: str | None) -> str:
+    return {
+        "pending_export": "待导出",
+        "pending_correction": "待整改",
+        "returned": "已回传",
+        "still_invalid": "仍异常",
+        "needs_review": "待复核",
+        "closed": "已关闭",
+        "not_required": "无需整改",
+    }.get(str(value or ""), str(value or "未知"))

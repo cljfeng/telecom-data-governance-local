@@ -20,7 +20,7 @@ export async function renderLedgerData({
   }
   mainContent.innerHTML = `
     <section class="card">
-      ${shellHeader("数据整理", "Ledger Data", renderBatchSelector())}
+      ${shellHeader("数据整理", "台账明细", renderBatchSelector())}
       <div class="filter-grid">
         <select id="ledger-data-type">
           <option value="site">站址台账</option>

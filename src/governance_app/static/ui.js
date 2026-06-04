@@ -1,5 +1,5 @@
 export function formatNumber(value) {
-  return new Intl.NumberFormat("zh-CN").format(Number(value || 0));
+  return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(Number(value || 0));
 }
 
 export function escapeHtml(value) {

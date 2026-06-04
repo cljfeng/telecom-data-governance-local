@@ -28,9 +28,14 @@ def test_export_city_issue_packages_writes_issue_workbook(app_config, sample_wor
     assert ws["H2"].value == "电费高单价"
     assert ws["F2"].value == "电费"
     assert ws["I2"].value == "高"
-    assert "电费单价" in ws["J2"].value
-    assert "当前值" in ws["J2"].value
-    assert ws["L1"].value == "整改结果"
+    assert ws["J1"].value == "原台账sheet"
+    assert ws["K1"].value == "原始行号"
+    assert ws["L1"].value == "命中字段"
+    assert ws["M1"].value == "原始字段值"
+    assert "电费单价" in ws["N2"].value
+    assert "当前值" not in ws["N2"].value
+    assert "：" not in ws["N2"].value
+    assert ws["P1"].value == "整改结果"
 
 
 def test_export_issue_packages_can_write_single_province_workbook(app_config, sample_workbook):
@@ -142,8 +147,7 @@ def test_import_correction_return_updates_issue_status(app_config, sample_workbo
 
     wb = load_workbook(paths[0])
     ws = wb["整改问题清单"]
-    ws["L2"] = "已修复"
-    ws["M2"] = "已补正"
+    _set_correction_cells(ws, 2, result="已修复", note="已补正")
     wb.save(paths[0])
 
     result = import_correction_return(app_config, paths[0])
@@ -166,11 +170,11 @@ def test_import_correction_return_reports_duplicate_issue_codes(app_config, samp
 
     wb = load_workbook(paths[0])
     ws = wb["整改问题清单"]
-    ws["L2"] = "已修复"
-    ws["M2"] = "已补正"
+    _set_correction_cells(ws, 2, result="已修复", note="已补正")
     duplicate = [cell.value for cell in ws[2]]
-    duplicate[11] = "已修复"
-    duplicate[12] = "重复回传"
+    headers = {cell.value: index for index, cell in enumerate(ws[1])}
+    duplicate[headers["整改结果"]] = "已修复"
+    duplicate[headers["整改说明"]] = "重复回传"
     ws.append(duplicate)
     wb.save(paths[0])
 
@@ -192,8 +196,7 @@ def test_import_correction_return_skips_blank_rows(app_config, sample_workbook):
 
     wb = load_workbook(paths[0])
     ws = wb["整改问题清单"]
-    ws["L2"] = "已修复"
-    ws["M2"] = "已补正"
+    _set_correction_cells(ws, 2, result="已修复", note="已补正")
     ws.append([""] * 15)
     wb.save(paths[0])
 
@@ -253,8 +256,16 @@ def test_import_correction_return_rejects_archived_batch(app_config, sample_work
 
     wb = load_workbook(paths[0])
     ws = wb["整改问题清单"]
-    ws["L2"] = "已修复"
+    _set_correction_cells(ws, 2, result="已修复")
     wb.save(paths[0])
 
     with pytest.raises(ValueError, match="batch is archived"):
         import_correction_return(app_config, paths[0])
+
+
+def _set_correction_cells(ws, row_number: int, result: str = "", note: str = "") -> None:
+    headers = {cell.value: cell.column for cell in ws[1]}
+    if result:
+        ws.cell(row=row_number, column=headers["整改结果"]).value = result
+    if note:
+        ws.cell(row=row_number, column=headers["整改说明"]).value = note

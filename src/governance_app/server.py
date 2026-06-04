@@ -285,7 +285,7 @@ def _route_upload(
     files: dict[str, tuple[str, bytes]],
 ) -> tuple[int, dict[str, str], str]:
     parsed = urlparse(path)
-    if parsed.path not in {"/api/import/upload", "/api/import/preview/upload"}:
+    if parsed.path not in {"/api/import/upload", "/api/import/preview/upload", "/api/corrections/upload"}:
         return _json({"error": "not found"}, status=404)
     uploaded = files.get("file")
     if uploaded is None:
@@ -302,6 +302,12 @@ def _route_upload(
     payload.update(fields)
     if parsed.path == "/api/import/upload":
         return _import_from_payload(config, payload)
+    if parsed.path == "/api/corrections/upload":
+        try:
+            result = import_correction_return(config, workbook_path)
+        except ValueError as exc:
+            return _json({"error": str(exc)}, status=400)
+        return _json({"matched_count": result.matched_count, "errors": result.errors}, status=200 if not result.errors else 400)
     return _preview_from_payload(config, payload)
 
 

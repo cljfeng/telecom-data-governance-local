@@ -200,6 +200,30 @@ def test_electricity_high_price_flags_only_prices_above_nine_tenths(app_config):
     assert "超过 0.9 元" in issues[0]["message"]
 
 
+def test_electricity_share_percent_accepts_percent_text(app_config):
+    initialize_database(app_config)
+    batch_id = _create_batch(app_config)
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "electricity",
+        {
+            "地市": "杭州",
+            "区县": "西湖",
+            "电信站址编码": "E001",
+            "电信站址名称": "一站",
+            "电表户号": "M001",
+            "报账周期": "2026-04",
+            "电费单价": 0.8,
+            "分摊比例(%)": "80%",
+        },
+    )
+
+    run_audit(app_config, batch_id)
+
+    assert "electricity_share_percent" not in _rule_ids(app_config)
+
+
 def test_generator_duration_flags_only_values_above_24_hours(app_config):
     initialize_database(app_config)
     batch_id = _create_batch(app_config)
@@ -670,6 +694,42 @@ def test_run_audit_applies_cross_ledger_governance_rules(app_config):
         "electricity_transfer_without_contract",
         "generator_missing_responsible_party",
     }
+
+
+def test_site_code_master_rule_distinguishes_placeholder_code(app_config):
+    initialize_database(app_config)
+    batch_id = _create_batch(app_config)
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "site",
+        {
+            "地市": "杭州",
+            "区县": "西湖",
+            "电信站址编码": "S001",
+            "电信站址名称": "一站",
+        },
+    )
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "tower_rent",
+        {
+            "地市": "杭州",
+            "区县": "西湖",
+            "电信站址编码": "#N/A",
+            "电信站址名称": "占位站",
+            "铁塔站址编码": "TT001",
+            "铁塔站址名称": "铁塔占位站",
+            "产品服务费合计（元/年）（不含税）": 100,
+        },
+    )
+
+    run_audit(app_config, batch_id)
+
+    with connect(app_config) as conn:
+        issue = conn.execute("select message from issues where rule_id = 'site_code_missing_in_master'").fetchone()
+    assert "为空或为占位值" in issue["message"]
 
 
 def _create_batch(app_config) -> int:

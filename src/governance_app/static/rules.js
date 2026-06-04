@@ -9,10 +9,16 @@ const ledgerLabels = {
   all: "跨台账",
 };
 
+const severityLabels = {
+  high: "高",
+  medium: "中",
+  low: "低",
+};
+
 export async function renderRules({ mainContent, shellHeader }) {
   mainContent.innerHTML = `
     <section class="card">
-      ${shellHeader("规则设置", "Audit Rules")}
+      ${shellHeader("规则设置", "稽核规则")}
       <div id="rules-result" class="result-box">正在加载规则</div>
       <div class="table-wrap">
         <table>
@@ -58,7 +64,7 @@ function renderRuleRows(rules) {
             <p class="table-note">${escapeHtml(rule.description)}</p>
           </td>
           <td>${escapeHtml(ledgerLabels[rule.ledger_type] || rule.ledger_type)}</td>
-          <td><span class="chip chip-info">${escapeHtml(rule.severity)}</span></td>
+          <td><span class="chip chip-info">${escapeHtml(severityLabels[rule.severity] || rule.severity)}</span></td>
           <td>
             ${
               isPriceRange

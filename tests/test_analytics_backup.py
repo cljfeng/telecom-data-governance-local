@@ -210,5 +210,5 @@ def test_archive_batch_adds_risk_rule_and_open_issue_sheets(app_config, sample_w
     assert "风险等级分布" in wb.sheetnames
     assert "未闭环问题" in wb.sheetnames
     assert wb["规则命中排行"]["B2"].value == "电费高单价"
-    assert wb["风险等级分布"]["A2"].value == "high"
+    assert wb["风险等级分布"]["A2"].value == "高"
     assert wb["未闭环问题"]["A2"].value is None

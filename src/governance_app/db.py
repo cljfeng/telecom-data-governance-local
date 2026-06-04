@@ -142,6 +142,8 @@ def initialize_database(config: AppConfig) -> None:
         _ensure_column(conn, "import_batches", "batch_code", "text")
         _ensure_column(conn, "import_batches", "is_archived", "integer not null default 0")
         _ensure_column(conn, "import_batches", "archived_at", "text")
+        _ensure_column(conn, "ledger_rows", "sheet_name", "text")
+        _ensure_column(conn, "ledger_rows", "row_number", "integer")
 
 
 def table_names(conn: sqlite3.Connection) -> set[str]:

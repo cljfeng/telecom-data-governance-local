@@ -27,14 +27,14 @@ def dashboard_summary(config: AppConfig, batch_id: int) -> dict[str, Any]:
             item["rule_name"] = rule_metadata(item["rule_id"]).name
             issues_by_rule.append(item)
         issues_by_severity = [
-            dict(row)
+            {**dict(row), "severity_label": _severity_label(row["severity"])}
             for row in conn.execute(
                 "select severity, count(*) as count from issues where batch_id = ? group by severity order by count desc, severity",
                 (batch_id,),
             )
         ]
         issues_by_ledger_type = [
-            dict(row)
+            {**dict(row), "ledger_label": _ledger_label(row["ledger_type"])}
             for row in conn.execute(
                 "select ledger_type, count(*) as count from issues where batch_id = ? group by ledger_type order by count desc, ledger_type",
                 (batch_id,),
@@ -53,23 +53,26 @@ def dashboard_summary(config: AppConfig, batch_id: int) -> dict[str, Any]:
         ):
             item = dict(row)
             item["rule_name"] = rule_metadata(item["rule_id"]).name
+            item["ledger_label"] = _ledger_label(item["ledger_type"])
+            item["severity_label"] = _severity_label(item["severity"])
             issue_categories.append(item)
         city_rule_matrix = []
         for row in conn.execute(
             """
-            select coalesce(city, '未填地市') as city, rule_id, count(*) as count
+            select coalesce(city, '未填地市') as city, ledger_type, rule_id, count(*) as count
               from issues
              where batch_id = ?
-             group by coalesce(city, '未填地市'), rule_id
-             order by city, count desc, rule_id
+             group by coalesce(city, '未填地市'), ledger_type, rule_id
+             order by city, ledger_type, count desc, rule_id
             """,
             (batch_id,),
         ):
             item = dict(row)
             item["city"] = normalize_city(item["city"])
             item["rule_name"] = rule_metadata(item["rule_id"]).name
+            item["ledger_label"] = _ledger_label(item["ledger_type"])
             city_rule_matrix.append(item)
-        city_rule_matrix = _merge_matrix(city_rule_matrix, ("city", "rule_id"), enrich_rule=True)
+        city_rule_matrix = _merge_matrix(city_rule_matrix, ("city", "ledger_type", "rule_id"), label_field="ledger_label", enrich_rule=True)
         city_ledger_matrix = [
             {**dict(row), "city": normalize_city(row["city"]), "ledger_label": _ledger_label(row["ledger_type"])}
             for row in conn.execute(

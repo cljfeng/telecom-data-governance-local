@@ -666,17 +666,27 @@ def _site_code_missing_in_master(rows: list[AuditLedgerRow]) -> list[BatchRuleFi
         for row in rows
         if row.ledger_type == "site"
     }
+    site_codes = {site_code for site_code in site_codes if site_code and not _is_placeholder(site_code)}
     findings: list[BatchRuleFinding] = []
     for ledger_row in rows:
         if ledger_row.ledger_type == "site":
             continue
         site_code = _text(ledger_row.telecom_site_code or ledger_row.row.get("电信站址编码"))
-        if site_code and site_code not in site_codes:
+        if not site_code or _is_placeholder(site_code):
             findings.append(
                 BatchRuleFinding(
                     ledger_row.ledger_row_id,
                     "电信站址编码",
-                    f"费用台账站址编码未在站址台账中找到：{site_code}",
+                    "费用台账电信站址编码为空或为占位值，无法与站址台账进行匹配",
+                    "补充正确的电信站址编码后重新核对跨表一致性",
+                )
+            )
+        elif site_code not in site_codes:
+            findings.append(
+                BatchRuleFinding(
+                    ledger_row.ledger_row_id,
+                    "电信站址编码",
+                    f"费用台账电信站址编码“{site_code}”未在站址台账中找到",
                     "补充站址主数据或核对费用台账站址编码",
                 )
             )
@@ -959,6 +969,10 @@ def _text(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _is_placeholder(value: str) -> bool:
+    return value.strip().upper() in {"#N/A", "N/A", "NA", "NULL", "NONE", "-", "--", "无", "缺失"}
 
 
 def _number(value: Any) -> float | None:

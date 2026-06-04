@@ -114,6 +114,15 @@ function ledgerLabel(type) {
   return labels[type] || type || "未知";
 }
 
+function severityLabel(severity) {
+  const labels = {
+    high: "高",
+    medium: "中",
+    low: "低",
+  };
+  return labels[severity] || severity || "未知";
+}
+
 function severityTone(severity) {
   if (severity === "high" || severity === "严重" || severity === "高") return "danger";
   if (severity === "medium" || severity === "中") return "warning";
@@ -202,7 +211,7 @@ function operationCard({ title, eyebrow, description, fields, buttonText, result
       </div>
     </section>
     <section class="card">
-      ${shellHeader(resultTitle, "Result")}
+      ${shellHeader(resultTitle, "处理结果")}
       <div id="operation-result" class="result-box">等待操作</div>
     </section>
   `;
@@ -239,7 +248,7 @@ function bindBatchSelector(afterSelect) {
 function renderNoBatchPrompt(message = "当前还没有专项批次。") {
   mainContent.innerHTML = `
     <section class="card">
-      ${shellHeader("没有可用批次", "Batch")}
+      ${shellHeader("没有可用批次", "批次")}
       <div class="operation-panel">
         <p>${escapeHtml(message)}可以先新建一个批次，再导入全省台账；也可以直接到“数据导入”页面导入模板，系统会自动生成批次。</p>
         <div class="form-grid">
@@ -270,7 +279,7 @@ async function loadDashboard() {
   }
   mainContent.innerHTML = `
     <section class="card command-card">
-      ${shellHeader("专项治理闭环", batch ? `${batch.batch_code || `#${batch.id}`} ${batch.name}` : "Batch", renderBatchSelector())}
+      ${shellHeader("专项治理闭环", batch ? `${batch.batch_code || `#${batch.id}`} ${batch.name}` : "批次", renderBatchSelector())}
       <div id="workflow-area" class="workflow-area">正在加载流程</div>
     </section>
     <section class="card metric-section">
@@ -284,16 +293,16 @@ async function loadDashboard() {
     </section>
     <div class="dashboard-grid">
       <section class="card">
-        ${shellHeader("地市整改进度", "City Progress")}
+        ${shellHeader("地市整改进度", "地市进度")}
         <div class="table-wrap"><table><thead><tr><th>地市</th><th>问题</th><th>待整改</th><th>待复核</th><th>已关闭</th><th>完成率</th><th>状态</th></tr></thead><tbody id="city-progress-table"><tr><td colspan="7">正在加载</td></tr></tbody></table></div>
       </section>
       <aside class="side-stack">
         <section class="card">
-          ${shellHeader("风险摘要", "Risk")}
+          ${shellHeader("风险摘要", "风险")}
           <div id="risk-summary" class="risk-summary">正在加载</div>
         </section>
         <section class="card">
-          ${shellHeader("最近操作", "Activity")}
+          ${shellHeader("最近操作", "操作记录")}
           <div id="operation-log" class="operation-log operation-log-panel">正在加载</div>
         </section>
       </aside>
@@ -334,7 +343,7 @@ async function loadDashboard() {
 function renderEmptyDashboard() {
   mainContent.innerHTML = `
     <section class="card command-card">
-      ${shellHeader("专项治理闭环", "Batch")}
+      ${shellHeader("专项治理闭环", "批次")}
       <div class="operation-panel">
         <p>当前还没有专项批次。可以先新建一个批次，再导入全省台账；也可以直接到“数据导入”页面导入模板，系统会自动生成批次。</p>
         <div class="form-grid">
@@ -356,7 +365,7 @@ function renderEmptyDashboard() {
       </div>
     </section>
     <section class="card">
-      ${shellHeader("地市整改进度", "City Progress")}
+      ${shellHeader("地市整改进度", "地市进度")}
       <div class="empty-state">暂无批次数据</div>
     </section>
   `;
@@ -372,7 +381,7 @@ async function renderBatches() {
   await refreshBatches().catch(() => []);
   mainContent.innerHTML = `
     <section class="card">
-      ${shellHeader("批次管理", "Batches")}
+      ${shellHeader("批次管理", "批次")}
       <div class="operation-panel">
         <p>批次用于管理每一轮专项治理。新建批次后可以导入台账、执行稽核、导出整改包、导入回传并归档。</p>
         <div class="form-grid">
@@ -385,7 +394,7 @@ async function renderBatches() {
       </div>
     </section>
     <section class="card">
-      ${shellHeader("历史批次", "History")}
+      ${shellHeader("历史批次", "历史")}
       <div class="table-wrap">
         <table>
           <thead>
@@ -559,7 +568,7 @@ async function renderImport() {
   const recent = await fetchJson("/api/import/recent").catch(() => ({ files: [] }));
   mainContent.innerHTML = `
     <section class="card">
-      ${shellHeader("数据导入", "Workbook Import")}
+      ${shellHeader("数据导入", "台账导入")}
       <div class="operation-panel">
         <p>选择本机 Excel 台账文件，先进行模板预检。预检通过后再正式入库，系统会自动生成并选中当前批次。</p>
         <div class="form-grid">
@@ -585,11 +594,11 @@ async function renderImport() {
       </div>
     </section>
     <section class="card">
-      ${shellHeader("预检与导入结果", "Result")}
+      ${shellHeader("预检与导入结果", "处理结果")}
       <div id="operation-result" class="result-box">请先选择文件并执行预检</div>
     </section>
     <section class="card">
-      ${shellHeader("最近文件", "Recent Files")}
+      ${shellHeader("最近文件", "文件记录")}
       <div id="recent-files" class="recent-files"></div>
     </section>
   `;
@@ -734,7 +743,7 @@ async function renderAudit() {
   state.issueOffset = 0;
   mainContent.innerHTML = `
     <section class="card">
-      ${shellHeader("稽核结果", "Issues", renderBatchSelector())}
+      ${shellHeader("稽核结果", "问题清单", renderBatchSelector())}
       <div class="filter-grid audit-filter-grid">
         <input id="filter-city" placeholder="地市">
         <select id="filter-ledger"><option value="">全部台账</option><option value="site">站址</option><option value="tower_rent">铁塔租费</option><option value="electricity">电费</option><option value="generator">发电费</option></select>
@@ -843,7 +852,7 @@ function renderIssueRows(issues) {
           <td>${escapeHtml(issue.city)}</td>
           <td>${escapeHtml(ledgerLabel(issue.ledger_type))}</td>
           <td class="rule-cell"><strong>${escapeHtml(issue.rule_name || issue.rule_id)}</strong><span>${escapeHtml(issue.rule_id)}</span></td>
-          <td><span class="chip chip-${severityTone(issue.severity)}">${escapeHtml(issue.severity)}</span></td>
+          <td><span class="chip chip-${severityTone(issue.severity)}">${escapeHtml(severityLabel(issue.severity))}</span></td>
           <td><span class="chip chip-info">${escapeHtml(statusLabel(issue.status))}</span></td>
           <td class="message-cell">${escapeHtml(issue.message)}</td>
           <td><button class="text-button" data-close="${escapeHtml(issue.issue_code)}" type="button">关闭</button></td>
@@ -867,7 +876,7 @@ async function renderExport() {
   }
   mainContent.innerHTML = `
     <section class="card">
-      ${shellHeader("问题包导出", "Export")}
+      ${shellHeader("问题包导出", "整改包")}
       <div class="operation-panel">
         <p>按当前批次生成整改问题清单，并将相关问题状态更新为待整改。</p>
         <div class="form-grid">
@@ -887,7 +896,7 @@ async function renderExport() {
       </div>
     </section>
     <section class="card">
-      ${shellHeader("导出路径", "Result")}
+      ${shellHeader("导出路径", "处理结果")}
       <div id="operation-result" class="result-box">等待操作</div>
     </section>
   `;
@@ -917,22 +926,43 @@ async function renderCorrections() {
     renderNoBatchPrompt("没有批次时无法导入整改回传。");
     return;
   }
-  operationCard({
-    title: "整改回传",
-    eyebrow: "Correction Return",
-    description: "导入地市回传的整改问题清单后，可在下方查看地市进度和待复核问题。",
-    fields: [{ id: "correction-path", label: "回传文件路径", placeholder: "/Users/.../杭州_整改问题清单_批次1.xlsx" }],
-    buttonText: "导入回传",
-    resultTitle: "回传结果",
+  mainContent.innerHTML = `
+    <section class="card">
+      ${shellHeader("整改回传", "回传导入")}
+      <div class="operation-panel">
+        <p>选择地市回传的整改问题清单 Excel，系统会按问题编号匹配并更新整改状态。</p>
+        <div class="form-grid">
+          <label class="form-field">
+            <span>回传文件</span>
+            <input id="correction-file" type="file" accept=".xlsx,.xlsm,.xltx,.xltm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12">
+            <small id="selected-correction-name" class="field-hint">尚未选择文件</small>
+          </label>
+        </div>
+        <button id="operation-submit" class="primary-button" type="button">导入回传</button>
+      </div>
+    </section>
+    <section class="card">
+      ${shellHeader("回传结果", "处理结果")}
+      <div id="operation-result" class="result-box">请选择文件后导入</div>
+    </section>
+    <section class="card">
+      ${shellHeader("地市整改进度", "地市进度")}
+      <div class="table-wrap"><table><thead><tr><th>地市</th><th>问题</th><th>待整改</th><th>待复核</th><th>已关闭</th><th>完成率</th><th>状态</th></tr></thead><tbody id="city-progress-table"></tbody></table></div>
+    </section>
+  `;
+  document.querySelector("#correction-file").addEventListener("change", () => {
+    const file = document.querySelector("#correction-file")?.files?.[0] || null;
+    document.querySelector("#selected-correction-name").textContent = file ? `${file.name} · ${(file.size / 1024 / 1024).toFixed(2)} MB` : "尚未选择文件";
   });
-  mainContent.insertAdjacentHTML("beforeend", `<section class="card">${shellHeader("地市整改进度", "Progress")}<div class="table-wrap"><table><thead><tr><th>地市</th><th>问题</th><th>待整改</th><th>待复核</th><th>已关闭</th><th>完成率</th><th>状态</th></tr></thead><tbody id="city-progress-table"></tbody></table></div></section>`);
   document.querySelector("#operation-submit").addEventListener("click", async (event) => {
-    const path = fieldValue("correction-path");
-    if (!path) return setOperationResult("error", "请填写回传文件路径");
+    const file = document.querySelector("#correction-file")?.files?.[0] || null;
+    if (!file) return setOperationResult("error", "请选择整改回传 Excel 文件");
     await withBusy(event.currentTarget, "导入中...", async () => {
       setOperationResult("pending", "正在导入回传...");
       try {
-        const data = await postJson("/api/corrections", { path });
+        const formData = new FormData();
+        formData.append("file", file);
+        const data = await postFormData("/api/corrections/upload", formData);
         setOperationResult("success", `匹配问题数：${formatNumber(data.matched_count)}${data.errors?.length ? `；错误：${data.errors.map(escapeHtml).join("；")}` : ""}`);
         const progress = await fetchJson(`/api/city-progress?batch_id=${state.batchId}`);
         renderCityProgress(progress.cities || []);

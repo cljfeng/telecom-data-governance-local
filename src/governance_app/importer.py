@@ -95,8 +95,8 @@ def import_workbook(config: AppConfig, workbook_path: Path, strategy: str = "new
                     """
                     insert into ledger_rows(
                         batch_id, ledger_type, city, district, telecom_site_code, telecom_site_name,
-                        tower_site_code, tower_site_name, row_json
-                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        tower_site_code, tower_site_name, row_json, sheet_name, row_number
+                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         batch_id,
@@ -108,6 +108,8 @@ def import_workbook(config: AppConfig, workbook_path: Path, strategy: str = "new
                         _clean(row.get("铁塔站址编码")),
                         _clean(row.get("铁塔站址名称")),
                         row_json,
+                        sheet_name,
+                        row_number,
                     ),
                 )
         total_records = sum(ledger_counts.values())

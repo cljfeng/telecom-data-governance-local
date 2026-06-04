@@ -395,8 +395,9 @@ def test_issue_city_progress_status_and_archive_endpoints(app_config, sample_wor
 
     wb = load_workbook(exported)
     ws = wb["整改问题清单"]
-    ws["L2"] = "已修复"
-    ws["M2"] = "已补正"
+    headers_by_name = {cell.value: cell.column for cell in ws[1]}
+    ws.cell(row=2, column=headers_by_name["整改结果"]).value = "已修复"
+    ws.cell(row=2, column=headers_by_name["整改说明"]).value = "已补正"
     wb.save(exported)
 
     status, headers, body = app.handle_test_request("POST", "/api/corrections", json.dumps({"path": exported}))
@@ -419,6 +420,33 @@ def test_export_endpoint_returns_json_error_before_audit(app_config, sample_work
 
     assert status == 400
     assert json.loads(body)["error"] == "batch must be audited before export"
+
+
+def test_correction_upload_endpoint_imports_selected_file(app_config, sample_workbook):
+    initialize_database(app_config)
+    app = create_app(app_config)
+    status, headers, body = app.handle_test_request("POST", "/api/import", json.dumps({"path": str(sample_workbook)}))
+    batch_id = json.loads(body)["batch_id"]
+    with connect(app_config) as conn:
+        conn.execute("update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
+    app.handle_test_request("POST", "/api/audit", json.dumps({"batch_id": batch_id}))
+    status, headers, body = app.handle_test_request("POST", "/api/export", json.dumps({"batch_id": batch_id}))
+    exported = Path(json.loads(body)["paths"][0])
+
+    from openpyxl import load_workbook
+
+    wb = load_workbook(exported)
+    ws = wb["整改问题清单"]
+    headers_by_name = {cell.value: cell.column for cell in ws[1]}
+    ws.cell(row=2, column=headers_by_name["整改结果"]).value = "已修复"
+    ws.cell(row=2, column=headers_by_name["整改说明"]).value = "已按原台账修正"
+    wb.save(exported)
+    content_type, upload_body = _multipart_upload_body(exported)
+
+    status, headers, body = app.handle_test_upload_request("/api/corrections/upload", content_type, upload_body)
+
+    assert status == 200
+    assert json.loads(body)["matched_count"] == 1
 
 
 def test_archive_endpoint_returns_json_error_before_return(app_config, sample_workbook):
