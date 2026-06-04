@@ -27,8 +27,40 @@ def test_dashboard_summary_counts_batch_and_issues(app_config, sample_workbook):
     assert summary["issues_by_severity"][0]["severity"] == "high"
     assert summary["issues_by_ledger_type"][0]["ledger_type"] == "electricity"
     assert summary["issue_categories"][0]["rule_name"]
+    assert summary["city_rule_matrix"][0]["city"] == "杭州"
+    assert summary["city_rule_matrix"][0]["rule_name"] == "电费高单价"
+    assert summary["city_ledger_matrix"][0]["ledger_type"] == "electricity"
     assert summary["open_issue_count"] >= 1
     assert summary["closure_rate"] == 0.0
+
+
+def test_dashboard_summary_normalizes_city_aliases(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute(
+            """
+            update ledger_rows
+               set row_json = replace(row_json, '0.8', '9.9'),
+                   city = '兰州市'
+             where ledger_type = 'electricity'
+            """
+        )
+    run_audit(app_config, imported.batch_id)
+    with connect(app_config) as conn:
+        conn.execute("update issues set city = '兰州' where id in (select id from issues limit 1)")
+        conn.execute(
+            """
+            insert into issues(issue_code, audit_result_id, batch_id, city, district, ledger_type, rule_id, severity, message, suggestion)
+            select 'ISS-extra-city', audit_result_id, batch_id, '兰州市', district, ledger_type, rule_id, severity, message, suggestion
+              from issues
+             limit 1
+            """
+        )
+
+    summary = dashboard_summary(app_config, imported.batch_id)
+
+    assert summary["issues_by_city"] == [{"city": "兰州", "count": 2}]
 
 
 def test_export_notice_report_writes_issue_statistics_workbook(app_config, sample_workbook):

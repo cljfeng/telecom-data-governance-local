@@ -228,8 +228,9 @@ def test_import_upload_endpoint_imports_selected_file(app_config, sample_workboo
     assert data["batch_id"] == 1
     assert data["ledger_counts"]["site"] == 1
     with connect(app_config) as conn:
-        batch = conn.execute("select source_file from import_batches where id = 1").fetchone()
+        batch = conn.execute("select source_file, name from import_batches where id = 1").fetchone()
         assert "/uploads/" in batch["source_file"]
+        assert batch["name"] == "sample_template"
 
 
 def test_import_upload_endpoint_reports_missing_file_without_generic_http_400(app_config):

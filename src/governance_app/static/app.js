@@ -762,6 +762,15 @@ async function renderAudit() {
     state.issueOffset = 0;
     await loadIssues();
   });
+  ["#filter-city", "#filter-ledger", "#filter-rule", "#filter-status"].forEach((selector) => {
+    const control = document.querySelector(selector);
+    if (!control) return;
+    const eventName = selector === "#filter-city" ? "change" : "change";
+    control.addEventListener(eventName, async () => {
+      state.issueOffset = 0;
+      await loadIssues();
+    });
+  });
   document.querySelector("#issue-prev-page").addEventListener("click", async () => {
     state.issueOffset = Math.max(0, Number(state.issueOffset || 0) - Number(state.issueLimit || 50));
     await loadIssues();

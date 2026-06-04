@@ -8,4 +8,5 @@ build/
 dist/
 data/
 exports/
+backups/
 .pytest_cache/

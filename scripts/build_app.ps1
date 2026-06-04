@@ -22,4 +22,7 @@ if (-not (Test-Path $Python)) {
     --add-data "src/governance_app/static;governance_app/static" `
     src/governance_app/desktop.py
 
+Remove-Item -Recurse -Force build -ErrorAction SilentlyContinue
+Remove-Item -Force zufeidianfei-governance.spec -ErrorAction SilentlyContinue
+
 Write-Host "打包完成：$RootDir\dist\zufeidianfei-governance.exe"

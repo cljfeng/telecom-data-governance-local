@@ -28,11 +28,28 @@ export async function renderAnalytics({
       </div>
     </section>
     <section class="card">
-      ${shellHeader("问题分类统计", "Issue Statistics")}
-      <div class="analytics-grid">
-        <div class="table-wrap"><table><thead><tr><th>台账类型</th><th>问题数</th></tr></thead><tbody id="ledger-stat-table"><tr><td colspan="2">正在加载</td></tr></tbody></table></div>
-        <div class="table-wrap"><table><thead><tr><th>风险等级</th><th>问题数</th></tr></thead><tbody id="severity-stat-table"><tr><td colspan="2">正在加载</td></tr></tbody></table></div>
+      ${shellHeader("地市问题分布", "City Distribution")}
+      <div class="analytics-grid analytics-grid-wide">
+        <div>
+          <h3 class="panel-title">地市问题 Top 10</h3>
+          <div id="city-bars" class="bar-chart">正在加载</div>
+        </div>
+        <div>
+          <h3 class="panel-title">规则命中 Top 10</h3>
+          <div id="rule-bars" class="bar-chart">正在加载</div>
+        </div>
       </div>
+    </section>
+    <section class="card">
+      ${shellHeader("分类交叉统计", "Cross Analysis")}
+      <div class="analytics-grid">
+        <div class="table-wrap"><table><thead><tr><th>地市</th><th>台账类型</th><th>问题数</th></tr></thead><tbody id="city-ledger-table"><tr><td colspan="3">正在加载</td></tr></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>地市</th><th>风险等级</th><th>问题数</th></tr></thead><tbody id="city-severity-table"><tr><td colspan="3">正在加载</td></tr></tbody></table></div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>地市</th><th>问题类型</th><th>问题数</th></tr></thead><tbody id="city-rule-table"><tr><td colspan="3">正在加载</td></tr></tbody></table></div>
+    </section>
+    <section class="card">
+      ${shellHeader("问题类型明细", "Issue Categories")}
       <div class="table-wrap"><table><thead><tr><th>台账</th><th>规则</th><th>风险</th><th>问题数</th></tr></thead><tbody id="category-stat-table"><tr><td colspan="4">正在加载</td></tr></tbody></table></div>
     </section>
     <section class="card">
@@ -117,20 +134,62 @@ async function loadAnalytics(batchId) {
     metricCard("问题总数", totalIssues, `未闭环 ${formatNumber(data.open_issue_count)}`, "danger"),
     metricCard("闭环率", data.closure_rate, "已关闭和无需整改占比", "success"),
     metricCard("高频规则", topRule?.count || 0, topRule?.rule_name || "暂无", "warning"),
-    metricCard("主要风险", topSeverity?.count || 0, topSeverity?.severity || "暂无", "review"),
+    metricCard("主要风险", topSeverity?.count || 0, severityLabel(topSeverity?.severity) || "暂无", "review"),
   ].join("");
-  renderSimpleRows("#ledger-stat-table", data.issues_by_ledger_type || [], "ledger_type");
-  renderSimpleRows("#severity-stat-table", data.issues_by_severity || [], "severity");
+  renderBars("#city-bars", data.issues_by_city || [], "city");
+  renderBars("#rule-bars", data.issues_by_rule || [], "rule_name");
+  renderCityLedgerRows(data.city_ledger_matrix || []);
+  renderCitySeverityRows(data.city_severity_matrix || []);
+  renderCityRuleRows(data.city_rule_matrix || []);
   renderCategoryRows(data.issue_categories || []);
 }
 
-function renderSimpleRows(selector, rows, labelField) {
-  const tbody = document.querySelector(selector);
+function renderBars(selector, rows, labelField) {
+  const container = document.querySelector(selector);
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="2">暂无数据</td></tr>';
+    container.innerHTML = '<div class="empty-state">暂无数据</div>';
     return;
   }
-  tbody.innerHTML = rows.map((row) => `<tr><td>${escapeHtml(row[labelField])}</td><td>${formatNumber(row.count)}</td></tr>`).join("");
+  const topRows = rows.slice(0, 10);
+  const max = Math.max(...topRows.map((row) => Number(row.count || 0)), 1);
+  container.innerHTML = topRows
+    .map((row) => {
+      const count = Number(row.count || 0);
+      return `
+        <div class="bar-row">
+          <span class="bar-label">${escapeHtml(row[labelField] || "未分类")}</span>
+          <span class="bar-track"><span style="width: ${(count / max) * 100}%"></span></span>
+          <strong>${formatNumber(count)}</strong>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function renderCityLedgerRows(rows) {
+  renderMatrixRows("#city-ledger-table", rows, (row) => [row.city, row.ledger_label || ledgerLabel(row.ledger_type), row.count], 3);
+}
+
+function renderCitySeverityRows(rows) {
+  renderMatrixRows("#city-severity-table", rows, (row) => [row.city, row.severity_label || severityLabel(row.severity), row.count], 3);
+}
+
+function renderCityRuleRows(rows) {
+  renderMatrixRows("#city-rule-table", rows.slice(0, 80), (row) => [row.city, row.rule_name || row.rule_id, row.count], 3);
+}
+
+function renderMatrixRows(selector, rows, toCells, colspan) {
+  const tbody = document.querySelector(selector);
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="${colspan}">暂无数据</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows
+    .map((row) => {
+      const cells = toCells(row);
+      return `<tr>${cells.map((cell, index) => `<td>${index === cells.length - 1 ? formatNumber(cell) : escapeHtml(cell)}</td>`).join("")}</tr>`;
+    })
+    .join("");
 }
 
 function renderCategoryRows(rows) {
@@ -144,14 +203,31 @@ function renderCategoryRows(rows) {
     .map(
       (row) => `
         <tr>
-          <td>${escapeHtml(row.ledger_type)}</td>
+          <td>${escapeHtml(ledgerLabel(row.ledger_type))}</td>
           <td><strong>${escapeHtml(row.rule_name || row.rule_id)}</strong><br><span>${escapeHtml(row.rule_id)}</span></td>
-          <td>${escapeHtml(row.severity)}</td>
+          <td>${escapeHtml(severityLabel(row.severity))}</td>
           <td>${formatNumber(row.count)}</td>
         </tr>
       `,
     )
     .join("");
+}
+
+function ledgerLabel(type) {
+  return {
+    site: "站址",
+    tower_rent: "铁塔租费",
+    electricity: "电费",
+    generator: "发电费",
+  }[type] || type || "未知";
+}
+
+function severityLabel(severity) {
+  return {
+    high: "高",
+    medium: "中",
+    low: "低",
+  }[severity] || severity || "";
 }
 
 function metricCard(label, value, note, tone = "neutral") {

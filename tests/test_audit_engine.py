@@ -200,6 +200,248 @@ def test_electricity_high_price_flags_only_prices_above_nine_tenths(app_config):
     assert "超过 0.9 元" in issues[0]["message"]
 
 
+def test_generator_duration_flags_only_values_above_24_hours(app_config):
+    initialize_database(app_config)
+    batch_id = _create_batch(app_config)
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "generator",
+        {
+            "地市": "杭州",
+            "区县": "西湖",
+            "电信站址编码": "G001",
+            "电信站址名称": "一站",
+            "运维系统工单号": "WO001",
+            "发电时长": 0,
+        },
+    )
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "generator",
+        {
+            "地市": "杭州",
+            "区县": "西湖",
+            "电信站址编码": "G002",
+            "电信站址名称": "二站",
+            "运维系统工单号": "WO002",
+            "发电时长": 25,
+        },
+    )
+
+    run_audit(app_config, batch_id)
+
+    with connect(app_config) as conn:
+        issues = conn.execute(
+            """
+            select telecom_site_code, message
+              from issues
+             where rule_id = 'generator_duration_over_24h'
+             order by telecom_site_code
+            """
+        ).fetchall()
+    assert [issue["telecom_site_code"] for issue in issues] == ["G002"]
+    assert "超过 24 小时" in issues[0]["message"]
+
+
+def test_run_audit_applies_additional_finance_and_generator_rules(app_config):
+    initialize_database(app_config)
+    batch_id = _create_batch(app_config)
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "electricity",
+        {
+            "地市": "兰州市",
+            "区县": "城关",
+            "电信站址编码": "E001",
+            "电信站址名称": "一站",
+            "报账周期": "2026-04",
+            "电费单价": 0.8,
+            "电费金额": -10,
+            "分摊比例(%)": 100,
+        },
+    )
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "generator",
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "G001",
+            "电信站址名称": "发电站一",
+            "运维系统工单号": "WO001",
+            "发电时长": 3,
+            "最终分摊金额": 50,
+        },
+    )
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "generator",
+        {
+            "地市": "兰州市",
+            "区县": "城关",
+            "电信站址编码": "G001",
+            "电信站址名称": "发电站一",
+            "运维系统工单号": "WO001",
+            "发电日期": "2026-04-01",
+            "发电时间 - 发电开始时间": "2026-04-01 08:00",
+            "发电时间 - 发电结束时间（断电传感器告警消除时间）": "2026-04-01 10:00",
+            "发电时长": 5,
+            "最终分摊金额": 20,
+        },
+    )
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "tower_rent",
+        {
+            "地市": "兰州市",
+            "区县": "城关",
+            "电信站址编码": "T001",
+            "电信站址名称": "铁塔站一",
+            "账期": "2026-04",
+            "停租日期": "2026-03-31",
+            "产品服务费合计（元/年）（不含税）": 100,
+        },
+    )
+
+    run_audit(app_config, batch_id)
+
+    assert _rule_ids(app_config) >= {
+        "amount_negative",
+        "generator_missing_date_with_cost",
+        "generator_duplicate_work_order",
+        "generator_duration_mismatch",
+        "tower_stopped_site_still_charged",
+    }
+
+
+def test_run_audit_applies_advanced_recommendation_rules(app_config):
+    initialize_database(app_config)
+    batch_id = _create_batch(app_config)
+    for row in [
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "E001",
+            "电信站址名称": "电费一站",
+            "报账周期": "2026-01",
+            "供电方式": "直供电",
+            "电费单价": 0.8,
+            "电费金额": 100,
+            "分摊比例(%)": 100,
+        },
+        {
+            "地市": "兰州市",
+            "区县": "城关",
+            "电信站址编码": "E001",
+            "电信站址名称": "电费一站",
+            "报账周期": "2026-02",
+            "供电方式": "直供电",
+            "电费单价": 0.8,
+            "电费金额": 400,
+            "分摊比例(%)": 100,
+        },
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "E002",
+            "电信站址名称": "电费二站",
+            "报账周期": "2026-02",
+            "供电方式": "直供电",
+            "电费单价": 0.8,
+            "分摊比例(%)": 100,
+        },
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "E003",
+            "电信站址名称": "电费三站",
+            "报账周期": "2026-02",
+            "供电方式": "直供电",
+            "电费单价": 0.8,
+            "分摊比例(%)": 100,
+        },
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "E004",
+            "电信站址名称": "电费四站",
+            "报账周期": "2026-02",
+            "供电方式": "直供电",
+            "电费单价": 1.05,
+            "分摊比例(%)": 100,
+        },
+    ]:
+        _insert_ledger_row(app_config, batch_id, "electricity", row)
+    for row in [
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "",
+            "电信站址名称": "重复无编码站",
+        },
+        {
+            "地市": "兰州市",
+            "区县": "七里河",
+            "电信站址编码": "",
+            "电信站址名称": "重复无编码站",
+        },
+    ]:
+        _insert_ledger_row(app_config, batch_id, "site", row)
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "tower_rent",
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "T001",
+            "电信站址名称": "停租站",
+            "账期": "2026-05",
+            "停租日期": "2026-03-31",
+            "产品服务费合计（元/年）（不含税）": 100,
+        },
+    )
+    for row in [
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "G001",
+            "电信站址名称": "发电一站",
+            "运维系统工单号": "WO100",
+            "发电日期": "2026-04-01",
+            "发电时长": 2,
+            "最终分摊金额": 100,
+        },
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "G002",
+            "电信站址名称": "发电二站",
+            "运维系统工单号": "WO101",
+            "发电日期": "2026-04-01",
+            "发电时长": 2,
+            "最终分摊金额": 1200,
+        },
+    ]:
+        _insert_ledger_row(app_config, batch_id, "generator", row)
+
+    run_audit(app_config, batch_id)
+
+    assert _rule_ids(app_config) >= {
+        "fee_amount_period_spike",
+        "missing_site_code_duplicate_name",
+        "tower_charged_after_stop_period",
+        "electricity_price_city_supply_outlier",
+        "generator_cost_per_hour_outlier",
+    }
+
+
 def test_run_audit_applies_tower_rent_governance_rules(app_config):
     initialize_database(app_config)
     batch_id = _create_batch(app_config)

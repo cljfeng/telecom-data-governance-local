@@ -1,8 +1,10 @@
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Callable
 
 from governance_app.models import LedgerType, Severity
+from governance_app.geo import normalize_city
 
 
 @dataclass(frozen=True)
@@ -75,8 +77,9 @@ RULE_CATALOG: dict[str, RuleMetadata] = {
     "required_site_code": RuleMetadata("required_site_code", "站址编码必填", "site", "high", "检查站址台账电信站址编码是否为空。", "补充电信站址编码"),
     "required_city": RuleMetadata("required_city", "地市信息必填", "site", "medium", "检查站址台账地市字段是否为空。", "补充地市"),
     "electricity_price_range": RuleMetadata("electricity_price_range", "电费高单价", "electricity", "high", "检查电费单价是否超过 0.9 元。", "核实电费单价、电价依据或转供电合同"),
-    "electricity_share_percent": RuleMetadata("electricity_share_percent", "电费分摊比例范围", "electricity", "medium", "检查电费分摊比例是否在 0-100 范围内。", "核实共享情况和分摊比例"),
-    "generator_duration_positive": RuleMetadata("generator_duration_positive", "发电时长有效性", "generator", "high", "检查发电时长是否为正数。", "核实发电起止时间和时长"),
+    "electricity_share_percent": RuleMetadata("electricity_share_percent", "电费分摊比例范围", "electricity", "medium", "检查电费分摊比例是否在 0-100% 范围内。", "核实共享情况和分摊比例"),
+    "generator_duration_over_24h": RuleMetadata("generator_duration_over_24h", "发电时长超过24小时", "generator", "high", "检查单次发电时长是否超过 24 小时。", "核实发电开始时间、结束时间和工单时长"),
+    "amount_negative": RuleMetadata("amount_negative", "金额为负数", "all", "high", "检查费用台账金额字段是否为负数。", "核实费用金额、冲销记录和报账口径"),
     "electricity_contract_share_variance": RuleMetadata("electricity_contract_share_variance", "合同分摊比例偏差", "electricity", "medium", "比较实际分摊比例与合同约定分摊比例。", "核对合同约定和实际分摊比例"),
     "electricity_duplicate_payment": RuleMetadata("electricity_duplicate_payment", "电费重复报账", "electricity", "high", "识别同站址、同电表、同账期的重复电费记录。", "核实同账期是否重复报账"),
     "electricity_usage_spike_drop": RuleMetadata("electricity_usage_spike_drop", "用电量异常波动", "electricity", "high", "识别同站址电表用电量较历史记录的异常上升或下降。", "核实抄表数据、设备变化和报账周期"),
@@ -99,6 +102,14 @@ RULE_CATALOG: dict[str, RuleMetadata] = {
     "electricity_lump_sum_still_reimbursed": RuleMetadata("electricity_lump_sum_still_reimbursed", "包干站址仍重复报账", "electricity", "high", "检查包干站址是否仍标记为报账。", "核对包干电费和报账口径，避免重复报账"),
     "electricity_transfer_without_contract": RuleMetadata("electricity_transfer_without_contract", "转供电无合同", "electricity", "high", "检查转供电站址是否缺少转供电合同。", "补充转供电合同或核实供电方式"),
     "generator_missing_responsible_party": RuleMetadata("generator_missing_responsible_party", "发电责任方缺失", "all", "medium", "检查存在发电费但站址发电责任方缺失的记录。", "补充站址发电责任方并核对发电费用口径"),
+    "generator_missing_date_with_cost": RuleMetadata("generator_missing_date_with_cost", "发电日期缺失但有费用", "generator", "high", "检查发电费台账有金额或时长时是否缺少发电日期。", "补充发电日期并核对工单"),
+    "generator_duplicate_work_order": RuleMetadata("generator_duplicate_work_order", "发电工单重复", "generator", "high", "识别同一运维系统工单号重复出现在发电费台账。", "核实同一工单是否重复报账"),
+    "generator_duration_mismatch": RuleMetadata("generator_duration_mismatch", "发电时长与起止时间不一致", "generator", "medium", "比较发电开始/结束时间计算时长与填报发电时长。", "核对发电开始时间、结束时间和填报时长"),
+    "fee_amount_period_spike": RuleMetadata("fee_amount_period_spike", "费用金额环比突变", "all", "high", "识别同站址同费用字段相邻账期金额突增或突降。", "核对账期费用、调账冲销和录入口径"),
+    "missing_site_code_duplicate_name": RuleMetadata("missing_site_code_duplicate_name", "站址编码缺失且名称重复", "site", "high", "识别站址编码为空但同名站址重复出现。", "补充站址编码并核对是否重复建档"),
+    "tower_charged_after_stop_period": RuleMetadata("tower_charged_after_stop_period", "停租后跨账期持续计费", "tower_rent", "high", "检查账期晚于停租月份但仍产生费用。", "核对停租日期、账期和计费终止口径"),
+    "electricity_price_city_supply_outlier": RuleMetadata("electricity_price_city_supply_outlier", "同区县供电方式电价偏离", "electricity", "medium", "比较同地市区县同供电方式电费单价与中位数偏差。", "核实电价依据、供电方式和转供电合同"),
+    "generator_cost_per_hour_outlier": RuleMetadata("generator_cost_per_hour_outlier", "发电小时单价异常", "generator", "high", "检查发电金额折算小时单价是否明显偏高。", "核实发电时长、金额和结算标准"),
 }
 
 DEFAULT_THRESHOLDS = RuleThresholds()
@@ -130,7 +141,7 @@ def all_rules(thresholds: RuleThresholds = DEFAULT_THRESHOLDS) -> list[AuditRule
             "electricity_share_percent",
             "electricity",
             "medium",
-            _number_range(
+            _optional_number_range(
                 "分摊比例(%)",
                 thresholds.share_percent_min,
                 thresholds.share_percent_max,
@@ -139,10 +150,10 @@ def all_rules(thresholds: RuleThresholds = DEFAULT_THRESHOLDS) -> list[AuditRule
             ),
         ),
         AuditRule(
-            "generator_duration_positive",
+            "generator_duration_over_24h",
             "generator",
             "high",
-            _greater_than_zero("发电时长", "发电时长小于等于 0", "核实发电起止时间和时长"),
+            _number_above("发电时长", 24, "发电时长超过 24 小时", "核实发电开始时间、结束时间和工单时长"),
         ),
     ]
 
@@ -173,6 +184,9 @@ def all_batch_rules() -> list[BatchAuditRule]:
             "medium",
             _electricity_capacity_mismatch,
         ),
+        BatchAuditRule("amount_negative", "all", "high", _amount_negative),
+        BatchAuditRule("fee_amount_period_spike", "all", "high", _fee_amount_period_spike),
+        BatchAuditRule("electricity_price_city_supply_outlier", "electricity", "medium", _electricity_price_city_supply_outlier),
         BatchAuditRule(
             "tower_mount_height_exceeds_tower_height",
             "tower_rent",
@@ -269,12 +283,18 @@ def all_batch_rules() -> list[BatchAuditRule]:
             "high",
             _tower_original_owner_power_intro_fee_nonzero,
         ),
+        BatchAuditRule("missing_site_code_duplicate_name", "site", "high", _missing_site_code_duplicate_name),
         BatchAuditRule("site_code_missing_in_master", "all", "high", _site_code_missing_in_master),
         BatchAuditRule("site_name_mismatch_across_ledgers", "all", "medium", _site_name_mismatch_across_ledgers),
         BatchAuditRule("tower_stopped_site_still_charged", "tower_rent", "high", _tower_stopped_site_still_charged),
+        BatchAuditRule("tower_charged_after_stop_period", "tower_rent", "high", _tower_charged_after_stop_period),
         BatchAuditRule("electricity_lump_sum_still_reimbursed", "electricity", "high", _electricity_lump_sum_still_reimbursed),
         BatchAuditRule("electricity_transfer_without_contract", "electricity", "high", _electricity_transfer_without_contract),
         BatchAuditRule("generator_missing_responsible_party", "all", "medium", _generator_missing_responsible_party),
+        BatchAuditRule("generator_missing_date_with_cost", "generator", "high", _generator_missing_date_with_cost),
+        BatchAuditRule("generator_duplicate_work_order", "generator", "high", _generator_duplicate_work_order),
+        BatchAuditRule("generator_duration_mismatch", "generator", "medium", _generator_duration_mismatch),
+        BatchAuditRule("generator_cost_per_hour_outlier", "generator", "high", _generator_cost_per_hour_outlier),
     ]
 
 
@@ -294,6 +314,21 @@ def _number_range(field_name: str, minimum: float, maximum: float, message: str,
             number = float(value)
         except (TypeError, ValueError):
             return RuleFinding("", "high", field_name, f"{field_name}不是有效数字", suggestion)
+        if number < minimum or number > maximum:
+            return RuleFinding("", "high", field_name, message, suggestion)
+        return None
+
+    return evaluate
+
+
+def _optional_number_range(field_name: str, minimum: float, maximum: float, message: str, suggestion: str):
+    def evaluate(row: dict[str, Any]) -> RuleFinding | None:
+        value = row.get(field_name)
+        if value in (None, ""):
+            return None
+        number = _number(value)
+        if number is None:
+            return RuleFinding("", "high", field_name, f"{field_name}格式异常，应填写0-100之间的百分比数值", suggestion)
         if number < minimum or number > maximum:
             return RuleFinding("", "high", field_name, message, suggestion)
         return None
@@ -345,6 +380,95 @@ _MAINTENANCE_DISCOUNT_FIELDS = ("维护费共享折扣", "维护费最低折扣"
 _SHARING_INFO_FIELDS = ("站址共享信息", "铁塔共享信息", "共享信息")
 _TRANSFER_CONTRACT_FIELDS = ("转供电合同情况", "转供电合同", "合同情况")
 _GENERATOR_AMOUNT_FIELDS = ("最终分摊金额", "分摊金额", "非5G金额", "5G金额")
+_AMOUNT_FIELD_KEYWORDS = ("金额", "费用", "费合计", "维护费", "场地费", "电力引入费")
+_GENERATOR_DATE_FIELDS = ("发电日期", "发电时间 - 停电时间")
+_GENERATOR_START_FIELDS = ("发电时间 - 发电开始时间", "发电开始时间", "开始时间")
+_GENERATOR_END_FIELDS = ("发电时间 - 发电结束时间（断电传感器告警消除时间）", "发电结束时间", "结束时间")
+_FEE_SPIKE_FIELDS = ("电费金额", "应付金额", "实付金额", "最终分摊金额", "分摊金额", "产品服务费合计（元/年）（不含税）", "维护费(元/年)", "场地费(元/年)", "电力引入费(元/年)")
+
+
+def _amount_negative(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
+    findings: list[BatchRuleFinding] = []
+    for ledger_row in rows:
+        for field_name, value in ledger_row.row.items():
+            if not any(keyword in field_name for keyword in _AMOUNT_FIELD_KEYWORDS):
+                continue
+            number = _number(value)
+            if number is not None and number < 0:
+                findings.append(
+                    BatchRuleFinding(
+                        ledger_row.ledger_row_id,
+                        field_name,
+                        f"{field_name}为负数：{number:g}",
+                        "核实是否为冲销、退费或录入错误，必要时补充说明",
+                    )
+                )
+    return findings
+
+
+def _fee_amount_period_spike(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
+    grouped: dict[tuple[str, str, str], list[tuple[str, AuditLedgerRow, float]]] = {}
+    for ledger_row in rows:
+        site_code = _text(ledger_row.telecom_site_code or ledger_row.row.get("电信站址编码"))
+        period = _period_key(_first_value(ledger_row.row, _PERIOD_FIELDS))
+        if not site_code or not period:
+            continue
+        for field_name in _FEE_SPIKE_FIELDS:
+            amount = _number(ledger_row.row.get(field_name))
+            if amount is None or amount < 0:
+                continue
+            grouped.setdefault((ledger_row.ledger_type, site_code, field_name), []).append((period, ledger_row, amount))
+    findings: list[BatchRuleFinding] = []
+    for (_, _, field_name), values in grouped.items():
+        values.sort(key=lambda item: item[0])
+        for (_, previous_row, previous), (_, current_row, current) in zip(values, values[1:], strict=False):
+            if previous <= 0:
+                continue
+            change = (current - previous) / previous
+            if abs(change) >= 1:
+                findings.append(
+                    BatchRuleFinding(
+                        current_row.ledger_row_id,
+                        field_name,
+                        f"{field_name}较上一账期变动超过100%：上一期{previous:g}，本期{current:g}",
+                        "核对是否存在调账、冲销、漏录或重复计费",
+                    )
+                )
+    return findings
+
+
+def _electricity_price_city_supply_outlier(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
+    grouped: dict[tuple[str, str, str], list[tuple[AuditLedgerRow, float]]] = {}
+    for ledger_row in rows:
+        if ledger_row.ledger_type != "electricity":
+            continue
+        price = _number(_first_value(ledger_row.row, _PRICE_FIELDS))
+        city = normalize_city(ledger_row.city or ledger_row.row.get("地市"))
+        district = _text(ledger_row.district or ledger_row.row.get("区县"))
+        supply = _text(_first_value(ledger_row.row, _SUPPLY_FIELDS))
+        if price is None or not city or not district or not supply:
+            continue
+        grouped.setdefault((city, district, supply), []).append((ledger_row, price))
+    findings: list[BatchRuleFinding] = []
+    for (city, district, supply), values in grouped.items():
+        if len(values) < 4:
+            continue
+        median = _median([price for _, price in values])
+        if median <= 0:
+            continue
+        for ledger_row, price in values:
+            if abs(price - median) / median > 0.2:
+                findings.append(
+                    BatchRuleFinding(
+                        ledger_row.ledger_row_id,
+                        "电费单价",
+                        f"{city}{district}{supply}电费单价偏离中位数超过20%：中位数{median:g}，当前{price:g}",
+                        "核实电价依据、供电方式和转供电合同",
+                    )
+                )
+    return findings
+
+
 def _electricity_contract_share_variance(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
     findings: list[BatchRuleFinding] = []
     for ledger_row in rows:
@@ -514,6 +638,28 @@ def _tower_original_owner_power_intro_fee_nonzero(rows: list[AuditLedgerRow]) ->
     return findings
 
 
+def _missing_site_code_duplicate_name(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
+    grouped: dict[str, list[AuditLedgerRow]] = {}
+    for ledger_row in rows:
+        if ledger_row.ledger_type != "site":
+            continue
+        site_code = _text(ledger_row.telecom_site_code or ledger_row.row.get("电信站址编码"))
+        site_name = _text(ledger_row.telecom_site_name or ledger_row.row.get("电信站址名称"))
+        if not site_code and site_name:
+            grouped.setdefault(site_name, []).append(ledger_row)
+    return [
+        BatchRuleFinding(
+            ledger_row.ledger_row_id,
+            "电信站址编码",
+            f"站址编码为空，且站址名称“{site_name}”重复出现",
+            "补充电信站址编码，核对是否重复建档",
+        )
+        for site_name, group in grouped.items()
+        if len(group) > 1
+        for ledger_row in group
+    ]
+
+
 def _site_code_missing_in_master(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
     site_codes = {
         _text(row.telecom_site_code or row.row.get("电信站址编码"))
@@ -579,6 +725,26 @@ def _tower_stopped_site_still_charged(rows: list[AuditLedgerRow]) -> list[BatchR
     return findings
 
 
+def _tower_charged_after_stop_period(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
+    findings: list[BatchRuleFinding] = []
+    for ledger_row in rows:
+        if ledger_row.ledger_type != "tower_rent":
+            continue
+        stop_month = _month_key(ledger_row.row.get("停租日期"))
+        period = _period_key(_first_value(ledger_row.row, _PERIOD_FIELDS))
+        fee = sum(_number(ledger_row.row.get(field)) or 0 for field in _TOWER_FEE_FIELDS)
+        if stop_month and period and period > stop_month and fee > 0:
+            findings.append(
+                BatchRuleFinding(
+                    ledger_row.ledger_row_id,
+                    "账期",
+                    f"账期{period}晚于停租月份{stop_month}，但仍存在费用{fee:g}",
+                    "核对停租日期、生效账期和费用终止口径",
+                )
+            )
+    return findings
+
+
 def _electricity_lump_sum_still_reimbursed(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
     findings: list[BatchRuleFinding] = []
     for ledger_row in rows:
@@ -634,6 +800,102 @@ def _generator_missing_responsible_party(rows: list[AuditLedgerRow]) -> list[Bat
                     "站址发电责任方",
                     "站址台账发电责任方缺失，但发电费台账存在费用或时长",
                     "补充站址发电责任方并核对发电费用口径",
+                )
+            )
+    return findings
+
+
+def _generator_missing_date_with_cost(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
+    findings: list[BatchRuleFinding] = []
+    for ledger_row in rows:
+        if ledger_row.ledger_type != "generator":
+            continue
+        has_cost_or_duration = (_number(ledger_row.row.get("发电时长")) or 0) > 0 or any(
+            (_number(ledger_row.row.get(field)) or 0) > 0 for field in _GENERATOR_AMOUNT_FIELDS
+        )
+        has_date = any(_text(ledger_row.row.get(field)) for field in _GENERATOR_DATE_FIELDS)
+        if has_cost_or_duration and not has_date:
+            findings.append(
+                BatchRuleFinding(
+                    ledger_row.ledger_row_id,
+                    "发电日期",
+                    "发电费台账存在发电时长或金额，但发电日期为空",
+                    "补充发电日期并核对运维工单",
+                )
+            )
+    return findings
+
+
+def _generator_duplicate_work_order(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
+    grouped: dict[str, list[AuditLedgerRow]] = {}
+    for ledger_row in rows:
+        if ledger_row.ledger_type != "generator":
+            continue
+        work_order = _text(ledger_row.row.get("运维系统工单号"))
+        if work_order:
+            grouped.setdefault(work_order, []).append(ledger_row)
+    return [
+        BatchRuleFinding(
+            ledger_row.ledger_row_id,
+            "运维系统工单号",
+            f"同一运维系统工单号重复出现：{work_order}",
+            "核实该工单是否重复填报或重复报账",
+        )
+        for work_order, group in grouped.items()
+        if len(group) > 1
+        for ledger_row in group
+    ]
+
+
+def _generator_duration_mismatch(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
+    findings: list[BatchRuleFinding] = []
+    for ledger_row in rows:
+        if ledger_row.ledger_type != "generator":
+            continue
+        start = _datetime_value(_first_value(ledger_row.row, _GENERATOR_START_FIELDS))
+        end = _datetime_value(_first_value(ledger_row.row, _GENERATOR_END_FIELDS))
+        reported = _number(ledger_row.row.get("发电时长"))
+        if start is None or end is None or reported is None:
+            continue
+        calculated = (end - start).total_seconds() / 3600
+        if calculated < 0:
+            continue
+        if abs(calculated - reported) > 0.25:
+            findings.append(
+                BatchRuleFinding(
+                    ledger_row.ledger_row_id,
+                    "发电时长",
+                    f"发电起止时间计算时长{calculated:g}小时，填报发电时长{reported:g}小时，偏差超过15分钟",
+                    "核对发电开始时间、结束时间和填报时长",
+                )
+            )
+    return findings
+
+
+def _generator_cost_per_hour_outlier(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
+    values: list[tuple[AuditLedgerRow, float]] = []
+    for ledger_row in rows:
+        if ledger_row.ledger_type != "generator":
+            continue
+        duration = _number(ledger_row.row.get("发电时长"))
+        amount = sum(_number(ledger_row.row.get(field)) or 0 for field in _GENERATOR_AMOUNT_FIELDS)
+        if duration is None or duration <= 0 or amount <= 0:
+            continue
+        values.append((ledger_row, amount / duration))
+    if len(values) < 2:
+        return []
+    median = _median([rate for _, rate in values])
+    if median <= 0:
+        return []
+    findings: list[BatchRuleFinding] = []
+    for ledger_row, rate in values:
+        if rate > median * 1.5 and rate > 300:
+            findings.append(
+                BatchRuleFinding(
+                    ledger_row.ledger_row_id,
+                    "最终分摊金额",
+                    f"发电小时单价异常：同批次中位数{median:g}元/小时，当前{rate:g}元/小时",
+                    "核实发电时长、分摊金额和结算标准",
                 )
             )
     return findings
@@ -713,6 +975,36 @@ def _number(value: Any) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+def _datetime_value(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _month_key(value: Any) -> str:
+    dt = _datetime_value(value)
+    if dt is not None:
+        return dt.strftime("%Y-%m")
+    text = _period_key(value)
+    return text[:7] if len(text) >= 7 else text
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[midpoint]
+    return (ordered[midpoint - 1] + ordered[midpoint]) / 2
 
 
 def _period_key(value: Any) -> str:

@@ -26,6 +26,10 @@ def test_export_city_issue_packages_writes_issue_workbook(app_config, sample_wor
     assert ws["A1"].value == "问题编号"
     assert ws["H1"].value == "规则名称"
     assert ws["H2"].value == "电费高单价"
+    assert ws["F2"].value == "电费"
+    assert ws["I2"].value == "高"
+    assert "电费单价" in ws["J2"].value
+    assert "当前值" in ws["J2"].value
     assert ws["L1"].value == "整改结果"
 
 

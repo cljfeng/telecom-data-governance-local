@@ -35,6 +35,8 @@ dist\zufeidianfei-governance.exe
 
 把 `dist/zufeidianfei-governance` 复制到业务电脑后，双击或在终端运行即可启动本地服务，并自动打开浏览器。默认数据仍保存在程序运行目录下的 `data/governance.sqlite3`，导出文件保存在 `exports/`。
 
+macOS 下请运行 `dist/zufeidianfei-governance`。PyInstaller 构建过程中如出现 `build/` 目录或 `.pkg` 中间文件，它们不是交付给业务人员运行的程序。
+
 如需指定工作目录：
 
 ```bash

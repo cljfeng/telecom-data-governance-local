@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Any
 
 from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
 from governance_app.db import connect
+from governance_app.geo import normalize_city
 from governance_app.models import IssueStatus
 from governance_app.templates import FIELD_GROUPS
 
@@ -89,7 +91,7 @@ def list_batches(config: AppConfig) -> list[dict[str, Any]]:
         return [
             {
                 "id": row["id"],
-                "name": row["name"],
+                "name": _display_batch_name(row["name"]),
                 "batch_code": row["batch_code"] or _code_from_created_at(row["created_at"], row["id"]),
                 "source_file": row["source_file"],
                 "template_version": row["template_version"],
@@ -229,14 +231,32 @@ def city_progress(config: AppConfig, batch_id: int) -> list[dict[str, Any]]:
             """,
             (batch_id,),
         ).fetchall()
-    progress: list[dict[str, Any]] = []
+    merged: dict[str, dict[str, Any]] = {}
     for row in rows:
         item = dict(row)
+        city = normalize_city(item["city"])
+        target = merged.setdefault(
+            city,
+            {
+                "city": city,
+                "total_count": 0,
+                "pending_count": 0,
+                "returned_count": 0,
+                "review_count": 0,
+                "still_invalid_count": 0,
+                "closed_count": 0,
+                "not_required_count": 0,
+            },
+        )
+        for key in ("total_count", "pending_count", "returned_count", "review_count", "still_invalid_count", "closed_count", "not_required_count"):
+            target[key] += int(item[key] or 0)
+    progress: list[dict[str, Any]] = []
+    for item in merged.values():
         closed = int(item["closed_count"] or 0) + int(item["not_required_count"] or 0)
         total = int(item["total_count"] or 0)
         item["completion_rate"] = round((closed / total) * 100, 1) if total else 0.0
         progress.append(item)
-    return progress
+    return sorted(progress, key=lambda item: (-int(item["total_count"] or 0), item["city"]))
 
 
 def list_ledger_rows(config: AppConfig, batch_id: int, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
@@ -355,7 +375,7 @@ def _require_batch(conn, batch_id: int):
     row = conn.execute(
         """
         select id, coalesce(name, source_file, '未命名批次') as name, source_file, template_version,
-               created_at, status, is_archived, archived_at
+               batch_code, created_at, status, is_archived, archived_at
           from import_batches
          where id = ?
         """,
@@ -369,7 +389,8 @@ def _require_batch(conn, batch_id: int):
 def _batch_dict(row) -> dict[str, Any]:
     return {
         "id": row["id"],
-        "name": row["name"],
+        "name": _display_batch_name(row["name"]),
+        "batch_code": row["batch_code"] or _code_from_created_at(row["created_at"], row["id"]),
         "source_file": row["source_file"],
         "template_version": row["template_version"],
         "created_at": row["created_at"],
@@ -387,6 +408,11 @@ def _current_batch_id(conn) -> int | None:
         return int(row["value_json"])
     except ValueError:
         return None
+
+
+def _display_batch_name(value: str | None) -> str:
+    text = str(value or "未命名批次").strip()
+    return re.sub(r"^[0-9a-fA-F]{32}-", "", text).strip() or text
 
 
 def _step_index(status: str) -> int:

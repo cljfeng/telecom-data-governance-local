@@ -16,4 +16,6 @@ fi
   --add-data "src/governance_app/static:governance_app/static" \
   src/governance_app/desktop.py
 
+rm -rf build zufeidianfei-governance.spec
+
 echo "打包完成：$ROOT_DIR/dist/zufeidianfei-governance"

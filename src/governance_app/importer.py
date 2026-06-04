@@ -1,4 +1,5 @@
 import json
+import re
 from time import perf_counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,9 +53,10 @@ def import_workbook(config: AppConfig, workbook_path: Path, strategy: str = "new
 
     with connect(config) as conn:
         if strategy == "new":
+            batch_name = _clean_batch_name(workbook_path.stem)
             batch_id = conn.execute(
                 "insert into import_batches(source_file, name, batch_code, status) values (?, ?, ?, ?)",
-                (str(workbook_path), workbook_path.stem, _new_batch_code(), "imported"),
+                (str(workbook_path), batch_name, _new_batch_code(), "imported"),
             ).lastrowid
             operation = "import"
             message = f"导入台账：{workbook_path.name}"
@@ -73,7 +75,7 @@ def import_workbook(config: AppConfig, workbook_path: Path, strategy: str = "new
                 message = f"追加导入台账：{workbook_path.name}"
             conn.execute(
                 "update import_batches set source_file = ?, name = coalesce(name, ?), status = 'imported' where id = ?",
-                (str(workbook_path), workbook_path.stem, batch_id),
+                (str(workbook_path), _clean_batch_name(workbook_path.stem), batch_id),
             )
         conn.execute(
             "insert into settings(key, value_json) values ('current_batch_id', ?) "
@@ -179,3 +181,7 @@ def _clean(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _clean_batch_name(value: str) -> str:
+    return re.sub(r"^[0-9a-fA-F]{32}-", "", value).strip() or value

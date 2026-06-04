@@ -654,6 +654,60 @@ tbody tr:last-child td {
   gap: 14px;
 }
 
+.analytics-grid-wide {
+  padding: 0 18px 18px;
+}
+
+.panel-title {
+  margin: 0 0 12px;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.bar-chart {
+  display: grid;
+  gap: 10px;
+}
+
+.bar-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 150px) minmax(120px, 1fr) 64px;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.bar-label {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bar-track {
+  display: block;
+  height: 10px;
+  border-radius: 999px;
+  background: #e9f0f7;
+  overflow: hidden;
+}
+
+.bar-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--cyan));
+}
+
+.bar-row strong {
+  color: var(--text);
+  text-align: right;
+}
+
 .result-box {
   min-height: 96px;
   padding: 18px 20px;

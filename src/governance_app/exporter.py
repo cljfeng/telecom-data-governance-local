@@ -1,4 +1,5 @@
 import re
+import json
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -60,7 +61,8 @@ def export_city_issue_packages(config: AppConfig, batch_id: int) -> list[Path]:
         for row in cities:
             city = row["city"]
             issues = conn.execute(
-                "select * from issues where batch_id = ? and coalesce(city, '未填地市') = ? order by severity, issue_code",
+                _ISSUE_EXPORT_SQL
+                + " and coalesce(i.city, '未填地市') = ? order by i.severity, i.issue_code",
                 (batch_id, city),
             ).fetchall()
             if not issues:
@@ -74,25 +76,7 @@ def export_city_issue_packages(config: AppConfig, batch_id: int) -> list[Path]:
             ws.title = "整改问题清单"
             ws.append(ISSUE_HEADERS)
             for issue in issues:
-                ws.append(
-                    [
-                        _excel_safe(issue["issue_code"]),
-                        _excel_safe(issue["city"]),
-                        _excel_safe(issue["district"]),
-                        _excel_safe(issue["telecom_site_code"]),
-                        _excel_safe(issue["telecom_site_name"]),
-                        _excel_safe(issue["ledger_type"]),
-                        _excel_safe(issue["rule_id"]),
-                        _excel_safe(rule_metadata(issue["rule_id"]).name),
-                        _excel_safe(issue["severity"]),
-                        _excel_safe(issue["message"]),
-                        _excel_safe(issue["suggestion"]),
-                        "",
-                        "",
-                        "",
-                        "",
-                    ]
-                )
+                _append_issue_row(ws, issue)
             wb.save(path)
             conn.execute(
                 """
@@ -126,14 +110,7 @@ def _export_province_issue_package(config: AppConfig, batch_id: int) -> list[Pat
         if batch["status"] != "audited":
             raise ValueError("batch must be audited before export")
         issues = conn.execute(
-            """
-            select id, issue_code, audit_result_id, batch_id, coalesce(city, '未填地市') as city,
-                   district, telecom_site_code, telecom_site_name, ledger_type, rule_id, severity,
-                   status, message, suggestion, correction_value, correction_note, updated_at
-              from issues
-             where batch_id = ?
-             order by city, severity, issue_code
-            """,
+            _ISSUE_EXPORT_SQL + " order by city, i.severity, i.issue_code",
             (batch_id,),
         ).fetchall()
         if not issues:
@@ -188,11 +165,11 @@ def _append_issue_row(ws, issue) -> None:
             _excel_safe(issue["district"]),
             _excel_safe(issue["telecom_site_code"]),
             _excel_safe(issue["telecom_site_name"]),
-            _excel_safe(issue["ledger_type"]),
+            _excel_safe(_ledger_label(issue["ledger_type"])),
             _excel_safe(issue["rule_id"]),
             _excel_safe(rule_metadata(issue["rule_id"]).name),
-            _excel_safe(issue["severity"]),
-            _excel_safe(issue["message"]),
+            _excel_safe(_severity_label(issue["severity"])),
+            _excel_safe(_detailed_issue_message(issue)),
             _excel_safe(issue["suggestion"]),
             "",
             "",
@@ -200,6 +177,69 @@ def _append_issue_row(ws, issue) -> None:
             "",
         ]
     )
+
+
+_ISSUE_EXPORT_SQL = """
+            select i.id, i.issue_code, i.audit_result_id, i.batch_id, coalesce(i.city, '未填地市') as city,
+                   i.district, i.telecom_site_code, i.telecom_site_name, i.ledger_type, i.rule_id, i.severity,
+                   i.status, i.message, i.suggestion, i.correction_value, i.correction_note, i.updated_at,
+                   ar.field_name, lr.row_json
+              from issues i
+              join audit_results ar on ar.id = i.audit_result_id
+              left join ledger_rows lr on lr.id = ar.ledger_row_id
+             where i.batch_id = ?
+"""
+
+
+def _detailed_issue_message(issue) -> str:
+    raw = _row_json(issue["row_json"])
+    field_name = issue["field_name"]
+    field_detail = ""
+    if field_name:
+        current_value = raw.get(field_name)
+        if current_value not in (None, ""):
+            field_detail = f"；命中字段：{field_name}；当前值：{current_value}"
+        else:
+            field_detail = f"；命中字段：{field_name}"
+    site_detail = "；".join(
+        item
+        for item in [
+            f"地市：{issue['city']}" if issue["city"] else "",
+            f"区县：{issue['district']}" if issue["district"] else "",
+            f"站址编码：{issue['telecom_site_code']}" if issue["telecom_site_code"] else "",
+            f"站址名称：{issue['telecom_site_name']}" if issue["telecom_site_name"] else "",
+        ]
+        if item
+    )
+    prefix = f"{_ledger_label(issue['ledger_type'])}台账"
+    if site_detail:
+        prefix = f"{prefix}；{site_detail}"
+    return f"{prefix}{field_detail}；判定原因：{issue['message']}"
+
+
+def _row_json(value: str | None) -> dict:
+    if not value:
+        return {}
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+
+
+def _ledger_label(value: str | None) -> str:
+    labels = {
+        "site": "站址",
+        "tower_rent": "铁塔租费",
+        "electricity": "电费",
+        "generator": "发电费",
+        "all": "跨台账",
+    }
+    return labels.get(str(value or ""), str(value or "未知"))
+
+
+def _severity_label(value: str | None) -> str:
+    labels = {"high": "高", "medium": "中", "low": "低"}
+    return labels.get(str(value or ""), str(value or "未知"))
 
 
 def _excel_safe(value: object) -> object:
