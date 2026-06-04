@@ -10,7 +10,7 @@ def test_full_local_governance_flow(app_config, sample_workbook):
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
     audit = run_audit(app_config, imported.batch_id)
     packages = export_city_issue_packages(app_config, imported.batch_id)

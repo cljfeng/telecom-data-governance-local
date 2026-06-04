@@ -83,6 +83,25 @@ def test_import_workbook_accepts_sheet_and_header_aliases(app_config, tmp_path):
     }
 
 
+def test_import_workbook_links_ledger_rows_to_raw_rows_without_duplicate_json(app_config, sample_workbook):
+    initialize_database(app_config)
+
+    import_workbook(app_config, sample_workbook)
+
+    with connect(app_config) as conn:
+        row = conn.execute(
+            """
+            select lr.raw_row_id, lr.row_json as ledger_json, rr.row_json as raw_json
+              from ledger_rows lr
+              join raw_rows rr on rr.id = lr.raw_row_id
+             where lr.ledger_type = 'electricity'
+            """
+        ).fetchone()
+    assert row["raw_row_id"]
+    assert row["ledger_json"] == "{}"
+    assert "电费单价" in row["raw_json"]
+
+
 def test_import_workbook_maps_current_rent_workbook_site_columns(app_config, tmp_path):
     initialize_database(app_config)
     workbook_path = _save_current_rent_format_workbook(tmp_path / "current_rent_format.xlsx")
@@ -124,7 +143,7 @@ def test_import_workbook_can_replace_existing_batch_data(app_config, sample_work
     initialize_database(app_config)
     first = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
-        conn.execute("update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where batch_id = ? and ledger_type = 'electricity'", (first.batch_id,))
+        conn.execute("update raw_rows set row_json = replace(row_json, '0.8', '9.9') where batch_id = ? and ledger_type = 'electricity'", (first.batch_id,))
     run_audit(app_config, first.batch_id)
 
     replaced = import_workbook(app_config, sample_workbook, strategy="replace", batch_id=first.batch_id)

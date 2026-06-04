@@ -11,7 +11,7 @@ def test_reset_system_clears_business_data_and_keeps_exports_and_backups_by_defa
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
     run_audit(app_config, imported.batch_id)
     export_paths = export_city_issue_packages(app_config, imported.batch_id)
@@ -36,7 +36,7 @@ def test_reset_system_can_clear_exports_and_old_backups(app_config, sample_workb
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
     run_audit(app_config, imported.batch_id)
     export_path = export_city_issue_packages(app_config, imported.batch_id)[0]

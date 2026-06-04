@@ -22,6 +22,7 @@ from governance_app.db import initialize_database
 from governance_app.exporter import export_issue_packages
 from governance_app.import_preview import export_preview_errors, preview_workbook
 from governance_app.importer import import_workbook
+from governance_app.maintenance import compact_database
 from governance_app.recent_files import list_recent_files
 from governance_app.reset import reset_system
 from governance_app.rule_settings import load_rule_settings, upsert_rule_setting
@@ -275,6 +276,14 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         except ValueError as exc:
             return _json({"error": str(exc)}, status=400)
         return _json(result)
+    if method == "POST" and parsed.path == "/api/maintenance/compact":
+        payload, error = _json_body(body)
+        if error:
+            return error
+        clear_uploads = payload.get("clear_uploads", False)
+        if not isinstance(clear_uploads, bool):
+            return _json({"error": "clear_uploads must be boolean"}, status=400)
+        return _json(compact_database(config, clear_uploads=clear_uploads))
     return _json({"error": "not found"}, status=404)
 
 

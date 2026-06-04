@@ -14,7 +14,7 @@ def test_export_city_issue_packages_writes_issue_workbook(app_config, sample_wor
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
     run_audit(app_config, imported.batch_id)
 
@@ -43,7 +43,7 @@ def test_export_issue_packages_can_write_single_province_workbook(app_config, sa
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
     run_audit(app_config, imported.batch_id)
 
@@ -91,7 +91,7 @@ def test_export_city_issue_packages_sanitizes_city_filename(app_config, sample_w
     unsafe_city = "杭/州..测试"
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
         conn.execute("update ledger_rows set city = ? where ledger_type = 'electricity'", (unsafe_city,))
     run_audit(app_config, imported.batch_id)
@@ -113,7 +113,7 @@ def test_export_city_issue_packages_escapes_formula_like_values(app_config, samp
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
         conn.execute(
             """
@@ -140,7 +140,7 @@ def test_import_correction_return_updates_issue_status(app_config, sample_workbo
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
     run_audit(app_config, imported.batch_id)
     paths = export_city_issue_packages(app_config, imported.batch_id)
@@ -163,7 +163,7 @@ def test_import_correction_return_reports_duplicate_issue_codes(app_config, samp
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
     run_audit(app_config, imported.batch_id)
     paths = export_city_issue_packages(app_config, imported.batch_id)
@@ -189,7 +189,7 @@ def test_import_correction_return_skips_blank_rows(app_config, sample_workbook):
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
     run_audit(app_config, imported.batch_id)
     paths = export_city_issue_packages(app_config, imported.batch_id)
@@ -211,7 +211,7 @@ def test_import_correction_return_skips_issue_code_without_correction(app_config
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
     run_audit(app_config, imported.batch_id)
     paths = export_city_issue_packages(app_config, imported.batch_id)
@@ -246,7 +246,7 @@ def test_import_correction_return_rejects_archived_batch(app_config, sample_work
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
     run_audit(app_config, imported.batch_id)
     paths = export_city_issue_packages(app_config, imported.batch_id)

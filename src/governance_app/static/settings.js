@@ -1,5 +1,5 @@
 import { fetchJson, postJson } from "/api.js?v=20260517-1";
-import { escapeHtml, withBusy } from "/ui.js?v=20260517-1";
+import { escapeHtml, formatNumber, withBusy } from "/ui.js?v=20260517-1";
 
 export async function renderSettings({ mainContent, shellHeader }) {
   mainContent.innerHTML = `
@@ -22,6 +22,17 @@ export async function renderSettings({ mainContent, shellHeader }) {
         <button id="restore-backup" class="primary-button" type="button">恢复备份</button>
       </div>
       <div id="settings-result" class="result-box">等待操作</div>
+    </section>
+    <section class="card">
+      ${shellHeader("数据库维护", "空间优化")}
+      <div class="operation-panel">
+        <p>压缩会去除台账重复存储、回收 SQLite 空闲空间。可同时清理上传缓存，已导出的整改包和备份文件不会被删除。</p>
+        <label class="check-field">
+          <input id="clear-upload-cache" type="checkbox" checked>
+          <span>清理上传缓存文件</span>
+        </label>
+        <button id="compact-database" class="primary-button" type="button">清理并压缩数据库</button>
+      </div>
     </section>
     <section class="card">
       ${shellHeader("系统复位", "初始化")}
@@ -64,6 +75,17 @@ export async function renderSettings({ mainContent, shellHeader }) {
       await loadSettings();
     });
   });
+  document.querySelector("#compact-database").addEventListener("click", async (event) => {
+    await withBusy(event.currentTarget, "压缩中...", async () => {
+      const data = await postJson("/api/maintenance/compact", {
+        clear_uploads: document.querySelector("#clear-upload-cache").checked,
+      });
+      const before = formatBytes(data.before_bytes);
+      const after = formatBytes(data.after_bytes);
+      setSettingsResult("success", `压缩完成；数据库 ${before} -> ${after}；清理上传缓存 ${formatNumber(data.removed_uploads)} 个；去重台账 ${formatNumber(data.deduplicated_ledger_rows)} 行`);
+      await loadSettings();
+    });
+  });
   document.querySelector("#reset-system").addEventListener("click", async (event) => {
     const confirmation = document.querySelector("#reset-confirmation").value.trim();
     if (confirmation !== "复位") {
@@ -88,11 +110,20 @@ async function loadSettings() {
     <div class="settings-grid">
       <span><strong>工作目录</strong>${escapeHtml(data.workspace_dir)}</span>
       <span><strong>数据库</strong>${escapeHtml(data.database_path)}</span>
+      <span><strong>数据库大小</strong>${escapeHtml(formatBytes(data.database_size_bytes))}</span>
       <span><strong>导出目录</strong>${escapeHtml(data.export_dir)}</span>
       <span><strong>备份目录</strong>${escapeHtml(data.backup_dir)}</span>
       <span><strong>模板版本</strong>${escapeHtml(data.template_version)}</span>
     </div>
   `;
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (bytes >= 1024 * 1024 * 1024) return `${formatNumber(bytes / 1024 / 1024 / 1024)} GB`;
+  if (bytes >= 1024 * 1024) return `${formatNumber(bytes / 1024 / 1024)} MB`;
+  if (bytes >= 1024) return `${formatNumber(bytes / 1024)} KB`;
+  return `${formatNumber(bytes)} B`;
 }
 
 function setSettingsResult(stateName, content) {

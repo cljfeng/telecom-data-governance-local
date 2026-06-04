@@ -34,7 +34,17 @@ def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
             (batch_id, len(rules) + len(batch_rules)),
         ).lastrowid
         rows = conn.execute(
-            "select * from ledger_rows where batch_id = ? order by id",
+            """
+            select lr.*,
+                   case
+                       when lr.row_json is not null and lr.row_json <> '{}' then lr.row_json
+                       else coalesce(rr.row_json, lr.row_json)
+                   end as effective_row_json
+              from ledger_rows lr
+              left join raw_rows rr on rr.id = lr.raw_row_id
+             where lr.batch_id = ?
+             order by lr.id
+            """,
             (batch_id,),
         ).fetchall()
         issue_count = 0
@@ -46,12 +56,12 @@ def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
                 district=ledger_row["district"],
                 telecom_site_code=ledger_row["telecom_site_code"],
                 telecom_site_name=ledger_row["telecom_site_name"],
-                row=parse_row(ledger_row["row_json"]),
+                row=parse_row(ledger_row["effective_row_json"]),
             )
             for ledger_row in rows
         ]
         for ledger_row in rows:
-            row_data = parse_row(ledger_row["row_json"])
+            row_data = parse_row(ledger_row["effective_row_json"])
             for rule in rules:
                 if rule.ledger_type != ledger_row["ledger_type"]:
                     continue

@@ -52,6 +52,7 @@ def initialize_database(config: AppConfig) -> None:
                 telecom_site_name text,
                 tower_site_code text,
                 tower_site_name text,
+                raw_row_id integer references raw_rows(id) on delete cascade,
                 row_json text not null
             );
 
@@ -144,6 +145,7 @@ def initialize_database(config: AppConfig) -> None:
         _ensure_column(conn, "import_batches", "archived_at", "text")
         _ensure_column(conn, "ledger_rows", "sheet_name", "text")
         _ensure_column(conn, "ledger_rows", "row_number", "integer")
+        _ensure_column(conn, "ledger_rows", "raw_row_id", "integer references raw_rows(id) on delete cascade")
 
 
 def table_names(conn: sqlite3.Connection) -> set[str]:

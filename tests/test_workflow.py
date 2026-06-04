@@ -49,7 +49,7 @@ def test_issue_filters_and_city_progress(app_config, sample_workbook):
     initialize_database(app_config)
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
-        conn.execute("update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
+        conn.execute("update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
     run_audit(app_config, imported.batch_id)
     export_city_issue_packages(app_config, imported.batch_id)
 
@@ -71,7 +71,7 @@ def test_list_issues_returns_total_and_supports_pagination(app_config, sample_wo
     initialize_database(app_config)
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
-        conn.execute("update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
+        conn.execute("update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
     run_audit(app_config, imported.batch_id)
 
     page = list_issues(app_config, imported.batch_id, {}, limit=1, offset=0)
@@ -114,7 +114,7 @@ def test_update_issue_status_rejects_unknown_status(app_config, sample_workbook)
     initialize_database(app_config)
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
-        conn.execute("update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
+        conn.execute("update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
     run_audit(app_config, imported.batch_id)
     issue = list_issues(app_config, imported.batch_id, {})[0]
 
@@ -126,7 +126,7 @@ def test_update_issue_status_rejects_archived_batch(app_config, sample_workbook)
     initialize_database(app_config)
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
-        conn.execute("update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
+        conn.execute("update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
     run_audit(app_config, imported.batch_id)
     issue = list_issues(app_config, imported.batch_id, {})[0]
     with connect(app_config) as conn:

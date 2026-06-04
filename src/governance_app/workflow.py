@@ -261,24 +261,29 @@ def city_progress(config: AppConfig, batch_id: int) -> list[dict[str, Any]]:
 
 def list_ledger_rows(config: AppConfig, batch_id: int, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
     filters = filters or {}
-    where = ["batch_id = ?"]
+    where = ["lr.batch_id = ?"]
     params: list[Any] = [batch_id]
     for key, column in {
-        "ledger_type": "ledger_type",
-        "city": "coalesce(city, '未填地市')",
-        "district": "coalesce(district, '')",
-        "site_code": "coalesce(telecom_site_code, '')",
+        "ledger_type": "lr.ledger_type",
+        "city": "coalesce(lr.city, '未填地市')",
+        "district": "coalesce(lr.district, '')",
+        "site_code": "coalesce(lr.telecom_site_code, '')",
     }.items():
         value = filters.get(key)
         if value:
             where.append(f"{column} = ?")
             params.append(value)
     sql = f"""
-        select id, ledger_type, coalesce(city, '未填地市') as city, district,
-               telecom_site_code, telecom_site_name, tower_site_code, tower_site_name, row_json
-          from ledger_rows
+        select lr.id, lr.ledger_type, coalesce(lr.city, '未填地市') as city, lr.district,
+               lr.telecom_site_code, lr.telecom_site_name, lr.tower_site_code, lr.tower_site_name,
+               case
+                   when lr.row_json is not null and lr.row_json <> '{{}}' then lr.row_json
+                   else coalesce(rr.row_json, lr.row_json)
+               end as row_json
+          from ledger_rows lr
+          left join raw_rows rr on rr.id = lr.raw_row_id
          where {" and ".join(where)}
-         order by ledger_type, city, telecom_site_code, id
+         order by lr.ledger_type, lr.city, lr.telecom_site_code, lr.id
          limit 500
     """
     with connect(config) as conn:

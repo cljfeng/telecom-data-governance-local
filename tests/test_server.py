@@ -81,7 +81,7 @@ def test_import_audit_export_and_correction_endpoints(app_config, sample_workboo
 
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
 
     status, headers, body = app.handle_test_request(
@@ -119,7 +119,7 @@ def test_export_endpoint_accepts_province_mode(app_config, sample_workbook):
     app.handle_test_request("POST", "/api/import", json.dumps({"path": str(sample_workbook)}))
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
     app.handle_test_request("POST", "/api/audit", json.dumps({"batch_id": 1}))
 
@@ -141,7 +141,7 @@ def test_notice_report_endpoint_exports_excel(app_config, sample_workbook):
     app.handle_test_request("POST", "/api/import", json.dumps({"path": str(sample_workbook)}))
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
     app.handle_test_request("POST", "/api/audit", json.dumps({"batch_id": 1}))
 
@@ -251,6 +251,24 @@ def test_import_upload_endpoint_reports_missing_file_without_generic_http_400(ap
     assert json.loads(response_body)["error"] == "请选择台账文件"
 
 
+def test_maintenance_compact_endpoint_removes_upload_cache(app_config, sample_workbook):
+    initialize_database(app_config)
+    app = create_app(app_config)
+    content_type, body = _multipart_upload_body(sample_workbook, {"strategy": "new"})
+    app.handle_test_upload_request("/api/import/upload", content_type, body)
+
+    status, headers, response_body = app.handle_test_request(
+        "POST",
+        "/api/maintenance/compact",
+        json.dumps({"clear_uploads": True}),
+    )
+
+    data = json.loads(response_body)
+    assert status == 200
+    assert data["removed_uploads"] == 1
+    assert "after_bytes" in data
+
+
 def test_import_endpoint_accepts_append_and_replace_strategy(app_config, sample_workbook):
     initialize_database(app_config)
     app = create_app(app_config)
@@ -358,7 +376,7 @@ def test_issue_city_progress_status_and_archive_endpoints(app_config, sample_wor
     status, headers, body = app.handle_test_request("POST", "/api/import", json.dumps({"path": str(sample_workbook)}))
     batch_id = json.loads(body)["batch_id"]
     with connect(app_config) as conn:
-        conn.execute("update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
+        conn.execute("update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
     app.handle_test_request("POST", "/api/audit", json.dumps({"batch_id": batch_id}))
     status, headers, body = app.handle_test_request("POST", "/api/export", json.dumps({"batch_id": batch_id}))
     exported = json.loads(body)["paths"][0]
@@ -428,7 +446,7 @@ def test_correction_upload_endpoint_imports_selected_file(app_config, sample_wor
     status, headers, body = app.handle_test_request("POST", "/api/import", json.dumps({"path": str(sample_workbook)}))
     batch_id = json.loads(body)["batch_id"]
     with connect(app_config) as conn:
-        conn.execute("update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
+        conn.execute("update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
     app.handle_test_request("POST", "/api/audit", json.dumps({"batch_id": batch_id}))
     status, headers, body = app.handle_test_request("POST", "/api/export", json.dumps({"batch_id": batch_id}))
     exported = Path(json.loads(body)["paths"][0])
@@ -467,7 +485,7 @@ def test_archive_precheck_endpoint_reports_blockers(app_config, sample_workbook)
     status, headers, body = app.handle_test_request("POST", "/api/import", json.dumps({"path": str(sample_workbook)}))
     batch_id = json.loads(body)["batch_id"]
     with connect(app_config) as conn:
-        conn.execute("update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
+        conn.execute("update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
     app.handle_test_request("POST", "/api/audit", json.dumps({"batch_id": batch_id}))
     app.handle_test_request("POST", "/api/export", json.dumps({"batch_id": batch_id}))
     with connect(app_config) as conn:

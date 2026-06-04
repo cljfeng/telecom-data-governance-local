@@ -191,10 +191,16 @@ _ISSUE_EXPORT_SQL = """
             select i.id, i.issue_code, i.audit_result_id, i.batch_id, coalesce(i.city, '未填地市') as city,
                    i.district, i.telecom_site_code, i.telecom_site_name, i.ledger_type, i.rule_id, i.severity,
                    i.status, i.message, i.suggestion, i.correction_value, i.correction_note, i.updated_at,
-                   ar.field_name, lr.row_json, lr.sheet_name, lr.row_number
+                   ar.field_name,
+                   case
+                       when lr.row_json is not null and lr.row_json <> '{}' then lr.row_json
+                       else coalesce(rr.row_json, lr.row_json)
+                   end as row_json,
+                   lr.sheet_name, lr.row_number
               from issues i
               join audit_results ar on ar.id = i.audit_result_id
               left join ledger_rows lr on lr.id = ar.ledger_row_id
+              left join raw_rows rr on rr.id = lr.raw_row_id
              where i.batch_id = ?
 """
 

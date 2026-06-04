@@ -14,7 +14,7 @@ def test_dashboard_summary_counts_batch_and_issues(app_config, sample_workbook):
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
     run_audit(app_config, imported.batch_id)
 
@@ -41,11 +41,11 @@ def test_dashboard_summary_normalizes_city_aliases(app_config, sample_workbook):
         conn.execute(
             """
             update ledger_rows
-               set row_json = replace(row_json, '0.8', '9.9'),
-                   city = '兰州市'
+               set city = '兰州市'
              where ledger_type = 'electricity'
             """
         )
+        conn.execute("update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
     run_audit(app_config, imported.batch_id)
     with connect(app_config) as conn:
         conn.execute("update issues set city = '兰州' where id in (select id from issues limit 1)")
@@ -68,7 +68,7 @@ def test_export_notice_report_writes_issue_statistics_workbook(app_config, sampl
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
     run_audit(app_config, imported.batch_id)
 
@@ -141,7 +141,7 @@ def test_archive_batch_writes_operation_log_sheet_and_locks_batch(app_config, sa
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
     run_audit(app_config, imported.batch_id)
     export_city_issue_packages(app_config, imported.batch_id)
@@ -169,7 +169,7 @@ def test_archive_precheck_reports_open_issues_before_archive(app_config, sample_
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
     run_audit(app_config, imported.batch_id)
     export_city_issue_packages(app_config, imported.batch_id)
@@ -189,7 +189,7 @@ def test_archive_batch_adds_risk_rule_and_open_issue_sheets(app_config, sample_w
     imported = import_workbook(app_config, sample_workbook)
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
     run_audit(app_config, imported.batch_id)
     export_city_issue_packages(app_config, imported.batch_id)

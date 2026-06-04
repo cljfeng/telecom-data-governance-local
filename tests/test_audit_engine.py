@@ -13,7 +13,7 @@ def test_run_audit_generates_issue_for_invalid_electricity_price(app_config, sam
 
     with connect(app_config) as conn:
         conn.execute(
-            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
         )
 
     audit = run_audit(app_config, result.batch_id)
