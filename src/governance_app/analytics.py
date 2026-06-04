@@ -36,6 +36,27 @@ def dashboard_summary(config: AppConfig, batch_id: int) -> dict[str, Any]:
                 (batch_id,),
             )
         ]
+        issues_by_ledger_type = [
+            dict(row)
+            for row in conn.execute(
+                "select ledger_type, count(*) as count from issues where batch_id = ? group by ledger_type order by count desc, ledger_type",
+                (batch_id,),
+            )
+        ]
+        issue_categories = []
+        for row in conn.execute(
+            """
+            select ledger_type, rule_id, severity, count(*) as count
+              from issues
+             where batch_id = ?
+             group by ledger_type, rule_id, severity
+             order by count desc, ledger_type, rule_id
+            """,
+            (batch_id,),
+        ):
+            item = dict(row)
+            item["rule_name"] = rule_metadata(item["rule_id"]).name
+            issue_categories.append(item)
         status_counts = {
             row["status"]: row["count"]
             for row in conn.execute(
@@ -52,6 +73,8 @@ def dashboard_summary(config: AppConfig, batch_id: int) -> dict[str, Any]:
             "issues_by_city": issues_by_city,
             "issues_by_rule": issues_by_rule,
             "issues_by_severity": issues_by_severity,
+            "issues_by_ledger_type": issues_by_ledger_type,
+            "issue_categories": issue_categories,
             "status_counts": status_counts,
             "open_issue_count": open_issue_count,
             "closure_rate": round((closed_count / total_issues) * 100, 1) if total_issues else 0.0,

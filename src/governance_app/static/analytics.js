@@ -28,6 +28,22 @@ export async function renderAnalytics({
       </div>
     </section>
     <section class="card">
+      ${shellHeader("问题分类统计", "Issue Statistics")}
+      <div class="analytics-grid">
+        <div class="table-wrap"><table><thead><tr><th>台账类型</th><th>问题数</th></tr></thead><tbody id="ledger-stat-table"><tr><td colspan="2">正在加载</td></tr></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>风险等级</th><th>问题数</th></tr></thead><tbody id="severity-stat-table"><tr><td colspan="2">正在加载</td></tr></tbody></table></div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>台账</th><th>规则</th><th>风险</th><th>问题数</th></tr></thead><tbody id="category-stat-table"><tr><td colspan="4">正在加载</td></tr></tbody></table></div>
+    </section>
+    <section class="card">
+      ${shellHeader("稽核问题通报", "Notice")}
+      <div class="operation-panel">
+        <p>导出当前批次的稽核问题统计 Excel，包含通报总览、地市问题统计、分类统计和问题明细。</p>
+        <button id="export-notice-report" class="primary-button" type="button">导出通报 Excel</button>
+      </div>
+      <div id="notice-result" class="result-box">等待操作</div>
+    </section>
+    <section class="card">
       ${shellHeader("专项归档导出", "Archive")}
       <div class="operation-panel">
         <p>归档会生成当前批次的汇总 Excel，包括归档总览、地市整改进度、规则命中排行、风险等级分布和未闭环问题。</p>
@@ -54,6 +70,16 @@ export async function renderAnalytics({
     }),
   );
   await loadAnalytics(state.batchId);
+  document.querySelector("#export-notice-report").addEventListener("click", async (event) => {
+    await withBusy(event.currentTarget, "导出中...", async () => {
+      const result = document.querySelector("#notice-result");
+      result.className = "result-box result-pending";
+      result.textContent = "正在生成通报 Excel...";
+      const data = await postJson("/api/reports/notice", { batch_id: state.batchId });
+      result.className = "result-box result-success";
+      result.textContent = `通报已导出：${data.path}`;
+    });
+  });
   document.querySelector("#archive-precheck").addEventListener("click", async (event) => {
     await withBusy(event.currentTarget, "检查中...", async () => {
       setOperationResult("pending", "正在检查归档条件...");
@@ -93,6 +119,39 @@ async function loadAnalytics(batchId) {
     metricCard("高频规则", topRule?.count || 0, topRule?.rule_name || "暂无", "warning"),
     metricCard("主要风险", topSeverity?.count || 0, topSeverity?.severity || "暂无", "review"),
   ].join("");
+  renderSimpleRows("#ledger-stat-table", data.issues_by_ledger_type || [], "ledger_type");
+  renderSimpleRows("#severity-stat-table", data.issues_by_severity || [], "severity");
+  renderCategoryRows(data.issue_categories || []);
+}
+
+function renderSimpleRows(selector, rows, labelField) {
+  const tbody = document.querySelector(selector);
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="2">暂无数据</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map((row) => `<tr><td>${escapeHtml(row[labelField])}</td><td>${formatNumber(row.count)}</td></tr>`).join("");
+}
+
+function renderCategoryRows(rows) {
+  const tbody = document.querySelector("#category-stat-table");
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="4">暂无分类统计</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows
+    .slice(0, 20)
+    .map(
+      (row) => `
+        <tr>
+          <td>${escapeHtml(row.ledger_type)}</td>
+          <td><strong>${escapeHtml(row.rule_name || row.rule_id)}</strong><br><span>${escapeHtml(row.rule_id)}</span></td>
+          <td>${escapeHtml(row.severity)}</td>
+          <td>${formatNumber(row.count)}</td>
+        </tr>
+      `,
+    )
+    .join("");
 }
 
 function metricCard(label, value, note, tone = "neutral") {

@@ -1,7 +1,11 @@
 .superpowers/
+.DS_Store
 __pycache__/
 *.pyc
 *.egg-info/
+*.spec
+build/
+dist/
 data/
 exports/
 .pytest_cache/

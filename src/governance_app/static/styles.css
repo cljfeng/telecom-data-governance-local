@@ -493,7 +493,8 @@ tbody tr:last-child td {
   font-weight: 800;
 }
 
-.form-field input {
+.form-field input,
+.form-field select {
   width: 100%;
   min-height: 42px;
   padding: 9px 11px;
@@ -528,7 +529,8 @@ tbody tr:last-child td {
 .compact-field select:focus,
 .filter-grid input:focus,
 .filter-grid select:focus,
-.form-field input:focus {
+.form-field input:focus,
+.form-field select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
@@ -567,6 +569,26 @@ tbody tr:last-child td {
   outline: 0;
 }
 
+.danger-button {
+  width: fit-content;
+  min-width: 128px;
+  min-height: 42px;
+  padding: 9px 16px;
+  border: 0;
+  border-radius: 8px;
+  color: #ffffff;
+  background: linear-gradient(135deg, #d9472f, #a83224);
+  box-shadow: 0 10px 20px rgba(217, 71, 47, 0.18);
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.danger-button:hover,
+.danger-button:focus-visible {
+  background: linear-gradient(135deg, #ec5a42, #98261b);
+  outline: 0;
+}
+
 .secondary-button,
 .text-button {
   min-height: 40px;
@@ -592,6 +614,44 @@ tbody tr:last-child td {
   min-height: 34px;
   padding: 6px 10px;
   font-size: 13px;
+}
+
+.secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.check-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.check-field input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 14px 18px 18px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.analytics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
 }
 
 .result-box {
@@ -1124,6 +1184,7 @@ tbody tr:last-child td {
 
   .workflow-steps,
   .filter-grid,
+  .analytics-grid,
   .field-group dl {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1176,7 +1237,13 @@ tbody tr:last-child td {
 
   .workflow-steps,
   .filter-grid,
+  .analytics-grid,
   .field-group dl {
     grid-template-columns: 1fr;
+  }
+
+  .pagination-bar {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

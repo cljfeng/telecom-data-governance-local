@@ -13,16 +13,17 @@ from zipfile import BadZipFile
 from openpyxl.utils.exceptions import InvalidFileException
 
 from governance_app.analytics import dashboard_summary
-from governance_app.archive import archive_batch, archive_precheck
+from governance_app.archive import archive_batch, archive_precheck, export_notice_report
 from governance_app.audit_engine import run_audit
 from governance_app.backup import create_backup, restore_backup
 from governance_app.config import AppConfig
 from governance_app.corrections import import_correction_return
 from governance_app.db import initialize_database
-from governance_app.exporter import export_city_issue_packages
+from governance_app.exporter import export_issue_packages
 from governance_app.import_preview import export_preview_errors, preview_workbook
 from governance_app.importer import import_workbook
 from governance_app.recent_files import list_recent_files
+from governance_app.reset import reset_system
 from governance_app.rule_settings import load_rule_settings, upsert_rule_setting
 from governance_app.audit_rules import all_batch_rules, all_rules, rule_metadata
 from governance_app.settings_service import local_settings, restore_backup_safely
@@ -111,8 +112,12 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         if error:
             return error
         query = parse_qs(parsed.query)
-        filters = {key: values[0] for key, values in query.items() if key != "batch_id" and values and values[0]}
-        return _json({"issues": list_issues(config, batch_id, filters), "rules": list_issue_rules(config, batch_id)})
+        filters = {key: values[0] for key, values in query.items() if key not in {"batch_id", "limit", "offset"} and values and values[0]}
+        limit, offset = _pagination_from_query(query)
+        if limit is None:
+            return _json({"issues": list_issues(config, batch_id, filters), "rules": list_issue_rules(config, batch_id)})
+        page = list_issues(config, batch_id, filters, limit=limit, offset=offset)
+        return _json({**page, "rules": list_issue_rules(config, batch_id)})
     if method == "GET" and parsed.path == "/api/ledger-rows":
         batch_id, error = _batch_id_from_query(parsed.query)
         if error:
@@ -173,10 +178,25 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         if error:
             return error
         try:
-            paths = export_city_issue_packages(config, batch_id)
+            mode = payload.get("mode", "city")
+            if not isinstance(mode, str):
+                return _json({"error": "mode must be string"}, status=400)
+            paths = export_issue_packages(config, batch_id, mode=mode)
         except ValueError as exc:
             return _json({"error": str(exc)}, status=400)
         return _json({"paths": [str(path) for path in paths]})
+    if method == "POST" and parsed.path == "/api/reports/notice":
+        payload, error = _json_body(body)
+        if error:
+            return error
+        batch_id, error = _batch_id_from_payload(payload)
+        if error:
+            return error
+        try:
+            path = export_notice_report(config, batch_id)
+        except ValueError as exc:
+            return _json({"error": str(exc)}, status=400)
+        return _json({"path": str(path)})
     if method == "POST" and parsed.path == "/api/corrections":
         payload, error = _json_body(body)
         if error:
@@ -234,6 +254,27 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
             return _json({"error": "path is required"}, status=400)
         safety_backup_path, status_text = restore_backup_safely(config, Path(path_value))
         return _json({"status": status_text, "safety_backup_path": str(safety_backup_path)})
+    if method == "POST" and parsed.path == "/api/reset":
+        payload, error = _json_body(body)
+        if error:
+            return error
+        confirmation = payload.get("confirmation")
+        if not isinstance(confirmation, str):
+            return _json({"error": "confirmation is required"}, status=400)
+        preserve_exports = payload.get("preserve_exports", True)
+        preserve_backups = payload.get("preserve_backups", True)
+        if not isinstance(preserve_exports, bool) or not isinstance(preserve_backups, bool):
+            return _json({"error": "preserve options must be boolean"}, status=400)
+        try:
+            result = reset_system(
+                config,
+                confirmation=confirmation,
+                preserve_exports=preserve_exports,
+                preserve_backups=preserve_backups,
+            )
+        except ValueError as exc:
+            return _json({"error": str(exc)}, status=400)
+        return _json(result)
     return _json({"error": "not found"}, status=404)
 
 
@@ -390,6 +431,19 @@ def _batch_id_from_query(query_string: str) -> tuple[int, tuple[int, dict[str, s
         return int(query.get("batch_id", ["1"])[0]), None
     except ValueError:
         return 0, _json({"error": "invalid batch_id"}, status=400)
+
+
+def _pagination_from_query(query: dict[str, list[str]]) -> tuple[int | None, int]:
+    raw_limit = query.get("limit", [""])[0]
+    raw_offset = query.get("offset", ["0"])[0]
+    if not raw_limit:
+        return None, 0
+    try:
+        limit = max(1, min(int(raw_limit), 500))
+        offset = max(0, int(raw_offset))
+    except ValueError:
+        return 50, 0
+    return limit, offset
 
 
 def _rule_settings_payload(config: AppConfig) -> list[dict]:

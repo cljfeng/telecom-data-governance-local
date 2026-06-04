@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
 from governance_app.audit_rules import rule_metadata
@@ -45,8 +46,8 @@ def create_batch(config: AppConfig, name: str) -> int:
         raise ValueError("batch name is required")
     with connect(config) as conn:
         batch_id = conn.execute(
-            "insert into import_batches(source_file, name, status) values (?, ?, ?)",
-            ("", cleaned, "created"),
+            "insert into import_batches(source_file, name, batch_code, status) values (?, ?, ?, ?)",
+            ("", cleaned, _new_batch_code(), "created"),
         ).lastrowid
         conn.execute(
             "insert into settings(key, value_json) values ('current_batch_id', ?) "
@@ -79,7 +80,7 @@ def list_batches(config: AppConfig) -> list[dict[str, Any]]:
         current = _current_batch_id(conn)
         rows = conn.execute(
             """
-            select id, coalesce(name, source_file, '未命名批次') as name, source_file, template_version,
+            select id, coalesce(name, source_file, '未命名批次') as name, batch_code, source_file, template_version,
                    created_at, status, is_archived, archived_at
               from import_batches
              order by id desc
@@ -89,6 +90,7 @@ def list_batches(config: AppConfig) -> list[dict[str, Any]]:
             {
                 "id": row["id"],
                 "name": row["name"],
+                "batch_code": row["batch_code"] or _code_from_created_at(row["created_at"], row["id"]),
                 "source_file": row["source_file"],
                 "template_version": row["template_version"],
                 "created_at": row["created_at"],
@@ -134,7 +136,13 @@ def get_batch_workflow(config: AppConfig, batch_id: int) -> dict[str, Any]:
         }
 
 
-def list_issues(config: AppConfig, batch_id: int, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
+def list_issues(
+    config: AppConfig,
+    batch_id: int,
+    filters: dict[str, str] | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[dict[str, Any]] | dict[str, Any]:
     filters = filters or {}
     where = ["batch_id = ?"]
     params: list[Any] = [batch_id]
@@ -149,22 +157,35 @@ def list_issues(config: AppConfig, batch_id: int, filters: dict[str, str] | None
         if value:
             where.append(f"{column} = ?")
             params.append(value)
+    base_where = " and ".join(where)
     sql = f"""
         select issue_code, coalesce(city, '未填地市') as city, district, telecom_site_code,
                telecom_site_name, ledger_type, rule_id, severity, status, message, suggestion,
                correction_value, correction_note, updated_at
           from issues
-         where {" and ".join(where)}
+         where {base_where}
          order by updated_at desc, issue_code
-         limit 500
     """
+    if limit is not None:
+        safe_limit = max(1, min(int(limit), 500))
+        safe_offset = max(0, int(offset))
+        sql = f"{sql} limit ? offset ?"
+        query_params = params + [safe_limit, safe_offset]
+    else:
+        safe_limit = 500
+        safe_offset = 0
+        sql = f"{sql} limit 500"
+        query_params = params
     with connect(config) as conn:
+        total = conn.execute(f"select count(*) as count from issues where {base_where}", params).fetchone()["count"]
         issues = []
-        for row in conn.execute(sql, params):
+        for row in conn.execute(sql, query_params):
             item = dict(row)
             item["rule_name"] = rule_metadata(item["rule_id"]).name
             issues.append(item)
-        return issues
+        if limit is None:
+            return issues
+        return {"issues": issues, "total": total, "limit": safe_limit, "offset": safe_offset}
 
 
 def list_issue_rules(config: AppConfig, batch_id: int) -> list[dict[str, Any]]:
@@ -314,6 +335,20 @@ def record_operation(config: AppConfig, batch_id: int, operation: str, message: 
             "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
             (batch_id, operation, message),
         )
+
+
+def _new_batch_code() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def _code_from_created_at(created_at: str | None, batch_id: int) -> str:
+    if created_at:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return datetime.strptime(created_at[:19], fmt).strftime("%Y%m%d-%H%M%S")
+            except ValueError:
+                continue
+    return f"批次{batch_id}"
 
 
 def _require_batch(conn, batch_id: int):

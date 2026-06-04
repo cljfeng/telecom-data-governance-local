@@ -1,5 +1,7 @@
 from governance_app.analytics import dashboard_summary
-from governance_app.archive import archive_batch, archive_precheck
+from openpyxl import load_workbook
+
+from governance_app.archive import archive_batch, archive_precheck, export_notice_report
 from governance_app.audit_engine import run_audit
 from governance_app.backup import create_backup, restore_backup
 from governance_app.db import connect, initialize_database
@@ -23,8 +25,30 @@ def test_dashboard_summary_counts_batch_and_issues(app_config, sample_workbook):
     assert "issues_by_city" in summary
     assert summary["issues_by_rule"][0]["rule_name"]
     assert summary["issues_by_severity"][0]["severity"] == "high"
+    assert summary["issues_by_ledger_type"][0]["ledger_type"] == "electricity"
+    assert summary["issue_categories"][0]["rule_name"]
     assert summary["open_issue_count"] >= 1
     assert summary["closure_rate"] == 0.0
+
+
+def test_export_notice_report_writes_issue_statistics_workbook(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+        )
+    run_audit(app_config, imported.batch_id)
+
+    path = export_notice_report(app_config, imported.batch_id)
+
+    wb = load_workbook(path)
+    assert "通报总览" in wb.sheetnames
+    assert "地市问题统计" in wb.sheetnames
+    assert "分类统计" in wb.sheetnames
+    assert "问题明细" in wb.sheetnames
+    assert wb["分类统计"]["A1"].value == "分类维度"
+    assert wb["问题明细"]["A2"].value
 
 
 def test_backup_and_restore_database(app_config, sample_workbook):

@@ -26,6 +26,8 @@ def test_create_list_and_select_batches(app_config):
     batches = list_batches(app_config)
 
     assert [batch["name"] for batch in batches] == ["2026年第二批核查", "2026年第一批核查"]
+    assert batches[0]["batch_code"]
+    assert len(batches[0]["batch_code"]) == len("20260604-153012")
     assert batches[0]["is_current"] is True
     assert batches[1]["is_current"] is False
     assert first_id != second_id
@@ -63,6 +65,21 @@ def test_issue_filters_and_city_progress(app_config, sample_workbook):
     assert progress[0]["total_count"] == 1
     assert progress[0]["closed_count"] == 1
     assert progress[0]["completion_rate"] == 100.0
+
+
+def test_list_issues_returns_total_and_supports_pagination(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute("update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
+    run_audit(app_config, imported.batch_id)
+
+    page = list_issues(app_config, imported.batch_id, {}, limit=1, offset=0)
+
+    assert page["total"] == 1
+    assert page["limit"] == 1
+    assert page["offset"] == 0
+    assert len(page["issues"]) == 1
 
 
 def test_list_ledger_rows_filters_and_exposes_grouped_fields(app_config, sample_workbook):

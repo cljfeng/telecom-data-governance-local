@@ -41,7 +41,7 @@ async function refreshBatches() {
   const current = state.batches.find((batch) => batch.is_current) || state.batches[0];
   if (current) {
     state.batchId = current.id;
-    headerBatch.textContent = `#${current.id} 当前批次`;
+    headerBatch.textContent = `${current.batch_code || `#${current.id}`} 当前批次`;
   } else {
     state.batchId = null;
     headerBatch.textContent = "暂无批次";
@@ -58,7 +58,7 @@ function batchOptions() {
     return '<option value="">暂无批次</option>';
   }
   return state.batches
-    .map((batch) => `<option value="${batch.id}" ${batch.id === state.batchId ? "selected" : ""}>#${batch.id} ${escapeHtml(batch.name)}</option>`)
+    .map((batch) => `<option value="${batch.id}" ${batch.id === state.batchId ? "selected" : ""}>${escapeHtml(batch.batch_code || `#${batch.id}`)} ${escapeHtml(batch.name)}</option>`)
     .join("");
 }
 
@@ -270,7 +270,7 @@ async function loadDashboard() {
   }
   mainContent.innerHTML = `
     <section class="card command-card">
-      ${shellHeader("专项治理闭环", batch ? `#${batch.id} ${batch.name}` : "Batch", renderBatchSelector())}
+      ${shellHeader("专项治理闭环", batch ? `${batch.batch_code || `#${batch.id}`} ${batch.name}` : "Batch", renderBatchSelector())}
       <div id="workflow-area" class="workflow-area">正在加载流程</div>
     </section>
     <section class="card metric-section">
@@ -390,7 +390,8 @@ async function renderBatches() {
         <table>
           <thead>
             <tr>
-              <th>批次</th>
+              <th>批次编码</th>
+              <th>批次名称</th>
               <th>状态</th>
               <th>创建时间</th>
               <th>来源文件</th>
@@ -415,14 +416,15 @@ async function renderBatches() {
 function renderBatchRows() {
   const tbody = document.querySelector("#batch-table");
   if (!state.batches.length) {
-    tbody.innerHTML = '<tr><td colspan="6">暂无批次，可以先新建批次或直接导入台账。</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7">暂无批次，可以先新建批次或直接导入台账。</td></tr>';
     return;
   }
   tbody.innerHTML = state.batches
     .map(
       (batch) => `
         <tr>
-          <td>#${batch.id} ${escapeHtml(batch.name)}</td>
+          <td>${escapeHtml(batch.batch_code || `#${batch.id}`)}</td>
+          <td>${escapeHtml(batch.name)}</td>
           <td>${escapeHtml(batch.status)}${batch.is_archived ? " / 已归档" : ""}</td>
           <td>${escapeHtml(batch.created_at)}</td>
           <td>${escapeHtml(batch.source_file || "手动创建")}</td>
@@ -728,6 +730,8 @@ async function renderAudit() {
     renderNoBatchPrompt("没有批次时无法执行稽核。");
     return;
   }
+  state.issueLimit = state.issueLimit || 50;
+  state.issueOffset = 0;
   mainContent.innerHTML = `
     <section class="card">
       ${shellHeader("稽核结果", "Issues", renderBatchSelector())}
@@ -740,6 +744,11 @@ async function renderAudit() {
         <button id="load-issues" class="secondary-button" type="button">查询问题</button>
       </div>
       <div class="table-wrap issue-table-wrap"><table class="issue-table"><thead><tr><th>问题编号</th><th>地市</th><th>台账</th><th>规则</th><th>风险</th><th>状态</th><th>说明</th><th>操作</th></tr></thead><tbody id="issue-table"><tr><td colspan="8">点击查询问题</td></tr></tbody></table></div>
+      <div class="pagination-bar">
+        <button id="issue-prev-page" class="secondary-button" type="button">上一页</button>
+        <span id="issue-page-info">第 1 页</span>
+        <button id="issue-next-page" class="secondary-button" type="button">下一页</button>
+      </div>
     </section>
   `;
   bindBatchSelector(renderAudit);
@@ -749,7 +758,18 @@ async function renderAudit() {
       await loadIssues();
     });
   });
-  document.querySelector("#load-issues").addEventListener("click", loadIssues);
+  document.querySelector("#load-issues").addEventListener("click", async () => {
+    state.issueOffset = 0;
+    await loadIssues();
+  });
+  document.querySelector("#issue-prev-page").addEventListener("click", async () => {
+    state.issueOffset = Math.max(0, Number(state.issueOffset || 0) - Number(state.issueLimit || 50));
+    await loadIssues();
+  });
+  document.querySelector("#issue-next-page").addEventListener("click", async () => {
+    state.issueOffset = Number(state.issueOffset || 0) + Number(state.issueLimit || 50);
+    await loadIssues();
+  });
   await loadIssues();
 }
 
@@ -758,7 +778,9 @@ async function loadIssues() {
     renderNoBatchPrompt("没有批次时无法查询问题。");
     return;
   }
-  const params = new URLSearchParams({ batch_id: state.batchId });
+  const limit = Number(state.issueLimit || 50);
+  const offset = Number(state.issueOffset || 0);
+  const params = new URLSearchParams({ batch_id: state.batchId, limit, offset });
   const city = fieldValue("filter-city");
   const ledger = document.querySelector("#filter-ledger").value;
   const rule = document.querySelector("#filter-rule").value;
@@ -770,6 +792,7 @@ async function loadIssues() {
   const data = await fetchJson(`/api/issues?${params.toString()}`);
   renderIssueRuleOptions(data.rules || [], rule);
   renderIssueRows(data.issues || []);
+  renderIssuePagination(data.total || 0, data.limit || limit, data.offset || offset);
 }
 
 function renderIssueRuleOptions(rules, selectedRule) {
@@ -783,6 +806,18 @@ function renderIssueRuleOptions(rules, selectedRule) {
     }),
   );
   select.innerHTML = options.join("");
+}
+
+function renderIssuePagination(total, limit, offset) {
+  const info = document.querySelector("#issue-page-info");
+  const prev = document.querySelector("#issue-prev-page");
+  const next = document.querySelector("#issue-next-page");
+  if (!info || !prev || !next) return;
+  const currentPage = Math.floor(offset / limit) + 1;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  info.textContent = `第 ${currentPage} / ${totalPages} 页，共 ${formatNumber(total)} 条`;
+  prev.disabled = offset <= 0;
+  next.disabled = offset + limit >= total;
 }
 
 function renderIssueRows(issues) {
@@ -821,21 +856,40 @@ async function renderExport() {
     renderNoBatchPrompt("没有批次时无法导出整改包。");
     return;
   }
-  operationCard({
-    title: "问题包导出",
-    eyebrow: "Export",
-    description: "按当前批次生成各地市整改包，并将相关问题状态更新为待整改。",
-    fields: [{ id: "export-batch-id", label: "批次号", type: "number", value: String(state.batchId), inputmode: "numeric" }],
-    buttonText: "导出整改包",
-    resultTitle: "导出路径",
-  });
+  mainContent.innerHTML = `
+    <section class="card">
+      ${shellHeader("问题包导出", "Export")}
+      <div class="operation-panel">
+        <p>按当前批次生成整改问题清单，并将相关问题状态更新为待整改。</p>
+        <div class="form-grid">
+          <label class="form-field">
+            <span>批次号</span>
+            <input id="export-batch-id" type="number" value="${escapeHtml(String(state.batchId))}" inputmode="numeric">
+          </label>
+          <label class="form-field">
+            <span>导出方式</span>
+            <select id="export-mode">
+              <option value="city">分地市单独文件</option>
+              <option value="province">全省汇总一个文件</option>
+            </select>
+          </label>
+        </div>
+        <button id="operation-submit" class="primary-button" type="button">导出整改包</button>
+      </div>
+    </section>
+    <section class="card">
+      ${shellHeader("导出路径", "Result")}
+      <div id="operation-result" class="result-box">等待操作</div>
+    </section>
+  `;
   document.querySelector("#operation-submit").addEventListener("click", async (event) => {
     const batchId = Number(fieldValue("export-batch-id"));
     if (!Number.isInteger(batchId) || batchId <= 0) return setOperationResult("error", "请填写有效批次号");
+    const mode = document.querySelector("#export-mode").value;
     await withBusy(event.currentTarget, "导出中...", async () => {
       setOperationResult("pending", "正在导出...");
       try {
-        const data = await postJson("/api/export", { batch_id: batchId });
+        const data = await postJson("/api/export", { batch_id: batchId, mode });
         if (data.paths?.length) {
           setOperationHtml("success", resultList(data.paths));
         } else {

@@ -192,3 +192,94 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
             (batch_id, "archive", f"生成归档汇总：{path.name}"),
         )
     return path
+
+
+def export_notice_report(config: AppConfig, batch_id: int) -> Path:
+    config.export_dir.mkdir(parents=True, exist_ok=True)
+    summary = dashboard_summary(config, batch_id)
+    progress = city_progress(config, batch_id)
+    batch_code = _batch_code(config, batch_id)
+    path = config.export_dir / f"稽核问题通报_{batch_code}.xlsx"
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "通报总览"
+    total_issues = sum(int(row["count"] or 0) for row in summary["issues_by_city"])
+    ws.append(["指标", "值"])
+    ws.append(["批次编码", batch_code])
+    ws.append(["问题总数", total_issues])
+    ws.append(["涉及地市", len(summary["issues_by_city"])])
+    ws.append(["未闭环问题", summary["open_issue_count"]])
+    ws.append(["闭环率", summary["closure_rate"]])
+
+    ws = wb.create_sheet("地市问题统计")
+    ws.append(["地市", "问题总数", "待整改", "已回传", "待复核", "仍异常", "已关闭", "无需整改", "完成率"])
+    for row in progress:
+        ws.append(
+            [
+                row["city"],
+                row["total_count"],
+                row["pending_count"],
+                row["returned_count"],
+                row["review_count"],
+                row["still_invalid_count"],
+                row["closed_count"],
+                row["not_required_count"],
+                row["completion_rate"],
+            ]
+        )
+
+    ws = wb.create_sheet("分类统计")
+    ws.append(["分类维度", "分类项", "规则编号", "规则名称", "风险等级", "问题数量"])
+    for row in summary["issues_by_ledger_type"]:
+        ws.append(["台账类型", row["ledger_type"], "", "", "", row["count"]])
+    for row in summary["issues_by_severity"]:
+        ws.append(["风险等级", row["severity"], "", "", row["severity"], row["count"]])
+    for row in summary["issue_categories"]:
+        ws.append(["规则分类", row["ledger_type"], row["rule_id"], row["rule_name"], row["severity"], row["count"]])
+
+    ws = wb.create_sheet("问题明细")
+    ws.append(["问题编号", "地市", "区县", "站址编码", "站址名称", "台账类型", "规则编号", "规则名称", "风险", "状态", "问题说明", "建议整改方向"])
+    with connect(config) as conn:
+        for issue in conn.execute(
+            """
+            select issue_code, coalesce(city, '未填地市') as city, district, telecom_site_code,
+                   telecom_site_name, ledger_type, rule_id, severity, status, message, suggestion
+              from issues
+             where batch_id = ?
+             order by city, rule_id, issue_code
+            """,
+            (batch_id,),
+        ):
+            ws.append(
+                [
+                    issue["issue_code"],
+                    issue["city"],
+                    issue["district"],
+                    issue["telecom_site_code"],
+                    issue["telecom_site_name"],
+                    issue["ledger_type"],
+                    issue["rule_id"],
+                    rule_metadata(issue["rule_id"]).name,
+                    issue["severity"],
+                    issue["status"],
+                    issue["message"],
+                    issue["suggestion"],
+                ]
+            )
+
+    wb.save(path)
+    with connect(config) as conn:
+        conn.execute(
+            "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
+            (batch_id, "notice_report", f"导出稽核问题通报：{path.name}"),
+        )
+    return path
+
+
+def _batch_code(config: AppConfig, batch_id: int) -> str:
+    with connect(config) as conn:
+        row = conn.execute("select batch_code from import_batches where id = ?", (batch_id,)).fetchone()
+        if row is None:
+            raise ValueError("batch not found")
+        return row["batch_code"] or f"批次{batch_id}"

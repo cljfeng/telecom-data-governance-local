@@ -23,6 +23,27 @@ export async function renderSettings({ mainContent, shellHeader }) {
       </div>
       <div id="settings-result" class="result-box">等待操作</div>
     </section>
+    <section class="card">
+      ${shellHeader("系统复位", "Reset")}
+      <div class="operation-panel">
+        <p>复位会清除批次、台账、稽核问题、回传记录和当前批次选择。默认保留导出文件和备份文件。</p>
+        <div class="form-grid">
+          <label class="form-field">
+            <span>确认文字</span>
+            <input id="reset-confirmation" placeholder="输入：复位">
+          </label>
+          <label class="check-field">
+            <input id="preserve-exports" type="checkbox" checked>
+            <span>保留导出文件</span>
+          </label>
+          <label class="check-field">
+            <input id="preserve-backups" type="checkbox" checked>
+            <span>保留备份文件</span>
+          </label>
+        </div>
+        <button id="reset-system" class="danger-button" type="button">执行复位</button>
+      </div>
+    </section>
   `;
   await loadSettings();
   document.querySelector("#create-backup").addEventListener("click", async (event) => {
@@ -40,6 +61,22 @@ export async function renderSettings({ mainContent, shellHeader }) {
     await withBusy(event.currentTarget, "恢复中...", async () => {
       const data = await postJson("/api/restore", { path });
       setSettingsResult("success", `恢复完成；恢复前安全备份：${data.safety_backup_path}`);
+      await loadSettings();
+    });
+  });
+  document.querySelector("#reset-system").addEventListener("click", async (event) => {
+    const confirmation = document.querySelector("#reset-confirmation").value.trim();
+    if (confirmation !== "复位") {
+      setSettingsResult("error", "请输入“复位”确认后再执行");
+      return;
+    }
+    await withBusy(event.currentTarget, "复位中...", async () => {
+      const data = await postJson("/api/reset", {
+        confirmation,
+        preserve_exports: document.querySelector("#preserve-exports").checked,
+        preserve_backups: document.querySelector("#preserve-backups").checked,
+      });
+      setSettingsResult("success", `复位完成；安全备份：${data.safety_backup_path}`);
       await loadSettings();
     });
   });

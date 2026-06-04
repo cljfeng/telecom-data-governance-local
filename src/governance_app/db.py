@@ -139,6 +139,7 @@ def initialize_database(config: AppConfig) -> None:
             """
         )
         _ensure_column(conn, "import_batches", "name", "text")
+        _ensure_column(conn, "import_batches", "batch_code", "text")
         _ensure_column(conn, "import_batches", "is_archived", "integer not null default 0")
         _ensure_column(conn, "import_batches", "archived_at", "text")
 

@@ -113,6 +113,74 @@ def test_import_audit_export_and_correction_endpoints(app_config, sample_workboo
     assert "matched_count" in json.loads(body)
 
 
+def test_export_endpoint_accepts_province_mode(app_config, sample_workbook):
+    initialize_database(app_config)
+    app = create_app(app_config)
+    app.handle_test_request("POST", "/api/import", json.dumps({"path": str(sample_workbook)}))
+    with connect(app_config) as conn:
+        conn.execute(
+            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+        )
+    app.handle_test_request("POST", "/api/audit", json.dumps({"batch_id": 1}))
+
+    status, headers, body = app.handle_test_request(
+        "POST",
+        "/api/export",
+        json.dumps({"batch_id": 1, "mode": "province"}),
+    )
+
+    assert status == 200
+    paths = json.loads(body)["paths"]
+    assert len(paths) == 1
+    assert "全省" in paths[0]
+
+
+def test_notice_report_endpoint_exports_excel(app_config, sample_workbook):
+    initialize_database(app_config)
+    app = create_app(app_config)
+    app.handle_test_request("POST", "/api/import", json.dumps({"path": str(sample_workbook)}))
+    with connect(app_config) as conn:
+        conn.execute(
+            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+        )
+    app.handle_test_request("POST", "/api/audit", json.dumps({"batch_id": 1}))
+
+    status, headers, body = app.handle_test_request(
+        "POST",
+        "/api/reports/notice",
+        json.dumps({"batch_id": 1}),
+    )
+
+    assert status == 200
+    assert json.loads(body)["path"].endswith(".xlsx")
+
+
+def test_reset_endpoint_requires_confirmation(app_config, sample_workbook):
+    initialize_database(app_config)
+    app = create_app(app_config)
+    app.handle_test_request("POST", "/api/import", json.dumps({"path": str(sample_workbook)}))
+
+    status, headers, body = app.handle_test_request(
+        "POST",
+        "/api/reset",
+        json.dumps({"confirmation": "reset"}),
+    )
+
+    assert status == 400
+    assert "复位" in json.loads(body)["error"]
+
+    status, headers, body = app.handle_test_request(
+        "POST",
+        "/api/reset",
+        json.dumps({"confirmation": "复位"}),
+    )
+
+    assert status == 200
+    assert json.loads(body)["cleared"] is True
+    with connect(app_config) as conn:
+        assert conn.execute("select count(*) as c from import_batches").fetchone()["c"] == 0
+
+
 def test_import_preview_endpoint_returns_counts_without_creating_batch(app_config, sample_workbook):
     initialize_database(app_config)
     app = create_app(app_config)

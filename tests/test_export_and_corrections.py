@@ -5,7 +5,7 @@ from governance_app.audit_engine import run_audit
 from governance_app.archive import archive_batch
 from governance_app.corrections import import_correction_return
 from governance_app.db import connect, initialize_database
-from governance_app.exporter import export_city_issue_packages
+from governance_app.exporter import export_city_issue_packages, export_issue_packages
 from governance_app.importer import import_workbook
 
 
@@ -27,6 +27,26 @@ def test_export_city_issue_packages_writes_issue_workbook(app_config, sample_wor
     assert ws["H1"].value == "规则名称"
     assert ws["H2"].value == "电费高单价"
     assert ws["L1"].value == "整改结果"
+
+
+def test_export_issue_packages_can_write_single_province_workbook(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update ledger_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+        )
+    run_audit(app_config, imported.batch_id)
+
+    paths = export_issue_packages(app_config, imported.batch_id, mode="province")
+
+    assert len(paths) == 1
+    assert "全省" in paths[0].name
+    wb = load_workbook(paths[0])
+    assert wb.sheetnames == ["整改问题清单"]
+    ws = wb["整改问题清单"]
+    assert ws["B1"].value == "地市"
+    assert ws["B2"].value == "杭州"
 
 
 def test_export_city_issue_packages_requires_audited_batch(app_config):

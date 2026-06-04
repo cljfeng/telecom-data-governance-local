@@ -12,6 +12,7 @@ from governance_app.db import connect
 from governance_app.models import LedgerType, ValidationErrorDetail
 from governance_app.recent_files import record_recent_file
 from governance_app.templates import EXPECTED_SHEETS, HEADER_ROWS, canonical_header, required_headers_for, workbook_sheet_for
+from governance_app.workflow import _new_batch_code
 
 
 @dataclass(frozen=True)
@@ -52,8 +53,8 @@ def import_workbook(config: AppConfig, workbook_path: Path, strategy: str = "new
     with connect(config) as conn:
         if strategy == "new":
             batch_id = conn.execute(
-                "insert into import_batches(source_file, name, status) values (?, ?, ?)",
-                (str(workbook_path), workbook_path.stem, "imported"),
+                "insert into import_batches(source_file, name, batch_code, status) values (?, ?, ?, ?)",
+                (str(workbook_path), workbook_path.stem, _new_batch_code(), "imported"),
             ).lastrowid
             operation = "import"
             message = f"导入台账：{workbook_path.name}"
