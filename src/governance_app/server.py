@@ -478,9 +478,60 @@ def _rule_settings_payload(config: AppConfig) -> list[dict]:
                 "default_suggestion": metadata.default_suggestion,
                 "enabled": True if setting is None else setting.enabled,
                 "config": {} if setting is None else setting.config,
+                "category": metadata.category,
+                "parameters": _rule_parameters(rule_id),
             }
         )
     return payload
+
+
+_RULE_PARAMETERS = {
+    "electricity_price_range": [
+        {"key": "max", "label": "电费单价上限", "unit": "元/度", "default": 0.9, "step": 0.01},
+    ],
+    "electricity_share_percent": [
+        {"key": "min", "label": "分摊比例下限", "unit": "%", "default": 0, "step": 1},
+        {"key": "max", "label": "分摊比例上限", "unit": "%", "default": 100, "step": 1},
+    ],
+    "generator_duration_over_24h": [
+        {"key": "max_hours", "label": "单次发电时长上限", "unit": "小时", "default": 24, "step": 0.5},
+    ],
+    "electricity_contract_share_variance": [
+        {"key": "max_points", "label": "合同分摊允许偏差", "unit": "百分点", "default": 3, "step": 0.5},
+    ],
+    "electricity_usage_spike_drop": [
+        {"key": "change_ratio", "label": "用电量环比波动阈值", "unit": "倍", "default": 0.3, "step": 0.05},
+    ],
+    "electricity_reading_usage_mismatch": [
+        {"key": "variance_ratio", "label": "读数电量比例偏差", "unit": "倍", "default": 0.1, "step": 0.05},
+        {"key": "variance_min", "label": "读数电量最小偏差", "unit": "度", "default": 10, "step": 1},
+    ],
+    "electricity_amount_calculation_mismatch": [
+        {"key": "variance_ratio", "label": "金额计算比例偏差", "unit": "倍", "default": 0.1, "step": 0.05},
+        {"key": "variance_min", "label": "金额计算最小偏差", "unit": "元", "default": 100, "step": 10},
+    ],
+    "electricity_price_commercial_range": [
+        {"key": "min", "label": "商业电价下限", "unit": "元/度", "default": 0.3, "step": 0.01},
+        {"key": "max", "label": "商业电价上限", "unit": "元/度", "default": 1.5, "step": 0.01},
+    ],
+    "fee_amount_period_spike": [
+        {"key": "change_ratio", "label": "费用环比突变阈值", "unit": "倍", "default": 1, "step": 0.1},
+    ],
+    "electricity_price_city_supply_outlier": [
+        {"key": "deviation_ratio", "label": "同区县电价偏离阈值", "unit": "倍", "default": 0.2, "step": 0.05},
+    ],
+    "generator_duration_mismatch": [
+        {"key": "allowed_hours", "label": "发电时长允许偏差", "unit": "小时", "default": 0.25, "step": 0.05},
+    ],
+    "generator_cost_per_hour_outlier": [
+        {"key": "multiplier", "label": "小时单价中位数倍数", "unit": "倍", "default": 1.5, "step": 0.1},
+        {"key": "min_rate", "label": "小时单价绝对下限", "unit": "元/小时", "default": 300, "step": 10},
+    ],
+}
+
+
+def _rule_parameters(rule_id: str) -> list[dict]:
+    return _RULE_PARAMETERS.get(rule_id, [])
 
 
 class RequestHandler(SimpleHTTPRequestHandler):

@@ -62,9 +62,9 @@ def test_issue_filters_and_city_progress(app_config, sample_workbook):
     assert issues[0]["ledger_type"] == "electricity"
     assert issues[0]["rule_name"] == "电费高单价"
     assert progress[0]["city"] == "杭州"
-    assert progress[0]["total_count"] == 1
+    assert progress[0]["total_count"] == 2
     assert progress[0]["closed_count"] == 1
-    assert progress[0]["completion_rate"] == 100.0
+    assert progress[0]["completion_rate"] == 50.0
 
 
 def test_list_issues_returns_total_and_supports_pagination(app_config, sample_workbook):
@@ -76,7 +76,7 @@ def test_list_issues_returns_total_and_supports_pagination(app_config, sample_wo
 
     page = list_issues(app_config, imported.batch_id, {}, limit=1, offset=0)
 
-    assert page["total"] == 1
+    assert page["total"] == 2
     assert page["limit"] == 1
     assert page["offset"] == 0
     assert len(page["issues"]) == 1

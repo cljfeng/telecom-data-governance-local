@@ -7,6 +7,7 @@ from openpyxl import Workbook
 from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
 from governance_app.db import connect
+from governance_app.geo import normalize_city
 
 ISSUE_HEADERS = [
     "问题编号",
@@ -15,6 +16,7 @@ ISSUE_HEADERS = [
     "电信站址编码",
     "电信站址名称",
     "台账类型",
+    "规则分类",
     "规则编号",
     "规则名称",
     "风险等级",
@@ -51,24 +53,22 @@ def export_city_issue_packages(config: AppConfig, batch_id: int) -> list[Path]:
             raise ValueError("batch is archived")
         if batch["status"] != "audited":
             raise ValueError("batch must be audited before export")
-        cities = conn.execute(
-            "select distinct coalesce(city, '未填地市') as city from issues where batch_id = ? order by city",
+        issue_rows = conn.execute(
+            _ISSUE_EXPORT_SQL + " order by i.severity, i.issue_code",
             (batch_id,),
         ).fetchall()
-        if not cities:
+        if not issue_rows:
             conn.execute("update import_batches set status = 'returning' where id = ?", (batch_id,))
             conn.execute(
                 "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
                 (batch_id, "export", "当前批次无待导出问题，可直接归档"),
             )
             return []
-        for row in cities:
-            city = row["city"]
-            issues = conn.execute(
-                _ISSUE_EXPORT_SQL
-                + " and coalesce(i.city, '未填地市') = ? order by i.severity, i.issue_code",
-                (batch_id, city),
-            ).fetchall()
+        grouped: dict[str, list] = {}
+        for issue in issue_rows:
+            grouped.setdefault(normalize_city(issue["city"]), []).append(issue)
+        for city in sorted(grouped):
+            issues = grouped[city]
             if not issues:
                 continue
             batch_code = batch["batch_code"] or f"批次{batch_id}"
@@ -82,15 +82,14 @@ def export_city_issue_packages(config: AppConfig, batch_id: int) -> list[Path]:
             for issue in issues:
                 _append_issue_row(ws, issue)
             wb.save(path)
-            conn.execute(
+            conn.executemany(
                 """
                 update issues
                    set status = 'pending_correction',
                        updated_at = current_timestamp
-                 where batch_id = ?
-                   and coalesce(city, '未填地市') = ?
+                 where id = ?
                 """,
-                (batch_id, city),
+                [(issue["id"],) for issue in issues],
             )
             paths.append(path)
         if paths:
@@ -162,16 +161,18 @@ def _safe_filename_part(value: str | None) -> str:
 
 
 def _append_issue_row(ws, issue) -> None:
+    metadata = rule_metadata(issue["rule_id"])
     ws.append(
         [
             _excel_safe(issue["issue_code"]),
-            _excel_safe(issue["city"]),
+            _excel_safe(normalize_city(issue["city"])),
             _excel_safe(issue["district"]),
             _excel_safe(issue["telecom_site_code"]),
             _excel_safe(issue["telecom_site_name"]),
             _excel_safe(_ledger_label(issue["ledger_type"])),
+            _excel_safe(_rule_category_label(metadata.category)),
             _excel_safe(issue["rule_id"]),
-            _excel_safe(rule_metadata(issue["rule_id"]).name),
+            _excel_safe(metadata.name),
             _excel_safe(_severity_label(issue["severity"])),
             _excel_safe(issue["sheet_name"]),
             issue["row_number"] or "",
@@ -243,7 +244,7 @@ def _row_location(issue) -> str:
 def _site_sentence(issue) -> str:
     fragments = []
     if issue["city"]:
-        fragments.append(str(issue["city"]))
+        fragments.append(normalize_city(issue["city"]))
     if issue["district"]:
         fragments.append(str(issue["district"]))
     site_name = issue["telecom_site_name"]
@@ -307,6 +308,11 @@ def _ledger_label(value: str | None) -> str:
 
 def _severity_label(value: str | None) -> str:
     labels = {"high": "高", "medium": "中", "low": "低"}
+    return labels.get(str(value or ""), str(value or "未知"))
+
+
+def _rule_category_label(value: str | None) -> str:
+    labels = {"data_quality": "基础数据质量", "problem_audit": "问题稽核"}
     return labels.get(str(value or ""), str(value or "未知"))
 
 

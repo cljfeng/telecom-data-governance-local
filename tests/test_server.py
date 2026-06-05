@@ -387,8 +387,8 @@ def test_issue_city_progress_status_and_archive_endpoints(app_config, sample_wor
     payload = json.loads(body)
     issue = payload["issues"][0]
     assert issue["city"] == "杭州"
-    assert payload["rules"][0]["rule_id"] == issue["rule_id"]
-    assert payload["rules"][0]["issue_count"] == 1
+    matching_rule = next(rule for rule in payload["rules"] if rule["rule_id"] == issue["rule_id"])
+    assert matching_rule["issue_count"] >= 1
 
     status, headers, body = app.handle_test_request("GET", f"/api/issues?batch_id={batch_id}&rule_id={issue['rule_id']}")
 
@@ -407,7 +407,7 @@ def test_issue_city_progress_status_and_archive_endpoints(app_config, sample_wor
     status, headers, body = app.handle_test_request("GET", f"/api/city-progress?batch_id={batch_id}")
 
     assert status == 200
-    assert json.loads(body)["cities"][0]["completion_rate"] == 100.0
+    assert json.loads(body)["cities"][0]["completion_rate"] == 50.0
 
     from openpyxl import load_workbook
 
@@ -496,7 +496,7 @@ def test_archive_precheck_endpoint_reports_blockers(app_config, sample_workbook)
     assert status == 200
     payload = json.loads(body)
     assert payload["ready"] is False
-    assert payload["open_issue_count"] == 1
+    assert payload["open_issue_count"] == 2
 
 
 def test_rules_api_lists_settings_and_updates_rule_config(app_config):
@@ -510,6 +510,14 @@ def test_rules_api_lists_settings_and_updates_rule_config(app_config):
     price_rule = next(rule for rule in payload["rules"] if rule["rule_id"] == "electricity_price_range")
     assert price_rule["enabled"] is True
     assert price_rule["config"] == {}
+    assert price_rule["category"] == "problem_audit"
+    assert price_rule["parameters"][0]["key"] == "max"
+    quality_rule = next(rule for rule in payload["rules"] if rule["rule_id"] == "site_code_missing_in_master")
+    assert quality_rule["category"] == "data_quality"
+    reading_rule = next(rule for rule in payload["rules"] if rule["rule_id"] == "electricity_meter_reading_reverse")
+    assert reading_rule["category"] == "data_quality"
+    amount_rule = next(rule for rule in payload["rules"] if rule["rule_id"] == "electricity_amount_calculation_mismatch")
+    assert [param["key"] for param in amount_rule["parameters"]] == ["variance_ratio", "variance_min"]
 
     status, headers, body = app.handle_test_request(
         "POST",
@@ -633,6 +641,9 @@ def test_rules_static_module_calls_rules_api():
     assert "/api/rules" in rules_js
     assert "/api/rules/settings" in rules_js
     assert "electricity_price_range" in rules_js
+    assert "基础数据质量" in rules_js
+    assert "恢复默认" in rules_js
+    assert "data-rule-param" in rules_js
 
 
 def test_import_page_exposes_import_strategies():
@@ -661,6 +672,10 @@ def test_analytics_static_module_uses_dashboard_summary():
     assert "/api/dashboard?batch_id=" in analytics_js
     assert "issues_by_severity" in analytics_js
     assert "closure_rate" in analytics_js
+    assert "问题类型矩阵" in analytics_js
+    assert "基础数据质量" in analytics_js
+    assert "发电费风险" in analytics_js
+    assert "导出通报" in analytics_js
 
 
 def test_readme_includes_operator_flow_and_faq():

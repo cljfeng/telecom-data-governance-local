@@ -24,18 +24,20 @@ def test_export_city_issue_packages_writes_issue_workbook(app_config, sample_wor
     wb = load_workbook(paths[0])
     ws = wb["整改问题清单"]
     assert ws["A1"].value == "问题编号"
-    assert ws["H1"].value == "规则名称"
-    assert ws["H2"].value == "电费高单价"
     assert ws["F2"].value == "电费"
-    assert ws["I2"].value == "高"
-    assert ws["J1"].value == "原台账sheet"
-    assert ws["K1"].value == "原始行号"
-    assert ws["L1"].value == "命中字段"
-    assert ws["M1"].value == "原始字段值"
-    assert "电费单价" in ws["N2"].value
-    assert "当前值" not in ws["N2"].value
-    assert "：" not in ws["N2"].value
-    assert ws["P1"].value == "整改结果"
+    assert ws["G1"].value == "规则分类"
+    assert ws["G2"].value == "问题稽核"
+    assert ws["I1"].value == "规则名称"
+    assert ws["I2"].value == "电费高单价"
+    assert ws["J2"].value == "高"
+    assert ws["K1"].value == "原台账sheet"
+    assert ws["L1"].value == "原始行号"
+    assert ws["M1"].value == "命中字段"
+    assert ws["N1"].value == "原始字段值"
+    assert "电费单价" in ws["O2"].value
+    assert "当前值" not in ws["O2"].value
+    assert "：" not in ws["O2"].value
+    assert ws["Q1"].value == "整改结果"
 
 
 def test_export_issue_packages_can_write_single_province_workbook(app_config, sample_workbook):
@@ -108,6 +110,72 @@ def test_export_city_issue_packages_sanitizes_city_filename(app_config, sample_w
     assert ws["B2"].value == unsafe_city
 
 
+def test_export_city_issue_packages_groups_normalized_city_names(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+        )
+        conn.execute(
+            """
+            insert into ledger_rows(
+                batch_id, ledger_type, city, district, telecom_site_code, telecom_site_name, row_json
+            ) values (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                imported.batch_id,
+                "electricity",
+                "兰州市",
+                "城关",
+                "LZ002",
+                "兰州二站",
+                '{"地市":"兰州市","区县":"城关","电信站址编码":"LZ002","电信站址名称":"兰州二站","电费单价":9.9,"分摊比例(%)":100}',
+            ),
+        )
+        conn.execute("update ledger_rows set city = '兰州' where ledger_type = 'electricity' and telecom_site_code = 'HZ001'")
+
+    run_audit(app_config, imported.batch_id)
+
+    paths = export_city_issue_packages(app_config, imported.batch_id)
+
+    assert len(paths) == 1
+    assert paths[0].name.startswith("兰州_整改问题清单_")
+    wb = load_workbook(paths[0])
+    ws = wb["整改问题清单"]
+    exported_cities = {ws.cell(row=row, column=2).value for row in range(2, ws.max_row + 1)}
+    assert exported_cities == {"兰州"}
+
+
+def test_export_city_issue_packages_formats_long_decimal_issue_messages(app_config):
+    initialize_database(app_config)
+    with connect(app_config) as conn:
+        batch_id = conn.execute(
+            "insert into import_batches(source_file, name, batch_code, status) values (?, ?, ?, ?)",
+            ("manual.xlsx", "长小数批次", "TEST-DECIMAL", "imported"),
+        ).lastrowid
+        site_json = '{"地市":"兰州","区县":"城关","电信站址编码":"S001","电信站址名称":"已有站"}'
+        conn.execute(
+            "insert into ledger_rows(batch_id, ledger_type, city, district, telecom_site_code, telecom_site_name, row_json) values (?, ?, ?, ?, ?, ?, ?)",
+            (batch_id, "site", "兰州", "城关", "S001", "已有站", site_json),
+        )
+        fee_json = '{"地市":"兰州市","区县":"城关","电信站址编码":"S003","电信站址名称":"无站付费","产品服务费合计（元/年）（不含税）":100.123456}'
+        conn.execute(
+            "insert into ledger_rows(batch_id, ledger_type, city, district, telecom_site_code, telecom_site_name, row_json) values (?, ?, ?, ?, ?, ?, ?)",
+            (batch_id, "tower_rent", "兰州市", "城关", "S003", "无站付费", fee_json),
+        )
+    run_audit(app_config, batch_id)
+
+    path = export_city_issue_packages(app_config, batch_id)[0]
+
+    wb = load_workbook(path)
+    ws = wb["整改问题清单"]
+    messages = [ws.cell(row=row, column=15).value for row in range(2, ws.max_row + 1)]
+    fee_message = next(message for message in messages if "无站址仍支付费用" not in message and "正向费用" in message)
+    assert "100.12" in fee_message
+    assert "100.123" not in fee_message
+
+
 def test_export_city_issue_packages_escapes_formula_like_values(app_config, sample_workbook):
     initialize_database(app_config)
     imported = import_workbook(app_config, sample_workbook)
@@ -176,12 +244,13 @@ def test_import_correction_return_reports_duplicate_issue_codes(app_config, samp
     duplicate[headers["整改结果"]] = "已修复"
     duplicate[headers["整改说明"]] = "重复回传"
     ws.append(duplicate)
+    duplicate_row_number = ws.max_row
     wb.save(paths[0])
 
     result = import_correction_return(app_config, paths[0])
 
     assert result.matched_count == 1
-    assert result.errors == [f"第3行问题编号重复：{ws['A2'].value}"]
+    assert result.errors == [f"第{duplicate_row_number}行问题编号重复：{ws['A2'].value}"]
 
 
 def test_import_correction_return_skips_blank_rows(app_config, sample_workbook):

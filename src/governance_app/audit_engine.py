@@ -26,8 +26,9 @@ class AuditRunResult:
 def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
     started_at = perf_counter()
     rule_settings = load_rule_settings(config)
-    rules = _enabled_rules(all_rules(_thresholds_from_settings(rule_settings)), rule_settings)
-    batch_rules = _enabled_rules(all_batch_rules(), rule_settings)
+    thresholds = _thresholds_from_settings(rule_settings)
+    rules = _enabled_rules(all_rules(thresholds), rule_settings)
+    batch_rules = _enabled_rules(all_batch_rules(thresholds), rule_settings)
     with connect(config) as conn:
         audit_run_id = conn.execute(
             "insert into audit_runs(batch_id, rule_count) values (?, ?)",
@@ -107,11 +108,34 @@ def _enabled_rules(rules, settings: dict[str, RuleSetting]):
 
 
 def _thresholds_from_settings(settings: dict[str, RuleSetting]) -> RuleThresholds:
-    price_range = settings.get("electricity_price_range")
-    config = price_range.config if price_range else {}
+    def number(rule_id: str, key: str, default: float) -> float:
+        setting = settings.get(rule_id)
+        if not setting:
+            return default
+        try:
+            return float(setting.config.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
     return RuleThresholds(
-        electricity_price_min=float(config.get("min", 0)),
-        electricity_price_max=float(config.get("max", 0.9)),
+        electricity_price_min=number("electricity_price_range", "min", 0),
+        electricity_price_max=number("electricity_price_range", "max", 0.9),
+        share_percent_min=number("electricity_share_percent", "min", 0),
+        share_percent_max=number("electricity_share_percent", "max", 100),
+        generator_duration_max_hours=number("generator_duration_over_24h", "max_hours", 24),
+        contract_share_variance_points=number("electricity_contract_share_variance", "max_points", 3),
+        usage_change_ratio=number("electricity_usage_spike_drop", "change_ratio", 0.3),
+        fee_period_change_ratio=number("fee_amount_period_spike", "change_ratio", 1),
+        city_supply_price_deviation_ratio=number("electricity_price_city_supply_outlier", "deviation_ratio", 0.2),
+        generator_duration_mismatch_hours=number("generator_duration_mismatch", "allowed_hours", 0.25),
+        generator_cost_per_hour_multiplier=number("generator_cost_per_hour_outlier", "multiplier", 1.5),
+        generator_cost_per_hour_min=number("generator_cost_per_hour_outlier", "min_rate", 300),
+        electricity_amount_variance_ratio=number("electricity_amount_calculation_mismatch", "variance_ratio", 0.1),
+        electricity_amount_variance_min=number("electricity_amount_calculation_mismatch", "variance_min", 100),
+        electricity_usage_mismatch_ratio=number("electricity_reading_usage_mismatch", "variance_ratio", 0.1),
+        electricity_usage_mismatch_min=number("electricity_reading_usage_mismatch", "variance_min", 10),
+        electricity_commercial_price_min=number("electricity_price_commercial_range", "min", 0.3),
+        electricity_commercial_price_max=number("electricity_price_commercial_range", "max", 1.5),
     )
 
 

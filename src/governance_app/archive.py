@@ -76,9 +76,10 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
     ws.append(["无需整改问题数", summary["status_counts"].get("not_required", 0)])
 
     ws = wb.create_sheet("规则命中排行")
-    ws.append(["规则编号", "规则名称", "命中数"])
+    ws.append(["规则分类", "规则编号", "规则名称", "命中数"])
     for row in summary["issues_by_rule"]:
-        ws.append([row["rule_id"], row["rule_name"], row["count"]])
+        metadata = rule_metadata(row["rule_id"])
+        ws.append([_rule_category_label(metadata.category), row["rule_id"], row["rule_name"], row["count"]])
 
     ws = wb.create_sheet("风险等级分布")
     ws.append(["风险等级", "问题数量"])
@@ -113,7 +114,7 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
         )
 
     ws = wb.create_sheet("问题清单")
-    ws.append(["问题编号", "地市", "区县", "站址编码", "站址名称", "台账类型", "规则编号", "规则名称", "风险", "状态", "问题说明", "整改说明"])
+    ws.append(["问题编号", "地市", "区县", "站址编码", "站址名称", "台账类型", "规则分类", "规则编号", "规则名称", "风险", "状态", "问题说明", "整改说明"])
     with connect(config) as conn:
         for issue in conn.execute(
             """
@@ -125,6 +126,7 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
             """,
             (batch_id,),
         ):
+            metadata = rule_metadata(issue["rule_id"])
             ws.append(
                 [
                     issue["issue_code"],
@@ -133,8 +135,9 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
                     issue["telecom_site_code"],
                     issue["telecom_site_name"],
                     _ledger_label(issue["ledger_type"]),
+                    _rule_category_label(metadata.category),
                     issue["rule_id"],
-                    rule_metadata(issue["rule_id"]).name,
+                    metadata.name,
                     _severity_label(issue["severity"]),
                     _status_label(issue["status"]),
                     issue["message"],
@@ -156,7 +159,7 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
             ws.append([log["operation"], log["message"], log["created_at"]])
 
         ws = wb.create_sheet("未闭环问题")
-        ws.append(["问题编号", "地市", "站址编码", "台账类型", "规则名称", "风险", "状态", "问题说明"])
+        ws.append(["问题编号", "地市", "站址编码", "台账类型", "规则分类", "规则名称", "风险", "状态", "问题说明"])
         for issue in conn.execute(
             """
             select issue_code, coalesce(city, '未填地市') as city, telecom_site_code,
@@ -168,13 +171,15 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
             """,
             (batch_id,),
         ):
+            metadata = rule_metadata(issue["rule_id"])
             ws.append(
                 [
                     issue["issue_code"],
                     issue["city"],
                     issue["telecom_site_code"],
                     _ledger_label(issue["ledger_type"]),
-                    rule_metadata(issue["rule_id"]).name,
+                    _rule_category_label(metadata.category),
+                    metadata.name,
                     _severity_label(issue["severity"]),
                     _status_label(issue["status"]),
                     issue["message"],
@@ -237,10 +242,17 @@ def export_notice_report(config: AppConfig, batch_id: int) -> Path:
         label = row.get("severity_label") or _severity_label(row["severity"])
         ws.append(["风险等级", label, "", "", label, row["count"]])
     for row in summary["issue_categories"]:
-        ws.append(["规则分类", row.get("ledger_label") or _ledger_label(row["ledger_type"]), row["rule_id"], row["rule_name"], row.get("severity_label") or _severity_label(row["severity"]), row["count"]])
+        ws.append([
+            "规则分类",
+            row.get("category_label") or _rule_category_label(rule_metadata(row["rule_id"]).category),
+            row["rule_id"],
+            row["rule_name"],
+            row.get("severity_label") or _severity_label(row["severity"]),
+            row["count"],
+        ])
 
     ws = wb.create_sheet("问题明细")
-    ws.append(["问题编号", "地市", "区县", "站址编码", "站址名称", "台账类型", "规则编号", "规则名称", "风险", "状态", "问题说明", "建议整改方向"])
+    ws.append(["问题编号", "地市", "区县", "站址编码", "站址名称", "台账类型", "规则分类", "规则编号", "规则名称", "风险", "状态", "问题说明", "建议整改方向"])
     with connect(config) as conn:
         for issue in conn.execute(
             """
@@ -252,6 +264,7 @@ def export_notice_report(config: AppConfig, batch_id: int) -> Path:
             """,
             (batch_id,),
         ):
+            metadata = rule_metadata(issue["rule_id"])
             ws.append(
                 [
                     issue["issue_code"],
@@ -260,8 +273,9 @@ def export_notice_report(config: AppConfig, batch_id: int) -> Path:
                     issue["telecom_site_code"],
                     issue["telecom_site_name"],
                     _ledger_label(issue["ledger_type"]),
+                    _rule_category_label(metadata.category),
                     issue["rule_id"],
-                    rule_metadata(issue["rule_id"]).name,
+                    metadata.name,
                     _severity_label(issue["severity"]),
                     _status_label(issue["status"]),
                     issue["message"],
@@ -298,6 +312,10 @@ def _ledger_label(value: str | None) -> str:
 
 def _severity_label(value: str | None) -> str:
     return {"high": "高", "medium": "中", "low": "低"}.get(str(value or ""), str(value or "未知"))
+
+
+def _rule_category_label(value: str | None) -> str:
+    return {"data_quality": "基础数据质量", "problem_audit": "问题稽核"}.get(str(value or ""), str(value or "未知"))
 
 
 def _status_label(value: str | None) -> str:

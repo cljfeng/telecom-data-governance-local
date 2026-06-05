@@ -52,7 +52,10 @@ def dashboard_summary(config: AppConfig, batch_id: int) -> dict[str, Any]:
             (batch_id,),
         ):
             item = dict(row)
-            item["rule_name"] = rule_metadata(item["rule_id"]).name
+            metadata = rule_metadata(item["rule_id"])
+            item["rule_name"] = metadata.name
+            item["category"] = metadata.category
+            item["category_label"] = _rule_category_label(metadata.category)
             item["ledger_label"] = _ledger_label(item["ledger_type"])
             item["severity_label"] = _severity_label(item["severity"])
             issue_categories.append(item)
@@ -69,7 +72,10 @@ def dashboard_summary(config: AppConfig, batch_id: int) -> dict[str, Any]:
         ):
             item = dict(row)
             item["city"] = normalize_city(item["city"])
-            item["rule_name"] = rule_metadata(item["rule_id"]).name
+            metadata = rule_metadata(item["rule_id"])
+            item["rule_name"] = metadata.name
+            item["category"] = metadata.category
+            item["category_label"] = _rule_category_label(metadata.category)
             item["ledger_label"] = _ledger_label(item["ledger_type"])
             city_rule_matrix.append(item)
         city_rule_matrix = _merge_matrix(city_rule_matrix, ("city", "ledger_type", "rule_id"), label_field="ledger_label", enrich_rule=True)
@@ -141,6 +147,10 @@ def _severity_label(value: str) -> str:
     return {"high": "高", "medium": "中", "low": "低"}.get(value, value)
 
 
+def _rule_category_label(value: str) -> str:
+    return {"data_quality": "基础数据质量", "problem_audit": "问题稽核"}.get(value, value)
+
+
 def _city_counts(rows) -> list[dict[str, Any]]:
     counts: dict[str, int] = {}
     for row in rows:
@@ -163,5 +173,7 @@ def _merge_matrix(rows: list[dict[str, Any]], keys: tuple[str, ...], label_field
                 merged[key][label_field] = row[label_field]
             if enrich_rule:
                 merged[key]["rule_name"] = row["rule_name"]
+                merged[key]["category"] = row.get("category")
+                merged[key]["category_label"] = row.get("category_label")
         merged[key]["count"] += int(row["count"] or 0)
     return sorted(merged.values(), key=lambda item: (item["city"], -item["count"], str(tuple(item.values()))))

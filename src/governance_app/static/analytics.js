@@ -2,9 +2,10 @@ import { fetchJson, postJson } from "/api.js?v=20260517-1";
 import { escapeHtml, formatNumber, withBusy } from "/ui.js?v=20260517-1";
 
 const LEDGER_SECTIONS = [
-  { type: "tower_rent", label: "铁塔租费", tone: "review" },
-  { type: "electricity", label: "电费", tone: "warning" },
-  { type: "generator", label: "发电费", tone: "danger" },
+  { type: "data_quality", label: "基础数据质量", tone: "review" },
+  { type: "tower_rent", label: "租费风险", ledgerType: "tower_rent", tone: "review" },
+  { type: "electricity", label: "电费风险", ledgerType: "electricity", tone: "warning" },
+  { type: "generator", label: "发电费风险", ledgerType: "generator", tone: "danger" },
 ];
 
 export async function renderAnalytics({
@@ -25,50 +26,77 @@ export async function renderAnalytics({
     return;
   }
   mainContent.innerHTML = `
-    <section class="card analytics-hero-card">
+    <section class="card analytics-command-card">
       ${shellHeader("稽核问题分析", "分析报表", renderBatchSelector())}
-      <div id="analytics-summary" class="metric-grid">
+      <div class="analytics-toolbar">
+        <button id="export-notice-report" class="primary-button" type="button">导出通报</button>
+        <button id="archive-precheck" class="secondary-button" type="button">归档检查</button>
+        <button id="archive-batch" class="secondary-button" type="button">生成归档汇总</button>
+      </div>
+      <div id="analytics-summary" class="metric-grid analytics-kpi-grid">
         <div class="metric-card skeleton"></div>
         <div class="metric-card skeleton"></div>
         <div class="metric-card skeleton"></div>
       </div>
     </section>
-    <section class="card">
-      ${shellHeader("全省问题总览", "总体分布")}
-      <div class="analytics-grid analytics-grid-wide">
+    <section class="analytics-overview-grid">
+      <div class="card analytics-panel">
+        <header class="panel-header">
+          <h3 class="panel-title">风险等级分布</h3>
+          <span class="panel-kicker">高风险优先闭环</span>
+        </header>
+        <div id="severity-stack" class="severity-stack">正在加载</div>
+        <div id="ledger-share-table" class="legend-grid">正在加载</div>
+      </div>
+      <div class="card analytics-panel">
+        <header class="panel-header">
+          <h3 class="panel-title">地市问题排名</h3>
+          <span class="panel-kicker">Top 10</span>
+        </header>
+        <div id="city-bars" class="bar-chart">正在加载</div>
+      </div>
+      <div class="card analytics-panel">
+        <header class="panel-header">
+          <h3 class="panel-title">规则命中排行</h3>
+          <span class="panel-kicker">Top 10</span>
+        </header>
+        <div id="rule-bars" class="bar-chart">正在加载</div>
+      </div>
+    </section>
+    <section class="card analytics-panel">
+      <header class="panel-header">
         <div>
-          <h3 class="panel-title">地市问题 Top 10</h3>
-          <div id="city-bars" class="bar-chart">正在加载</div>
+          <h3 class="panel-title">问题类型矩阵</h3>
+          <p class="panel-description">按地市交叉展示高频规则，颜色越深表示问题越集中。</p>
         </div>
+      </header>
+      <div id="issue-heatmap" class="issue-heatmap">正在加载</div>
+    </section>
+    <section class="card analytics-panel">
+      <header class="panel-header">
         <div>
-          <h3 class="panel-title">规则命中 Top 10</h3>
-          <div id="rule-bars" class="bar-chart">正在加载</div>
+          <h3 class="panel-title">专题分析</h3>
+          <p class="panel-description">基础质量问题和费用风险分开看，避免字段缺失掩盖多付、错付、重复付风险。</p>
         </div>
-      </div>
-      <div class="analytics-grid">
-        <div class="table-wrap"><table><thead><tr><th>台账类型</th><th>问题数</th><th>占比</th></tr></thead><tbody id="ledger-share-table"><tr><td colspan="3">正在加载</td></tr></tbody></table></div>
-        <div class="table-wrap"><table><thead><tr><th>地市</th><th>风险等级</th><th>问题数</th></tr></thead><tbody id="city-severity-table"><tr><td colspan="3">正在加载</td></tr></tbody></table></div>
-      </div>
+      </header>
+      <div id="ledger-tabs" class="analytics-tabs"></div>
+      <div id="ledger-analysis-sections"></div>
     </section>
-    <div id="ledger-analysis-sections"></div>
-    <section class="card">
-      ${shellHeader("稽核问题通报", "通报导出")}
-      <div class="operation-panel">
-        <p>导出当前批次的稽核问题统计 Excel，包含通报总览、地市问题统计、分类统计和问题明细。</p>
-        <button id="export-notice-report" class="primary-button" type="button">导出通报 Excel</button>
-      </div>
-      <div id="notice-result" class="result-box">等待操作</div>
-    </section>
-    <section class="card">
-      ${shellHeader("专项归档导出", "归档")}
-      <div class="operation-panel">
-        <p>归档会生成当前批次的汇总 Excel，包括归档总览、地市整改进度、规则命中排行、风险等级分布和未闭环问题。</p>
-        <div class="button-row">
-          <button id="archive-precheck" class="secondary-button" type="button">归档前检查</button>
-          <button id="archive-batch" class="primary-button" type="button">生成归档汇总</button>
+    <section class="analytics-overview-grid analytics-ops-grid">
+      <div class="card analytics-panel">
+        ${shellHeader("稽核问题通报", "通报导出")}
+        <div class="operation-panel">
+          <p>导出当前批次的稽核问题统计 Excel，包含通报总览、地市问题统计、分类统计和问题明细。</p>
         </div>
+        <div id="notice-result" class="result-box">等待操作</div>
       </div>
-      <div id="operation-result" class="result-box">等待操作</div>
+      <div class="card analytics-panel">
+        ${shellHeader("专项归档导出", "归档")}
+        <div class="operation-panel">
+          <p>归档会生成当前批次的汇总 Excel，包括归档总览、地市整改进度、规则命中排行、风险等级分布和未闭环问题。</p>
+        </div>
+        <div id="operation-result" class="result-box">等待操作</div>
+      </div>
     </section>
   `;
   bindBatchSelector(() =>
@@ -85,7 +113,7 @@ export async function renderAnalytics({
       setOperationResult,
     }),
   );
-  await loadAnalytics(state.batchId, shellHeader);
+  await loadAnalytics(state.batchId);
   document.querySelector("#export-notice-report").addEventListener("click", async (event) => {
     await withBusy(event.currentTarget, "导出中...", async () => {
       const result = document.querySelector("#notice-result");
@@ -119,49 +147,59 @@ export async function renderAnalytics({
       setOperationResult("pending", "正在生成归档汇总...");
       const data = await postJson("/api/archive", { batch_id: state.batchId });
       setOperationResult("success", resultList([data.path]));
-      await loadAnalytics(state.batchId, shellHeader);
+      await loadAnalytics(state.batchId);
     });
   });
 }
 
-async function loadAnalytics(batchId, shellHeader) {
+async function loadAnalytics(batchId) {
   const data = await fetchJson(`/api/dashboard?batch_id=${batchId}`);
   const totalIssues = (data.issues_by_city || []).reduce((sum, row) => sum + Number(row.count || 0), 0);
   const topRule = (data.issues_by_rule || [])[0];
-  const topSeverity = (data.issues_by_severity || [])[0];
+  const highRisk = severityCount(data, "high");
+  const cityCount = (data.issues_by_city || []).filter((row) => Number(row.count || 0) > 0).length;
   document.querySelector("#analytics-summary").innerHTML = [
     metricCard("问题总数", totalIssues, `未闭环 ${formatNumber(data.open_issue_count)}`, "danger"),
+    metricCard("高风险", highRisk, "优先核实多付、错付、重复付", "danger"),
+    metricCard("未闭环", data.open_issue_count || 0, "待地市整改或复核", "warning"),
     metricCard("闭环率", `${formatNumber(data.closure_rate)}%`, "已关闭和无需整改占比", "success"),
     metricCard("高频规则", topRule?.count || 0, topRule?.rule_name || "暂无", "warning"),
-    metricCard("主要风险", topSeverity?.count || 0, topSeverity?.severity_label || severityLabel(topSeverity?.severity) || "暂无", "review"),
+    metricCard("涉及地市", cityCount, "存在问题的地市数量", "review"),
   ].join("");
+  renderSeverityStack(data.issues_by_severity || [], totalIssues);
   renderBars("#city-bars", data.issues_by_city || [], "city");
   renderBars("#rule-bars", data.issues_by_rule || [], "rule_name");
   renderLedgerShareRows(data.issues_by_ledger_type || [], totalIssues);
-  renderCitySeverityRows(data.city_severity_matrix || []);
-  renderLedgerSections(data, shellHeader);
+  renderHeatmap(data.city_rule_matrix || []);
+  renderLedgerSections(data);
 }
 
-function renderLedgerSections(data, shellHeader) {
+function renderLedgerSections(data) {
+  renderTabs();
   const container = document.querySelector("#ledger-analysis-sections");
-  container.innerHTML = LEDGER_SECTIONS.map((section) => {
-    const categories = (data.issue_categories || []).filter((row) => row.ledger_type === section.type);
-    const cityRows = (data.city_ledger_matrix || []).filter((row) => row.ledger_type === section.type);
-    const ruleRows = (data.city_rule_matrix || []).filter((row) => row.ledger_type === section.type);
+  container.innerHTML = LEDGER_SECTIONS.map((section, index) => {
+    const categories = section.type === "data_quality"
+      ? (data.issue_categories || []).filter((row) => row.category === "data_quality")
+      : (data.issue_categories || []).filter((row) => row.ledger_type === section.ledgerType && row.category !== "data_quality");
+    const cityRows = section.type === "data_quality"
+      ? mergeRowsByCity((data.city_rule_matrix || []).filter((row) => row.category === "data_quality"))
+      : (data.city_ledger_matrix || []).filter((row) => row.ledger_type === section.ledgerType);
+    const ruleRows = section.type === "data_quality"
+      ? (data.city_rule_matrix || []).filter((row) => row.category === "data_quality")
+      : (data.city_rule_matrix || []).filter((row) => row.ledger_type === section.ledgerType && row.category !== "data_quality");
     const total = categories.reduce((sum, row) => sum + Number(row.count || 0), 0);
     const topRule = categories[0];
     return `
-      <section class="card ledger-analysis-card">
-        ${shellHeader(`${section.label}专题分析`, "分类交叉")}
+      <section class="ledger-analysis-card ${index === 0 ? "is-active" : ""}" data-ledger-section="${section.type}">
         <div class="metric-grid compact-metrics">
-          ${metricCard("问题数", total, "当前台账命中问题", section.tone)}
+          ${metricCard("问题数", total, "当前专题命中问题", section.tone)}
           ${metricCard("主要规则", topRule?.count || 0, topRule?.rule_name || "暂无", "warning")}
           ${metricCard("涉及地市", uniqueCount(cityRows, "city"), "存在问题的地市数量", "review")}
         </div>
         <div class="analytics-grid analytics-grid-wide">
           <div>
             <h3 class="panel-title">${section.label}地市分布</h3>
-            <div id="${section.type}-city-bars" class="bar-chart">${renderBarsHtml(cityRows, "city")}</div>
+            <div class="bar-chart">${renderBarsHtml(cityRows, "city")}</div>
           </div>
           <div>
             <h3 class="panel-title">${section.label}规则构成</h3>
@@ -177,6 +215,7 @@ function renderLedgerSections(data, shellHeader) {
       </section>
     `;
   }).join("");
+  bindTabs();
 }
 
 function renderBars(selector, rows, labelField) {
@@ -204,35 +243,22 @@ function renderBarsHtml(rows, labelField) {
 }
 
 function renderLedgerShareRows(rows, totalIssues) {
-  const tbody = document.querySelector("#ledger-share-table");
+  const container = document.querySelector("#ledger-share-table");
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="3">暂无台账分类统计</td></tr>';
+    container.innerHTML = '<div class="empty-state">暂无台账分类统计</div>';
     return;
   }
-  tbody.innerHTML = rows
+  container.innerHTML = rows
     .map((row) => {
       const count = Number(row.count || 0);
       const share = totalIssues ? (count / totalIssues) * 100 : 0;
-      return `<tr><td>${escapeHtml(row.ledger_label || ledgerLabel(row.ledger_type))}</td><td>${formatNumber(count)}</td><td>${formatNumber(share)}%</td></tr>`;
-    })
-    .join("");
-}
-
-function renderCitySeverityRows(rows) {
-  renderMatrixRows("#city-severity-table", rows, (row) => [row.city, row.severity_label || severityLabel(row.severity), row.count], 3);
-}
-
-function renderMatrixRows(selector, rows, toCells, colspan) {
-  const tbody = document.querySelector(selector);
-  if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="${colspan}">暂无数据</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = rows
-    .slice(0, 80)
-    .map((row) => {
-      const cells = toCells(row);
-      return `<tr>${cells.map((cell, index) => `<td>${index === cells.length - 1 ? formatNumber(cell) : escapeHtml(cell)}</td>`).join("")}</tr>`;
+      return `
+        <div class="legend-item">
+          <span>${escapeHtml(row.ledger_label || ledgerLabel(row.ledger_type))}</span>
+          <strong>${formatNumber(count)}</strong>
+          <em>${formatNumber(share)}%</em>
+        </div>
+      `;
     })
     .join("");
 }
@@ -257,6 +283,75 @@ function renderCategoryTable(rows) {
   `;
 }
 
+function renderSeverityStack(rows, totalIssues) {
+  const container = document.querySelector("#severity-stack");
+  const ordered = ["high", "medium", "low"].map((severity) => {
+    const row = rows.find((item) => item.severity === severity);
+    return { severity, label: severityLabel(severity), count: Number(row?.count || 0) };
+  });
+  if (!totalIssues) {
+    container.innerHTML = '<div class="empty-state">暂无风险等级数据</div>';
+    return;
+  }
+  container.innerHTML = `
+    <div class="stack-track">
+      ${ordered.map((row) => `<span class="stack-${row.severity}" style="width:${(row.count / totalIssues) * 100}%"></span>`).join("")}
+    </div>
+    <div class="severity-list">
+      ${ordered.map((row) => `
+        <div class="severity-item severity-${row.severity}">
+          <span>${escapeHtml(row.label)}</span>
+          <strong>${formatNumber(row.count)}</strong>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderHeatmap(rows) {
+  const container = document.querySelector("#issue-heatmap");
+  if (!rows.length) {
+    container.innerHTML = '<div class="empty-state">暂无矩阵数据</div>';
+    return;
+  }
+  const cities = [...new Set(rows.map((row) => row.city).filter(Boolean))].slice(0, 10);
+  const rules = topByCount(rows, "rule_name", 8);
+  const max = Math.max(...rows.map((row) => Number(row.count || 0)), 1);
+  container.innerHTML = `
+    <div class="heatmap-grid" style="grid-template-columns: 96px repeat(${rules.length}, minmax(70px, 1fr));">
+      <span class="heatmap-corner">地市/规则</span>
+      ${rules.map((rule) => `<span class="heatmap-head">${escapeHtml(rule)}</span>`).join("")}
+      ${cities.map((city) => `
+        <span class="heatmap-city">${escapeHtml(city)}</span>
+        ${rules.map((rule) => {
+          const match = rows.find((row) => row.city === city && row.rule_name === rule);
+          const count = Number(match?.count || 0);
+          const alpha = count ? 0.16 + (count / max) * 0.62 : 0;
+          return `<span class="heatmap-cell" style="--heat:${alpha};">${count ? formatNumber(count) : ""}</span>`;
+        }).join("")}
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderTabs() {
+  document.querySelector("#ledger-tabs").innerHTML = LEDGER_SECTIONS.map((section, index) => `
+    <button class="analytics-tab ${index === 0 ? "is-active" : ""}" type="button" data-ledger-tab="${section.type}">${escapeHtml(section.label)}</button>
+  `).join("");
+}
+
+function bindTabs() {
+  document.querySelectorAll("[data-ledger-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const target = button.dataset.ledgerTab;
+      document.querySelectorAll("[data-ledger-tab]").forEach((item) => item.classList.toggle("is-active", item === button));
+      document.querySelectorAll("[data-ledger-section]").forEach((section) => {
+        section.classList.toggle("is-active", section.dataset.ledgerSection === target);
+      });
+    });
+  });
+}
+
 function renderRuleMatrixRows(rows) {
   if (!rows.length) {
     return '<tr><td colspan="3">暂无地市规则交叉数据</td></tr>';
@@ -265,6 +360,30 @@ function renderRuleMatrixRows(rows) {
     .slice(0, 80)
     .map((row) => `<tr><td>${escapeHtml(row.city)}</td><td>${escapeHtml(row.rule_name || row.rule_id)}</td><td>${formatNumber(row.count)}</td></tr>`)
     .join("");
+}
+
+function severityCount(data, severity) {
+  return Number((data.issues_by_severity || []).find((row) => row.severity === severity)?.count || 0);
+}
+
+function topByCount(rows, labelField, limit) {
+  const counts = new Map();
+  rows.forEach((row) => {
+    const label = row[labelField] || row.rule_id || "未分类";
+    counts.set(label, (counts.get(label) || 0) + Number(row.count || 0));
+  });
+  return [...counts.entries()]
+    .sort((first, second) => second[1] - first[1] || first[0].localeCompare(second[0], "zh-CN"))
+    .slice(0, limit)
+    .map(([label]) => label);
+}
+
+function mergeRowsByCity(rows) {
+  const counts = new Map();
+  rows.forEach((row) => counts.set(row.city, (counts.get(row.city) || 0) + Number(row.count || 0)));
+  return [...counts.entries()]
+    .map(([city, count]) => ({ city, count }))
+    .sort((a, b) => b.count - a.count || a.city.localeCompare(b.city, "zh-CN"));
 }
 
 function uniqueCount(rows, field) {

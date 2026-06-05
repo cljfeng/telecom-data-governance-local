@@ -48,6 +48,12 @@ def test_default_rule_thresholds_document_key_ranges():
     assert DEFAULT_THRESHOLDS.electricity_price_max == 0.9
     assert DEFAULT_THRESHOLDS.share_percent_min == 0
     assert DEFAULT_THRESHOLDS.share_percent_max == 100
+    assert DEFAULT_THRESHOLDS.electricity_amount_variance_ratio == 0.1
+    assert DEFAULT_THRESHOLDS.electricity_amount_variance_min == 100
+    assert DEFAULT_THRESHOLDS.electricity_usage_mismatch_ratio == 0.1
+    assert DEFAULT_THRESHOLDS.electricity_usage_mismatch_min == 10
+    assert DEFAULT_THRESHOLDS.electricity_commercial_price_min == 0.3
+    assert DEFAULT_THRESHOLDS.electricity_commercial_price_max == 1.5
 
 
 def test_run_audit_generates_stable_issue_codes(app_config, sample_workbook):
@@ -141,6 +147,150 @@ def test_run_audit_applies_electricity_governance_rules(app_config):
         "electricity_usage_spike_drop",
         "electricity_capacity_mismatch",
     }
+
+
+def test_run_audit_applies_electricity_reference_rules_from_business_examples(app_config):
+    initialize_database(app_config)
+    batch_id = _create_batch(app_config)
+    for row in [
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "E001",
+            "电信站址名称": "读数倒退站",
+            "电表户号": "M001",
+            "报账周期": "2026-04",
+            "上次抄表数": 300,
+            "本次抄表数": 280,
+            "用电量": 0,
+            "电费单价": 0.8,
+            "电费金额": 0,
+            "分摊比例(%)": 100,
+        },
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "E002",
+            "电信站址名称": "读数电量不匹配站",
+            "电表户号": "M002",
+            "报账周期": "2026-04",
+            "上次抄表数": 100,
+            "本次抄表数": 160,
+            "倍率": 1,
+            "用电量": 90,
+            "电费单价": 0.8,
+            "电费金额": 72,
+            "分摊比例(%)": 100,
+        },
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "E003",
+            "电信站址名称": "零电量有电费站",
+            "电表户号": "M003",
+            "报账周期": "2026-04",
+            "用电量": 0,
+            "电费单价": 0.8,
+            "电费金额": 30,
+            "分摊比例(%)": 100,
+        },
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "E004",
+            "电信站址名称": "金额计算异常站",
+            "电表户号": "M004",
+            "报账周期": "2026-04",
+            "用电量": 1000,
+            "电费单价": 0.8,
+            "电费金额": 1100,
+            "分摊比例(%)": 100,
+        },
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "E005",
+            "电信站址名称": "商业电价异常站",
+            "电表户号": "M005",
+            "报账周期": "2026-04",
+            "用电量": 100,
+            "电费单价": 1.8,
+            "电费金额": 180,
+            "分摊比例(%)": 100,
+        },
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "E006",
+            "电信站址名称": "时段重叠站",
+            "电表户号": "M006",
+            "报账周期": "2026-04-A",
+            "抄表开始日期": "2026-04-01",
+            "抄表结束日期": "2026-04-20",
+            "用电量": 100,
+            "电费单价": 0.8,
+            "电费金额": 80,
+            "分摊比例(%)": 100,
+        },
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "E006",
+            "电信站址名称": "时段重叠站",
+            "电表户号": "M006",
+            "报账周期": "2026-04-B",
+            "抄表开始日期": "2026-04-15",
+            "抄表结束日期": "2026-04-30",
+            "用电量": 120,
+            "电费单价": 0.8,
+            "电费金额": 96,
+            "分摊比例(%)": 100,
+        },
+    ]:
+        _insert_ledger_row(app_config, batch_id, "electricity", row)
+
+    run_audit(app_config, batch_id)
+
+    assert _rule_ids(app_config) >= {
+        "electricity_meter_reading_reverse",
+        "electricity_reading_usage_mismatch",
+        "electricity_zero_usage_positive_fee",
+        "electricity_amount_calculation_mismatch",
+        "electricity_price_commercial_range",
+        "electricity_period_overlap",
+    }
+
+
+def test_configured_electricity_amount_variance_threshold_is_used(app_config):
+    initialize_database(app_config)
+    batch_id = _create_batch(app_config)
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "electricity",
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "E001",
+            "电信站址名称": "金额偏差站",
+            "电表户号": "M001",
+            "报账周期": "2026-04",
+            "用电量": 1000,
+            "电费单价": 0.8,
+            "电费金额": 1100,
+            "分摊比例(%)": 100,
+        },
+    )
+    upsert_rule_setting(
+        app_config,
+        "electricity_amount_calculation_mismatch",
+        enabled=True,
+        config={"variance_ratio": 0.5, "variance_min": 500},
+    )
+
+    run_audit(app_config, batch_id)
+
+    assert "electricity_amount_calculation_mismatch" not in _rule_ids(app_config)
 
 
 def test_electricity_high_price_flags_only_prices_above_nine_tenths(app_config):
@@ -688,12 +838,72 @@ def test_run_audit_applies_cross_ledger_governance_rules(app_config):
 
     assert _rule_ids(app_config) >= {
         "site_code_missing_in_master",
+        "fee_paid_without_master_site",
         "site_name_mismatch_across_ledgers",
         "tower_stopped_site_still_charged",
         "electricity_lump_sum_still_reimbursed",
         "electricity_transfer_without_contract",
         "generator_missing_responsible_party",
     }
+
+
+def test_fee_paid_without_master_site_requires_positive_fee(app_config):
+    initialize_database(app_config)
+    batch_id = _create_batch(app_config)
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "site",
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "S001",
+            "电信站址名称": "已有站",
+        },
+    )
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "electricity",
+        {
+            "地市": "兰州",
+            "区县": "城关",
+            "电信站址编码": "S002",
+            "电信站址名称": "无站零金额",
+            "报账周期": "2026-04",
+            "电费单价": 0.8,
+            "电费金额": 0,
+            "分摊比例(%)": 100,
+        },
+    )
+    _insert_ledger_row(
+        app_config,
+        batch_id,
+        "tower_rent",
+        {
+            "地市": "兰州市",
+            "区县": "城关",
+            "电信站址编码": "S003",
+            "电信站址名称": "无站付费",
+            "账期": "2026-04",
+            "产品服务费合计（元/年）（不含税）": 100.123456,
+        },
+    )
+
+    run_audit(app_config, batch_id)
+
+    with connect(app_config) as conn:
+        issues = conn.execute(
+            """
+            select telecom_site_code, message
+              from issues
+             where rule_id = 'fee_paid_without_master_site'
+             order by telecom_site_code
+            """
+        ).fetchall()
+    assert [issue["telecom_site_code"] for issue in issues] == ["S003"]
+    assert "站址台账不存在" in issues[0]["message"]
+    assert "存在正向费用" in issues[0]["message"]
 
 
 def test_site_code_master_rule_distinguishes_placeholder_code(app_config):
