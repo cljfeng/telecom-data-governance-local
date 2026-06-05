@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - "implementation/**"
     paths:
       - "src/**"
       - "scripts/build_app.ps1"
