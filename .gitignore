@@ -1,12 +1,39 @@
 .superpowers/
+
+# OS/editor files
 .DS_Store
+.vscode/
+.idea/
+
+# Python/runtime artifacts
 __pycache__/
 *.pyc
 *.egg-info/
 *.spec
+.venv/
+.uv-cache/
+.uv-python/
+.pytest_cache/
+
+# Build outputs
 build/
 dist/
+
+# Local app data and generated files
 data/
 exports/
 backups/
-.pytest_cache/
+logs/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+*.db-*
+*.xlsx
+*.xls
+*.csv
+
+# Local config and secrets
+.env
+.env.*
+*.local
