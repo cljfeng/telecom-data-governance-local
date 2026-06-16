@@ -4,6 +4,7 @@ from governance_app.audit_engine import run_audit
 from governance_app.audit_rules import DEFAULT_THRESHOLDS, all_batch_rules, all_rules, rule_metadata
 from governance_app.rule_catalog import RULE_CATALOG
 from governance_app.rule_fields import PRICE_FIELDS, PERIOD_FIELDS
+from governance_app.rule_types import AuditRule, RuleThresholds
 from governance_app.db import connect, initialize_database
 from governance_app.importer import import_workbook
 from governance_app.rule_settings import upsert_rule_setting
@@ -46,6 +47,14 @@ def test_rule_catalog_lives_in_dedicated_module():
 def test_rule_field_aliases_live_in_dedicated_module():
     assert PRICE_FIELDS == ("电费单价", "单价", "电价")
     assert "账期" in PERIOD_FIELDS
+
+
+def test_rule_types_live_in_dedicated_module():
+    threshold = RuleThresholds(electricity_price_max=1.2)
+    rule = AuditRule("demo", "electricity", "high", lambda row: None)
+
+    assert threshold.electricity_price_max == 1.2
+    assert rule.ledger_type == "electricity"
 
 
 def test_unknown_rule_metadata_falls_back_to_rule_id():
