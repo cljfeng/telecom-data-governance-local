@@ -10,6 +10,7 @@ export async function renderSettings({ mainContent, shellHeader }) {
     <section class="card">
       ${shellHeader("备份恢复", "数据安全")}
       <div class="operation-panel">
+        <p>恢复备份会覆盖当前数据库；当前数据库会先自动安全备份，便于误操作后回退。</p>
         <div class="button-row">
           <button id="create-backup" class="secondary-button" type="button">创建备份</button>
         </div>
@@ -17,6 +18,10 @@ export async function renderSettings({ mainContent, shellHeader }) {
           <label class="form-field">
             <span>备份文件路径</span>
             <input id="restore-path" placeholder="/Users/.../backups/governance-xxxx.sqlite3">
+          </label>
+          <label class="form-field">
+            <span>恢复确认</span>
+            <input id="restore-confirmation" placeholder="输入：确认恢复">
           </label>
         </div>
         <button id="restore-backup" class="primary-button" type="button">恢复备份</button>
@@ -37,7 +42,7 @@ export async function renderSettings({ mainContent, shellHeader }) {
     <section class="card">
       ${shellHeader("系统复位", "初始化")}
       <div class="operation-panel">
-        <p>复位会清除批次、台账、稽核问题、回传记录和当前批次选择。默认保留导出文件和备份文件。</p>
+        <p>复位会清除批次、台账、稽核问题、回传记录和当前批次选择。执行前会创建安全备份，默认保留导出文件和备份文件。</p>
         <div class="form-grid">
           <label class="form-field">
             <span>确认文字</span>
@@ -65,8 +70,13 @@ export async function renderSettings({ mainContent, shellHeader }) {
   });
   document.querySelector("#restore-backup").addEventListener("click", async (event) => {
     const path = document.querySelector("#restore-path").value.trim();
+    const confirmation = document.querySelector("#restore-confirmation").value.trim();
     if (!path) {
       setSettingsResult("error", "请填写备份文件路径");
+      return;
+    }
+    if (confirmation !== "确认恢复") {
+      setSettingsResult("error", "请输入“确认恢复”后再执行恢复");
       return;
     }
     await withBusy(event.currentTarget, "恢复中...", async () => {

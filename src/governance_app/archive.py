@@ -6,6 +6,8 @@ from governance_app.analytics import dashboard_summary
 from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
 from governance_app.db import connect
+from governance_app.rule_settings import load_rule_settings
+from governance_app.version import version_payload
 from governance_app.workflow import city_progress, transition_batch_in_conn
 
 CLOSED_STATUSES = {"closed", "not_required"}
@@ -157,6 +159,36 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
             (batch_id,),
         ):
             ws.append([log["operation"], log["message"], log["created_at"]])
+
+        ws = wb.create_sheet("版本与规则快照")
+        ws.append(["项目", "值"])
+        for key, value in version_payload().items():
+            ws.append([key, value])
+        ws.append([])
+        ws.append(["规则编号", "规则名称", "规则分类", "风险等级", "是否启用", "阈值配置"])
+        settings = load_rule_settings(config)
+        for row in conn.execute(
+            """
+            select rule_id, severity, count(*) as count
+              from issues
+             where batch_id = ?
+             group by rule_id, severity
+             order by rule_id
+            """,
+            (batch_id,),
+        ):
+            metadata = rule_metadata(row["rule_id"])
+            setting = settings.get(row["rule_id"])
+            ws.append(
+                [
+                    row["rule_id"],
+                    metadata.name,
+                    _rule_category_label(metadata.category),
+                    _severity_label(row["severity"]),
+                    "是" if setting is None or setting.enabled else "否",
+                    "" if setting is None else str(setting.config),
+                ]
+            )
 
         ws = wb.create_sheet("未闭环问题")
         ws.append(["问题编号", "地市", "站址编码", "台账类型", "规则分类", "规则名称", "风险", "状态", "问题说明"])

@@ -294,7 +294,7 @@ async function loadDashboard() {
     <div class="dashboard-grid">
       <section class="card">
         ${shellHeader("地市整改进度", "地市进度")}
-        <div class="table-wrap"><table><thead><tr><th>地市</th><th>问题</th><th>待整改</th><th>待复核</th><th>已关闭</th><th>完成率</th><th>状态</th></tr></thead><tbody id="city-progress-table"><tr><td colspan="7">正在加载</td></tr></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>地市</th><th>问题</th><th>待整改</th><th>待复核</th><th>已关闭</th><th>高频规则</th><th>完成率</th><th>状态</th></tr></thead><tbody id="city-progress-table"><tr><td colspan="8">正在加载</td></tr></tbody></table></div>
       </section>
       <aside class="side-stack">
         <section class="card">
@@ -457,15 +457,23 @@ function renderWorkflow(workflow) {
     <div class="workflow-layout">
       <div class="workflow-steps">
         ${workflow.steps
-          .map((step, index) => `<div class="workflow-step step-${step.state}"><span class="step-index">${step.state === "done" ? "✓" : index + 1}</span><span>${escapeHtml(step.label)}</span></div>`)
+          .map(
+            (step, index) => `
+              <div class="workflow-step step-${step.state}">
+                <span class="step-index">${step.state === "done" ? "✓" : index + 1}</span>
+                <span>${escapeHtml(step.label)}</span>
+                ${step.blocked_reason ? `<small>${escapeHtml(step.blocked_reason)}</small>` : ""}
+              </div>
+            `,
+          )
           .join("")}
       </div>
       <div class="next-action">
         <p class="eyebrow">下一步动作</p>
         <h3>${escapeHtml(workflow.next_action)}</h3>
-        <p>系统会按当前批次状态引导完成导入、稽核、导出、回传和归档。</p>
+        <p>系统会按当前批次状态引导完成导入、稽核、导出、回传和归档。不可操作步骤会显示 blocked_reason，避免越级处理。</p>
         <div class="button-row">
-          <button class="primary-button" type="button" data-next-view="${escapeHtml(action.view)}">${escapeHtml(action.label)}</button>
+          <button class="primary-button" type="button" data-next-view="${escapeHtml(workflow.steps.find((step) => step.can_operate)?.primary_action?.view || action.view)}">${escapeHtml(workflow.steps.find((step) => step.can_operate)?.primary_action?.label || action.label)}</button>
           <button class="secondary-button" type="button" data-next-view="${escapeHtml(action.secondaryView)}">${escapeHtml(action.secondary)}</button>
         </div>
       </div>
@@ -498,7 +506,7 @@ function renderMetrics(data, progressRows = []) {
 function renderCityProgress(rows) {
   const tbody = document.querySelector("#city-progress-table");
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="7">当前批次暂无整改进度</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8">当前批次暂无整改进度</td></tr>';
     return;
   }
   tbody.innerHTML = rows
@@ -512,6 +520,7 @@ function renderCityProgress(rows) {
           <td>${formatNumber(row.pending_count)}</td>
           <td>${formatNumber(row.review_count)}</td>
           <td>${formatNumber(Number(row.closed_count || 0) + Number(row.not_required_count || 0))}</td>
+          <td>${(row.top_rules || []).slice(0, 2).map((rule) => `<span class="mini-chip">${escapeHtml(rule.rule_name)}</span>`).join("") || "暂无"}</td>
           <td>
             <div class="progress-cell">
               <span class="progress-track"><span style="width: ${completion}%"></span></span>
@@ -854,8 +863,16 @@ function renderIssueRows(issues) {
           <td class="rule-cell"><strong>${escapeHtml(issue.rule_name || issue.rule_id)}</strong><span>${escapeHtml(issue.rule_id)}</span></td>
           <td><span class="chip chip-${severityTone(issue.severity)}">${escapeHtml(severityLabel(issue.severity))}</span></td>
           <td><span class="chip chip-info">${escapeHtml(statusLabel(issue.status))}</span></td>
-          <td class="message-cell">${escapeHtml(issue.message)}</td>
-          <td><button class="text-button" data-close="${escapeHtml(issue.issue_code)}" type="button">关闭</button></td>
+          <td class="message-cell">
+            <strong>${escapeHtml(issue.explanation?.what_happened || issue.message)}</strong>
+            <span>${escapeHtml(issue.explanation?.judgement_basis || "")}</span>
+            <span>建议：${escapeHtml(issue.explanation?.recommended_action || issue.suggestion || "")}</span>
+            <span>复核：${escapeHtml(issue.review_suggestion?.decision || "")} · ${escapeHtml(issue.review_suggestion?.reason || "")}</span>
+          </td>
+          <td>
+            <button class="text-button" data-close="${escapeHtml(issue.issue_code)}" type="button">关闭</button>
+            <button class="text-button" data-not-required="${escapeHtml(issue.issue_code)}" type="button">无需整改</button>
+          </td>
         </tr>
       `,
     )
@@ -863,6 +880,12 @@ function renderIssueRows(issues) {
   tbody.querySelectorAll("[data-close]").forEach((button) => {
     button.addEventListener("click", async () => {
       await postJson("/api/issues/status", { issue_code: button.dataset.close, status: "closed" });
+      await loadIssues();
+    });
+  });
+  tbody.querySelectorAll("[data-not-required]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await postJson("/api/issues/status", { issue_code: button.dataset.notRequired, status: "not_required" });
       await loadIssues();
     });
   });
@@ -878,7 +901,7 @@ async function renderExport() {
     <section class="card">
       ${shellHeader("问题包导出", "整改包")}
       <div class="operation-panel">
-        <p>按当前批次生成整改问题清单，并将相关问题状态更新为待整改。</p>
+        <p>按当前批次生成整改问题清单。导出整改包会更新问题状态为待整改，请确认已完成稽核且问题清单无误。</p>
         <div class="form-grid">
           <label class="form-field">
             <span>批次号</span>
@@ -903,6 +926,7 @@ async function renderExport() {
   document.querySelector("#operation-submit").addEventListener("click", async (event) => {
     const batchId = Number(fieldValue("export-batch-id"));
     if (!Number.isInteger(batchId) || batchId <= 0) return setOperationResult("error", "请填写有效批次号");
+    if (!window.confirm("导出整改包会更新问题状态为待整改，确认继续？")) return;
     const mode = document.querySelector("#export-mode").value;
     await withBusy(event.currentTarget, "导出中...", async () => {
       setOperationResult("pending", "正在导出...");
@@ -947,7 +971,7 @@ async function renderCorrections() {
     </section>
     <section class="card">
       ${shellHeader("地市整改进度", "地市进度")}
-      <div class="table-wrap"><table><thead><tr><th>地市</th><th>问题</th><th>待整改</th><th>待复核</th><th>已关闭</th><th>完成率</th><th>状态</th></tr></thead><tbody id="city-progress-table"></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>地市</th><th>问题</th><th>待整改</th><th>待复核</th><th>已关闭</th><th>高频规则</th><th>完成率</th><th>状态</th></tr></thead><tbody id="city-progress-table"></tbody></table></div>
     </section>
   `;
   document.querySelector("#correction-file").addEventListener("change", () => {

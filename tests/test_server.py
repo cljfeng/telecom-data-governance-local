@@ -671,6 +671,20 @@ def test_import_page_exposes_import_strategies():
     assert 'value="replace"' in app_js
 
 
+def test_operator_experience_ui_surfaces_guidance_and_review_decisions():
+    static_dir = AppConfig.for_workspace(Path(".")).static_dir
+    app_js = (static_dir / "app.js").read_text(encoding="utf-8")
+    settings_js = (static_dir / "settings.js").read_text(encoding="utf-8")
+
+    assert "blocked_reason" in app_js
+    assert "review_suggestion" in app_js
+    assert "recommended_action" in app_js
+    assert "top_rules" in app_js
+    assert "导出整改包会更新问题状态" in app_js
+    assert "确认恢复" in settings_js
+    assert "当前数据库会先自动安全备份" in settings_js
+
+
 def test_settings_static_module_calls_settings_and_backup_api():
     static_dir = AppConfig.for_workspace(Path(".")).static_dir
     settings_js = (static_dir / "settings.js").read_text(encoding="utf-8")

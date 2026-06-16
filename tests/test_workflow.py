@@ -44,6 +44,10 @@ def test_workflow_next_action_tracks_batch_status(app_config, sample_workbook):
     assert workflow["next_action"] == "执行稽核"
     assert workflow["steps"][0]["state"] == "done"
     assert workflow["steps"][1]["state"] == "current"
+    current_step = workflow["steps"][1]
+    assert current_step["can_operate"] is True
+    assert current_step["primary_action"]["view"] == "audit"
+    assert workflow["steps"][3]["blocked_reason"] == "请先完成执行稽核"
 
 
 def test_issue_filters_and_city_progress(app_config, sample_workbook):
@@ -62,10 +66,14 @@ def test_issue_filters_and_city_progress(app_config, sample_workbook):
     assert issues[0]["city"] == "杭州"
     assert issues[0]["ledger_type"] == "electricity"
     assert issues[0]["rule_name"] == "电费高单价"
+    assert issues[0]["explanation"]["rule_name"] == "电费高单价"
+    assert issues[0]["explanation"]["recommended_action"]
+    assert issues[0]["review_suggestion"]["decision"] == "等待整改"
     assert progress[0]["city"] == "杭州"
     assert progress[0]["total_count"] == 2
     assert progress[0]["closed_count"] == 1
     assert progress[0]["completion_rate"] == 50.0
+    assert progress[0]["top_rules"][0]["rule_name"] == "电费高单价"
 
 
 def test_list_issues_returns_total_and_supports_pagination(app_config, sample_workbook):

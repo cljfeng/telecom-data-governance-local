@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 from openpyxl import Workbook
+from openpyxl.worksheet.datavalidation import DataValidation
 
 from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
@@ -76,12 +77,11 @@ def export_city_issue_packages(config: AppConfig, batch_id: int) -> list[Path]:
             path = config.export_dir / f"{_safe_filename_part(city)}_整改问题清单_{_safe_filename_part(batch_code)}.xlsx"
             if not path.resolve().is_relative_to(export_root):
                 raise ValueError(f"导出路径越界：{path}")
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "整改问题清单"
-            ws.append(ISSUE_HEADERS)
+            wb = _issue_workbook()
+            ws = wb["整改问题清单"]
             for issue in issues:
                 _append_issue_row(ws, issue)
+            _finish_issue_sheet(ws)
             wb.save(path)
             conn.executemany(
                 """
@@ -128,12 +128,11 @@ def _export_province_issue_package(config: AppConfig, batch_id: int) -> list[Pat
         path = config.export_dir / f"全省_整改问题清单_{_safe_filename_part(batch_code)}.xlsx"
         if not path.resolve().is_relative_to(export_root):
             raise ValueError(f"导出路径越界：{path}")
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "整改问题清单"
-        ws.append(ISSUE_HEADERS)
+        wb = _issue_workbook()
+        ws = wb["整改问题清单"]
         for issue in issues:
             _append_issue_row(ws, issue)
+        _finish_issue_sheet(ws)
         wb.save(path)
         conn.execute(
             """
@@ -159,6 +158,51 @@ def _safe_filename_part(value: str | None) -> str:
         text = text.replace("..", "_")
     text = text.strip("._")
     return text or "未填地市"
+
+
+def _issue_workbook() -> Workbook:
+    wb = Workbook()
+    guide = wb.active
+    guide.title = "填写说明"
+    guide.append(["整改包填写说明"])
+    guide.append(["1. 请逐条核实“整改问题清单”中的问题编号、原始位置、命中字段和问题说明。"])
+    guide.append(["2. “整改结果”请选择：已整改、无需整改、情况说明、退回确认。"])
+    guide.append(["3. 高风险问题建议在“附件说明”中填写合同、发票、系统截图或现场照片等佐证材料名称。"])
+    guide.append(["4. 请勿修改问题编号，系统将按问题编号匹配回传。"])
+    ws = wb.create_sheet("整改问题清单")
+    ws.append(ISSUE_HEADERS)
+    return wb
+
+
+def _finish_issue_sheet(ws) -> None:
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    widths = {
+        "A": 18,
+        "B": 12,
+        "C": 12,
+        "D": 18,
+        "E": 24,
+        "H": 28,
+        "I": 24,
+        "O": 48,
+        "P": 32,
+        "Q": 16,
+        "R": 32,
+        "S": 24,
+        "T": 24,
+    }
+    for column, width in widths.items():
+        ws.column_dimensions[column].width = width
+    if ws.max_row < 2:
+        return
+    validation = DataValidation(type="list", formula1='"已整改,无需整改,情况说明,退回确认"', allow_blank=True)
+    validation.error = "请从下拉选项中选择整改结果"
+    validation.errorTitle = "整改结果无效"
+    validation.prompt = "请选择整改结果"
+    validation.promptTitle = "整改结果"
+    ws.add_data_validation(validation)
+    validation.add(f"Q2:Q{ws.max_row}")
 
 
 def _append_issue_row(ws, issue) -> None:

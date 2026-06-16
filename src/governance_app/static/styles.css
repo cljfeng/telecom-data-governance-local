@@ -1105,6 +1105,13 @@ tbody tr:last-child td {
   box-shadow: 0 0 18px rgba(31, 182, 216, 0.52);
 }
 
+.workflow-step small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
 .next-action {
   display: grid;
   align-content: center;
@@ -1265,9 +1272,32 @@ tbody tr:last-child td {
 }
 
 .message-cell {
-  min-width: 280px;
+  min-width: 360px;
   max-width: 520px;
   line-height: 1.55;
+}
+
+.message-cell span {
+  color: var(--muted);
+  display: block;
+  font-size: 12px;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+
+.mini-chip {
+  display: inline-block;
+  max-width: 160px;
+  margin: 2px 4px 2px 0;
+  padding: 3px 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text);
+  background: #f8fbff;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .progress-pill,
