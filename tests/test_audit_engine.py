@@ -2,6 +2,8 @@ import json
 
 from governance_app.audit_engine import run_audit
 from governance_app.audit_rules import DEFAULT_THRESHOLDS, all_batch_rules, all_rules, rule_metadata
+from governance_app.rule_catalog import RULE_CATALOG
+from governance_app.rule_fields import PRICE_FIELDS, PERIOD_FIELDS
 from governance_app.db import connect, initialize_database
 from governance_app.importer import import_workbook
 from governance_app.rule_settings import upsert_rule_setting
@@ -34,6 +36,16 @@ def test_rule_catalog_covers_all_audit_rules():
     assert all(item.name for item in metadata.values())
     assert all(item.description for item in metadata.values())
     assert all(item.default_suggestion for item in metadata.values())
+
+
+def test_rule_catalog_lives_in_dedicated_module():
+    assert RULE_CATALOG["electricity_price_range"].name == "电费高单价"
+    assert RULE_CATALOG["generator_cost_per_hour_outlier"].ledger_type == "generator"
+
+
+def test_rule_field_aliases_live_in_dedicated_module():
+    assert PRICE_FIELDS == ("电费单价", "单价", "电价")
+    assert "账期" in PERIOD_FIELDS
 
 
 def test_unknown_rule_metadata_falls_back_to_rule_id():
