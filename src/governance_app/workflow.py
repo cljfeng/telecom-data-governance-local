@@ -41,6 +41,33 @@ NEXT_ACTIONS = {
     "archived": "已归档",
 }
 
+BATCH_TRANSITIONS = {
+    "import": {
+        "from": {"created", "imported", "audited", "distributed", "returning"},
+        "to": "imported",
+    },
+    "audit": {
+        "from": {"imported", "audited"},
+        "to": "audited",
+    },
+    "export": {
+        "from": {"audited"},
+        "to": "distributed",
+    },
+    "export_empty": {
+        "from": {"audited"},
+        "to": "returning",
+    },
+    "correction_return": {
+        "from": {"distributed", "returning"},
+        "to": "returning",
+    },
+    "archive": {
+        "from": {"returning"},
+        "to": "archived",
+    },
+}
+
 
 def create_batch(config: AppConfig, name: str) -> int:
     cleaned = name.strip()
@@ -61,6 +88,34 @@ def create_batch(config: AppConfig, name: str) -> int:
             (batch_id, "create_batch", f"创建专项批次：{cleaned}"),
         )
         return int(batch_id)
+
+
+def transition_batch(config: AppConfig, batch_id: int, event: str) -> str:
+    with connect(config) as conn:
+        return transition_batch_in_conn(conn, batch_id, event)
+
+
+def transition_batch_in_conn(conn, batch_id: int, event: str) -> str:
+    rule = BATCH_TRANSITIONS.get(event)
+    if rule is None:
+        raise ValueError("invalid batch transition")
+    row = conn.execute("select status, is_archived from import_batches where id = ?", (batch_id,)).fetchone()
+    if row is None:
+        raise ValueError("batch not found")
+    if row["is_archived"]:
+        raise ValueError("batch is archived")
+    current = row["status"]
+    if current not in rule["from"]:
+        raise ValueError(f"invalid batch transition: {current} -> {event}")
+    target = rule["to"]
+    if event == "archive":
+        conn.execute(
+            "update import_batches set status = ?, is_archived = 1, archived_at = current_timestamp where id = ?",
+            (target, batch_id),
+        )
+    else:
+        conn.execute("update import_batches set status = ? where id = ?", (target, batch_id))
+    return str(target)
 
 
 def set_current_batch(config: AppConfig, batch_id: int) -> None:

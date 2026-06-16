@@ -15,6 +15,7 @@ from governance_app.audit_rules import (
 from governance_app.config import AppConfig
 from governance_app.db import connect
 from governance_app.rule_settings import RuleSetting, load_rule_settings
+from governance_app.workflow import transition_batch_in_conn
 
 
 @dataclass(frozen=True)
@@ -94,7 +95,7 @@ def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
                     finding,
                 )
                 issue_count += 1
-        conn.execute("update import_batches set status = 'audited' where id = ?", (batch_id,))
+        transition_batch_in_conn(conn, batch_id, "audit")
         elapsed = perf_counter() - started_at
         conn.execute(
             "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",

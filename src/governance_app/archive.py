@@ -6,7 +6,7 @@ from governance_app.analytics import dashboard_summary
 from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
 from governance_app.db import connect
-from governance_app.workflow import city_progress
+from governance_app.workflow import city_progress, transition_batch_in_conn
 
 CLOSED_STATUSES = {"closed", "not_required"}
 
@@ -188,10 +188,7 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
 
     wb.save(path)
     with connect(config) as conn:
-        conn.execute(
-            "update import_batches set status = 'archived', is_archived = 1, archived_at = current_timestamp where id = ?",
-            (batch_id,),
-        )
+        transition_batch_in_conn(conn, batch_id, "archive")
         conn.execute(
             "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
             (batch_id, "archive", f"生成归档汇总：{path.name}"),

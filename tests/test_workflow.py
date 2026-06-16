@@ -12,6 +12,7 @@ from governance_app.workflow import (
     list_issues,
     list_ledger_rows,
     set_current_batch,
+    transition_batch,
     update_issue_status,
 )
 
@@ -108,6 +109,24 @@ def test_workflow_returns_recent_operations(app_config):
 
     assert workflow["operations"][0]["operation"] == "create_batch"
     assert "专项批次" in workflow["operations"][0]["message"]
+
+
+def test_transition_batch_allows_configured_forward_transition(app_config):
+    initialize_database(app_config)
+    batch_id = create_batch(app_config, "专项批次")
+
+    transition_batch(app_config, batch_id, "import")
+
+    workflow = get_batch_workflow(app_config, batch_id)
+    assert workflow["batch"]["status"] == "imported"
+
+
+def test_transition_batch_rejects_invalid_forward_transition(app_config):
+    initialize_database(app_config)
+    batch_id = create_batch(app_config, "专项批次")
+
+    with pytest.raises(ValueError, match="invalid batch transition"):
+        transition_batch(app_config, batch_id, "export")
 
 
 def test_update_issue_status_rejects_unknown_status(app_config, sample_workbook):

@@ -13,7 +13,7 @@ from governance_app.db import connect
 from governance_app.models import LedgerType, ValidationErrorDetail
 from governance_app.recent_files import record_recent_file
 from governance_app.templates import EXPECTED_SHEETS, HEADER_ROWS, canonical_header, required_headers_for, workbook_sheet_for
-from governance_app.workflow import _new_batch_code
+from governance_app.workflow import _new_batch_code, transition_batch_in_conn
 
 
 @dataclass(frozen=True)
@@ -74,9 +74,10 @@ def import_workbook(config: AppConfig, workbook_path: Path, strategy: str = "new
                 operation = "import_append"
                 message = f"追加导入台账：{workbook_path.name}"
             conn.execute(
-                "update import_batches set source_file = ?, name = coalesce(name, ?), status = 'imported' where id = ?",
+                "update import_batches set source_file = ?, name = coalesce(name, ?) where id = ?",
                 (str(workbook_path), _clean_batch_name(workbook_path.stem), batch_id),
             )
+            transition_batch_in_conn(conn, batch_id, "import")
         conn.execute(
             "insert into settings(key, value_json) values ('current_batch_id', ?) "
             "on conflict(key) do update set value_json = excluded.value_json",

@@ -8,6 +8,7 @@ from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
 from governance_app.db import connect
 from governance_app.geo import normalize_city
+from governance_app.workflow import transition_batch_in_conn
 
 ISSUE_HEADERS = [
     "问题编号",
@@ -58,7 +59,7 @@ def export_city_issue_packages(config: AppConfig, batch_id: int) -> list[Path]:
             (batch_id,),
         ).fetchall()
         if not issue_rows:
-            conn.execute("update import_batches set status = 'returning' where id = ?", (batch_id,))
+            transition_batch_in_conn(conn, batch_id, "export_empty")
             conn.execute(
                 "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
                 (batch_id, "export", "当前批次无待导出问题，可直接归档"),
@@ -93,7 +94,7 @@ def export_city_issue_packages(config: AppConfig, batch_id: int) -> list[Path]:
             )
             paths.append(path)
         if paths:
-            conn.execute("update import_batches set status = 'distributed' where id = ?", (batch_id,))
+            transition_batch_in_conn(conn, batch_id, "export")
             conn.execute(
                 "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
                 (batch_id, "export", f"导出地市整改包 {len(paths)} 个"),
@@ -117,7 +118,7 @@ def _export_province_issue_package(config: AppConfig, batch_id: int) -> list[Pat
             (batch_id,),
         ).fetchall()
         if not issues:
-            conn.execute("update import_batches set status = 'returning' where id = ?", (batch_id,))
+            transition_batch_in_conn(conn, batch_id, "export_empty")
             conn.execute(
                 "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
                 (batch_id, "export", "当前批次无待导出问题，可直接归档"),
@@ -143,7 +144,7 @@ def _export_province_issue_package(config: AppConfig, batch_id: int) -> list[Pat
             """,
             (batch_id,),
         )
-        conn.execute("update import_batches set status = 'distributed' where id = ?", (batch_id,))
+        transition_batch_in_conn(conn, batch_id, "export")
         conn.execute(
             "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
             (batch_id, "export", "导出全省汇总整改包 1 个"),

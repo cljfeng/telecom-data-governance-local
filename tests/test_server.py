@@ -44,6 +44,21 @@ def test_health_endpoint_returns_ok(app_config):
     assert json.loads(body)["status"] == "ok"
 
 
+def test_version_endpoint_returns_runtime_and_schema_versions(app_config):
+    initialize_database(app_config)
+    app = create_app(app_config)
+
+    status, headers, body = app.handle_test_request("GET", "/api/version")
+
+    payload = json.loads(body)
+    assert status == 200
+    assert headers["content-type"] == "application/json; charset=utf-8"
+    assert payload["app_version"] == "0.1.0"
+    assert payload["template_version"] == "2026-05-05"
+    assert payload["schema_version"] == 1
+    assert payload["python_version"]
+
+
 def test_dashboard_endpoint_returns_json(app_config):
     initialize_database(app_config)
     app = create_app(app_config)

@@ -15,19 +15,16 @@ from openpyxl.utils.exceptions import InvalidFileException
 from governance_app.analytics import dashboard_summary
 from governance_app.archive import archive_batch, archive_precheck, export_notice_report
 from governance_app.audit_engine import run_audit
-from governance_app.backup import create_backup, restore_backup
 from governance_app.config import AppConfig
 from governance_app.corrections import import_correction_return
 from governance_app.db import initialize_database
 from governance_app.exporter import export_issue_packages
 from governance_app.import_preview import export_preview_errors, preview_workbook
 from governance_app.importer import import_workbook
-from governance_app.maintenance import compact_database
 from governance_app.recent_files import list_recent_files
-from governance_app.reset import reset_system
+from governance_app.routes.system import handle_system_route
 from governance_app.rule_settings import load_rule_settings, upsert_rule_setting
 from governance_app.audit_rules import all_batch_rules, all_rules, rule_metadata
-from governance_app.settings_service import local_settings, restore_backup_safely
 from governance_app.workflow import (
     city_progress,
     create_batch,
@@ -65,8 +62,9 @@ def create_app(config: AppConfig) -> LocalApp:
 
 def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[int, dict[str, str], str]:
     parsed = urlparse(path)
-    if method == "GET" and parsed.path == "/api/health":
-        return _json({"status": "ok"})
+    system_response = handle_system_route(config, method, parsed, body, _json, _json_body)
+    if system_response is not None:
+        return system_response
     if method == "GET" and parsed.path == "/api/dashboard":
         query = parse_qs(parsed.query)
         try:
@@ -133,8 +131,6 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         return _json({"cities": city_progress(config, batch_id)})
     if method == "GET" and parsed.path == "/api/rules":
         return _json({"rules": _rule_settings_payload(config)})
-    if method == "GET" and parsed.path == "/api/settings":
-        return _json(local_settings(config))
     if method == "POST" and parsed.path == "/api/rules/settings":
         payload, error = _json_body(body)
         if error:
@@ -243,47 +239,6 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
             return _json(archive_precheck(config, batch_id))
         except ValueError as exc:
             return _json({"error": str(exc)}, status=400)
-    if method == "POST" and parsed.path == "/api/backup":
-        path = create_backup(config)
-        return _json({"path": str(path)})
-    if method == "POST" and parsed.path == "/api/restore":
-        payload, error = _json_body(body)
-        if error:
-            return error
-        path_value = payload.get("path")
-        if not isinstance(path_value, str) or not path_value:
-            return _json({"error": "path is required"}, status=400)
-        safety_backup_path, status_text = restore_backup_safely(config, Path(path_value))
-        return _json({"status": status_text, "safety_backup_path": str(safety_backup_path)})
-    if method == "POST" and parsed.path == "/api/reset":
-        payload, error = _json_body(body)
-        if error:
-            return error
-        confirmation = payload.get("confirmation")
-        if not isinstance(confirmation, str):
-            return _json({"error": "confirmation is required"}, status=400)
-        preserve_exports = payload.get("preserve_exports", True)
-        preserve_backups = payload.get("preserve_backups", True)
-        if not isinstance(preserve_exports, bool) or not isinstance(preserve_backups, bool):
-            return _json({"error": "preserve options must be boolean"}, status=400)
-        try:
-            result = reset_system(
-                config,
-                confirmation=confirmation,
-                preserve_exports=preserve_exports,
-                preserve_backups=preserve_backups,
-            )
-        except ValueError as exc:
-            return _json({"error": str(exc)}, status=400)
-        return _json(result)
-    if method == "POST" and parsed.path == "/api/maintenance/compact":
-        payload, error = _json_body(body)
-        if error:
-            return error
-        clear_uploads = payload.get("clear_uploads", False)
-        if not isinstance(clear_uploads, bool):
-            return _json({"error": "clear_uploads must be boolean"}, status=400)
-        return _json(compact_database(config, clear_uploads=clear_uploads))
     return _json({"error": "not found"}, status=404)
 
 
