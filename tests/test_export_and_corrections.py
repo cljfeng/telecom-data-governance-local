@@ -22,8 +22,12 @@ def test_export_city_issue_packages_writes_issue_workbook(app_config, sample_wor
 
     assert paths
     wb = load_workbook(paths[0])
+    assert "填写说明" in wb.sheetnames
+    assert wb["填写说明"]["A1"].value == "整改包填写说明"
     ws = wb["整改问题清单"]
     assert ws["A1"].value == "问题编号"
+    assert ws.freeze_panes == "A2"
+    assert ws.auto_filter.ref
     assert ws["F2"].value == "电费"
     assert ws["G1"].value == "规则分类"
     assert ws["G2"].value == "问题稽核"
@@ -38,6 +42,7 @@ def test_export_city_issue_packages_writes_issue_workbook(app_config, sample_wor
     assert "当前值" not in ws["O2"].value
     assert "：" not in ws["O2"].value
     assert ws["Q1"].value == "整改结果"
+    assert ws.data_validations.count >= 1
 
 
 def test_export_issue_packages_can_write_single_province_workbook(app_config, sample_workbook):
@@ -54,7 +59,7 @@ def test_export_issue_packages_can_write_single_province_workbook(app_config, sa
     assert len(paths) == 1
     assert "全省" in paths[0].name
     wb = load_workbook(paths[0])
-    assert wb.sheetnames == ["整改问题清单"]
+    assert wb.sheetnames == ["填写说明", "整改问题清单"]
     ws = wb["整改问题清单"]
     assert ws["B1"].value == "地市"
     assert ws["B2"].value == "杭州"

@@ -41,6 +41,51 @@ NEXT_ACTIONS = {
     "archived": "已归档",
 }
 
+STEP_ACTIONS = {
+    "created": {"label": "新建批次", "view": "batches"},
+    "imported": {"label": "导入台账", "view": "import"},
+    "audited": {"label": "执行稽核", "view": "audit"},
+    "distributed": {"label": "导出整改包", "view": "export"},
+    "returning": {"label": "导入回传", "view": "corrections"},
+    "archived": {"label": "生成归档", "view": "reports"},
+}
+
+NEXT_STEP_ACTIONS = {
+    "created": {"label": "导入台账", "view": "import"},
+    "imported": {"label": "执行稽核", "view": "audit"},
+    "audited": {"label": "导出整改包", "view": "export"},
+    "distributed": {"label": "导入回传", "view": "corrections"},
+    "returning": {"label": "复核并归档", "view": "reports"},
+    "archived": {"label": "已归档", "view": "reports"},
+}
+
+BATCH_TRANSITIONS = {
+    "import": {
+        "from": {"created", "imported", "audited", "distributed", "returning"},
+        "to": "imported",
+    },
+    "audit": {
+        "from": {"imported", "audited"},
+        "to": "audited",
+    },
+    "export": {
+        "from": {"audited"},
+        "to": "distributed",
+    },
+    "export_empty": {
+        "from": {"audited"},
+        "to": "returning",
+    },
+    "correction_return": {
+        "from": {"distributed", "returning"},
+        "to": "returning",
+    },
+    "archive": {
+        "from": {"returning"},
+        "to": "archived",
+    },
+}
+
 
 def create_batch(config: AppConfig, name: str) -> int:
     cleaned = name.strip()
@@ -61,6 +106,34 @@ def create_batch(config: AppConfig, name: str) -> int:
             (batch_id, "create_batch", f"创建专项批次：{cleaned}"),
         )
         return int(batch_id)
+
+
+def transition_batch(config: AppConfig, batch_id: int, event: str) -> str:
+    with connect(config) as conn:
+        return transition_batch_in_conn(conn, batch_id, event)
+
+
+def transition_batch_in_conn(conn, batch_id: int, event: str) -> str:
+    rule = BATCH_TRANSITIONS.get(event)
+    if rule is None:
+        raise ValueError("invalid batch transition")
+    row = conn.execute("select status, is_archived from import_batches where id = ?", (batch_id,)).fetchone()
+    if row is None:
+        raise ValueError("batch not found")
+    if row["is_archived"]:
+        raise ValueError("batch is archived")
+    current = row["status"]
+    if current not in rule["from"]:
+        raise ValueError(f"invalid batch transition: {current} -> {event}")
+    target = rule["to"]
+    if event == "archive":
+        conn.execute(
+            "update import_batches set status = ?, is_archived = 1, archived_at = current_timestamp where id = ?",
+            (target, batch_id),
+        )
+    else:
+        conn.execute("update import_batches set status = ? where id = ?", (target, batch_id))
+    return str(target)
 
 
 def set_current_batch(config: AppConfig, batch_id: int) -> None:
@@ -131,6 +204,9 @@ def get_batch_workflow(config: AppConfig, batch_id: int) -> dict[str, Any]:
                     "key": key,
                     "label": label,
                     "state": _step_state(index, active_index, status),
+                    "can_operate": index == active_index and status != "archived",
+                    "blocked_reason": "" if index <= active_index else f"请先完成{NEXT_ACTIONS.get(status, WORKFLOW_STEPS[active_index][1])}",
+                    "primary_action": NEXT_STEP_ACTIONS.get(status, STEP_ACTIONS.get(key, {"label": label, "view": "dashboard"})) if index == active_index else STEP_ACTIONS.get(key, {"label": label, "view": "dashboard"}),
                 }
                 for index, (key, label) in enumerate(WORKFLOW_STEPS)
             ],
@@ -183,7 +259,10 @@ def list_issues(
         issues = []
         for row in conn.execute(sql, query_params):
             item = dict(row)
-            item["rule_name"] = rule_metadata(item["rule_id"]).name
+            metadata = rule_metadata(item["rule_id"])
+            item["rule_name"] = metadata.name
+            item["explanation"] = _issue_explanation(item, metadata)
+            item["review_suggestion"] = _review_suggestion(item)
             issues.append(item)
         if limit is None:
             return issues
@@ -214,6 +293,7 @@ def list_issue_rules(config: AppConfig, batch_id: int) -> list[dict[str, Any]]:
 
 def city_progress(config: AppConfig, batch_id: int) -> list[dict[str, Any]]:
     with connect(config) as conn:
+        top_rules = _top_rules_by_city(conn, batch_id)
         rows = conn.execute(
             """
             select coalesce(city, '未填地市') as city,
@@ -255,8 +335,36 @@ def city_progress(config: AppConfig, batch_id: int) -> list[dict[str, Any]]:
         closed = int(item["closed_count"] or 0) + int(item["not_required_count"] or 0)
         total = int(item["total_count"] or 0)
         item["completion_rate"] = round((closed / total) * 100, 1) if total else 0.0
+        item["top_rules"] = top_rules.get(item["city"], [])
         progress.append(item)
     return sorted(progress, key=lambda item: (-int(item["total_count"] or 0), item["city"]))
+
+
+def _top_rules_by_city(conn, batch_id: int) -> dict[str, list[dict[str, Any]]]:
+    rows = conn.execute(
+        """
+        select coalesce(city, '未填地市') as city, rule_id, severity, count(*) as count
+          from issues
+         where batch_id = ?
+         group by coalesce(city, '未填地市'), rule_id, severity
+         order by count desc,
+                  case severity when 'high' then 0 when 'medium' then 1 else 2 end,
+                  rule_id
+        """,
+        (batch_id,),
+    ).fetchall()
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        city = normalize_city(row["city"])
+        grouped.setdefault(city, []).append(
+            {
+                "rule_id": row["rule_id"],
+                "rule_name": rule_metadata(row["rule_id"]).name,
+                "severity": row["severity"],
+                "count": row["count"],
+            }
+        )
+    return {city: rules[:5] for city, rules in grouped.items()}
 
 
 def list_ledger_rows(config: AppConfig, batch_id: int, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
@@ -307,6 +415,41 @@ def list_ledger_rows(config: AppConfig, batch_id: int, filters: dict[str, str] |
             }
         )
     return result
+
+
+def _issue_explanation(issue: dict[str, Any], metadata) -> dict[str, str]:
+    return {
+        "rule_id": issue["rule_id"],
+        "rule_name": metadata.name,
+        "risk": _severity_label(issue["severity"]),
+        "what_happened": issue["message"],
+        "judgement_basis": metadata.description,
+        "recommended_action": issue["suggestion"] or metadata.default_suggestion,
+        "requires_attachment": "高风险问题建议补充合同、发票、现场或系统截图等佐证材料" if issue["severity"] == "high" else "必要时补充说明或佐证材料",
+    }
+
+
+def _review_suggestion(issue: dict[str, Any]) -> dict[str, str]:
+    status = issue["status"]
+    note = (issue.get("correction_note") or "").strip()
+    value = (issue.get("correction_value") or "").strip()
+    if status == "pending_correction":
+        return {"decision": "等待整改", "reason": "问题已导出，等待地市填写整改结果和说明"}
+    if status == "needs_review":
+        if not note and not value:
+            return {"decision": "建议退回", "reason": "回传缺少整改说明和整改后值"}
+        if issue["severity"] == "high" and not note:
+            return {"decision": "需要人工判断", "reason": "高风险问题缺少整改说明"}
+        return {"decision": "建议复核", "reason": "已回传整改信息，请核对佐证和原始台账"}
+    if status in {"closed", "not_required"}:
+        return {"decision": "已闭环", "reason": "当前状态已计入闭环"}
+    if status == "still_invalid":
+        return {"decision": "建议退回", "reason": "回传后仍异常，需要地市继续整改"}
+    return {"decision": "待处理", "reason": "请按当前流程继续处理"}
+
+
+def _severity_label(value: str) -> str:
+    return {"high": "高", "medium": "中", "low": "低"}.get(value, value)
 
 
 def update_issue_status(config: AppConfig, issue_code: str, status: IssueStatus) -> None:

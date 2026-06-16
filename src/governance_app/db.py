@@ -4,6 +4,8 @@ from typing import Iterator
 
 from governance_app.config import AppConfig
 
+SCHEMA_VERSION = 1
+
 
 @contextmanager
 def connect(config: AppConfig) -> Iterator[sqlite3.Connection]:
@@ -132,6 +134,11 @@ def initialize_database(config: AppConfig) -> None:
                 updated_at text not null default current_timestamp
             );
 
+            create table if not exists schema_migrations (
+                version integer primary key,
+                applied_at text not null default current_timestamp
+            );
+
             create index if not exists idx_ledger_rows_batch_type_city_site
                 on ledger_rows(batch_id, ledger_type, city, telecom_site_code);
 
@@ -146,6 +153,7 @@ def initialize_database(config: AppConfig) -> None:
         _ensure_column(conn, "ledger_rows", "sheet_name", "text")
         _ensure_column(conn, "ledger_rows", "row_number", "integer")
         _ensure_column(conn, "ledger_rows", "raw_row_id", "integer references raw_rows(id) on delete cascade")
+        conn.execute("insert or ignore into schema_migrations(version) values (?)", (SCHEMA_VERSION,))
 
 
 def table_names(conn: sqlite3.Connection) -> set[str]:

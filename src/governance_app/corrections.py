@@ -6,6 +6,7 @@ from openpyxl import load_workbook
 
 from governance_app.config import AppConfig
 from governance_app.db import connect
+from governance_app.workflow import transition_batch_in_conn
 
 
 @dataclass(frozen=True)
@@ -90,7 +91,7 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
         )
         if matched_batch_ids:
             for batch_id in matched_batch_ids:
-                conn.execute("update import_batches set status = 'returning' where id = ?", (batch_id,))
+                transition_batch_in_conn(conn, batch_id, "correction_return")
                 conn.execute(
                     "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
                     (batch_id, "correction_return", f"导入整改回传，匹配 {matched_count} 条"),

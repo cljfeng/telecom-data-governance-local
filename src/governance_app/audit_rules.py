@@ -1,138 +1,68 @@
 import json
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
 
-from governance_app.models import LedgerType, Severity
 from governance_app.geo import normalize_city
-
-
-@dataclass(frozen=True)
-class RuleFinding:
-    rule_id: str
-    severity: Severity
-    field_name: str | None
-    message: str
-    suggestion: str
-
-
-@dataclass(frozen=True)
-class AuditRule:
-    rule_id: str
-    ledger_type: LedgerType
-    severity: Severity
-    evaluate: Callable[[dict[str, Any]], RuleFinding | None]
-
-
-@dataclass(frozen=True)
-class RuleMetadata:
-    rule_id: str
-    name: str
-    ledger_type: LedgerType | str
-    severity: Severity | str
-    description: str
-    default_suggestion: str
-    category: str = "problem_audit"
-
-
-@dataclass(frozen=True)
-class RuleThresholds:
-    electricity_price_min: float = 0
-    electricity_price_max: float = 0.9
-    share_percent_min: float = 0
-    share_percent_max: float = 100
-    generator_duration_max_hours: float = 24
-    contract_share_variance_points: float = 3
-    usage_change_ratio: float = 0.3
-    fee_period_change_ratio: float = 1
-    city_supply_price_deviation_ratio: float = 0.2
-    generator_duration_mismatch_hours: float = 0.25
-    generator_cost_per_hour_multiplier: float = 1.5
-    generator_cost_per_hour_min: float = 300
-    electricity_amount_variance_ratio: float = 0.1
-    electricity_amount_variance_min: float = 100
-    electricity_usage_mismatch_ratio: float = 0.1
-    electricity_usage_mismatch_min: float = 10
-    electricity_commercial_price_min: float = 0.3
-    electricity_commercial_price_max: float = 1.5
-
-
-@dataclass(frozen=True)
-class AuditLedgerRow:
-    ledger_row_id: int
-    ledger_type: LedgerType
-    city: str | None
-    district: str | None
-    telecom_site_code: str | None
-    telecom_site_name: str | None
-    row: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class BatchRuleFinding:
-    ledger_row_id: int
-    field_name: str | None
-    message: str
-    suggestion: str
-
-
-@dataclass(frozen=True)
-class BatchAuditRule:
-    rule_id: str
-    ledger_type: LedgerType | str
-    severity: Severity
-    evaluate: Callable[[list[AuditLedgerRow]], list[BatchRuleFinding]]
+from governance_app.models import LedgerType
+from governance_app.rule_catalog import RULE_CATALOG, RuleMetadata
+from governance_app.rule_fields import (
+    PRICE_FIELDS as _PRICE_FIELDS,
+    SUPPLY_FIELDS as _SUPPLY_FIELDS,
+    PERIOD_FIELDS as _PERIOD_FIELDS,
+    USAGE_FIELDS as _USAGE_FIELDS,
+    PREVIOUS_READING_FIELDS as _PREVIOUS_READING_FIELDS,
+    CURRENT_READING_FIELDS as _CURRENT_READING_FIELDS,
+    METER_MULTIPLIER_FIELDS as _METER_MULTIPLIER_FIELDS,
+    ELECTRICITY_AMOUNT_FIELDS as _ELECTRICITY_AMOUNT_FIELDS,
+    METER_PERIOD_START_FIELDS as _METER_PERIOD_START_FIELDS,
+    METER_PERIOD_END_FIELDS as _METER_PERIOD_END_FIELDS,
+    CONTRACT_SHARE_FIELDS as _CONTRACT_SHARE_FIELDS,
+    CONTRACT_CAPACITY_FIELDS as _CONTRACT_CAPACITY_FIELDS,
+    ACTUAL_CAPACITY_FIELDS as _ACTUAL_CAPACITY_FIELDS,
+    TOWER_HEIGHT_FIELDS as _TOWER_HEIGHT_FIELDS,
+    MOUNT_HEIGHT_FIELDS as _MOUNT_HEIGHT_FIELDS,
+    TOWER_TYPE_FIELDS as _TOWER_TYPE_FIELDS,
+    POWER_INTRO_FEE_FIELDS as _POWER_INTRO_FEE_FIELDS,
+    PRODUCT_SERVICE_FEE_FIELDS as _PRODUCT_SERVICE_FEE_FIELDS,
+    TOWER_FEE_FIELDS as _TOWER_FEE_FIELDS,
+    UNIT_COUNT_FIELDS as _UNIT_COUNT_FIELDS,
+    MAINTENANCE_DISCOUNT_FIELDS as _MAINTENANCE_DISCOUNT_FIELDS,
+    SHARING_INFO_FIELDS as _SHARING_INFO_FIELDS,
+    TRANSFER_CONTRACT_FIELDS as _TRANSFER_CONTRACT_FIELDS,
+    GENERATOR_AMOUNT_FIELDS as _GENERATOR_AMOUNT_FIELDS,
+    AMOUNT_FIELD_KEYWORDS as _AMOUNT_FIELD_KEYWORDS,
+    GENERATOR_DATE_FIELDS as _GENERATOR_DATE_FIELDS,
+    GENERATOR_START_FIELDS as _GENERATOR_START_FIELDS,
+    GENERATOR_END_FIELDS as _GENERATOR_END_FIELDS,
+    FEE_SPIKE_FIELDS as _FEE_SPIKE_FIELDS,
+)
+from governance_app.rule_helpers import (
+    _datetime_value,
+    _first_value,
+    _is_placeholder,
+    _median,
+    _month_key,
+    _number,
+    _period_key,
+    _positive_fee_field,
+    _positive_field,
+    _positive_or_zero_field,
+    _text,
+)
+from governance_app.rules.electricity import electricity_batch_rules
+from governance_app.rule_types import (
+    AuditLedgerRow,
+    AuditRule,
+    BatchAuditRule,
+    BatchRuleFinding,
+    RuleFinding,
+    RuleThresholds,
+)
 
 
 def parse_row(row_json: str) -> dict[str, Any]:
     return json.loads(row_json)
 
-
-RULE_CATALOG: dict[str, RuleMetadata] = {
-    "required_site_code": RuleMetadata("required_site_code", "站址编码必填", "site", "high", "检查站址台账电信站址编码是否为空。", "补充电信站址编码", "data_quality"),
-    "required_city": RuleMetadata("required_city", "地市信息必填", "site", "medium", "检查站址台账地市字段是否为空。", "补充地市", "data_quality"),
-    "electricity_price_range": RuleMetadata("electricity_price_range", "电费高单价", "electricity", "high", "检查电费单价是否超过 0.9 元。", "核实电费单价、电价依据或转供电合同"),
-    "electricity_share_percent": RuleMetadata("electricity_share_percent", "电费分摊比例范围", "electricity", "medium", "检查电费分摊比例是否在 0-100% 范围内。", "核实共享情况和分摊比例", "data_quality"),
-    "generator_duration_over_24h": RuleMetadata("generator_duration_over_24h", "发电时长超过24小时", "generator", "high", "检查单次发电时长是否超过 24 小时。", "核实发电开始时间、结束时间和工单时长"),
-    "amount_negative": RuleMetadata("amount_negative", "金额为负数", "all", "high", "检查费用台账金额字段是否为负数。", "核实费用金额、冲销记录和报账口径"),
-    "electricity_contract_share_variance": RuleMetadata("electricity_contract_share_variance", "合同分摊比例偏差", "electricity", "medium", "比较实际分摊比例与合同约定分摊比例。", "核对合同约定和实际分摊比例"),
-    "electricity_duplicate_payment": RuleMetadata("electricity_duplicate_payment", "电费重复报账", "electricity", "high", "识别同站址、同电表、同账期的重复电费记录。", "核实同账期是否重复报账"),
-    "electricity_usage_spike_drop": RuleMetadata("electricity_usage_spike_drop", "用电量异常波动", "electricity", "high", "识别同站址电表用电量较历史记录的异常上升或下降。", "核实抄表数据、设备变化和报账周期"),
-    "electricity_capacity_mismatch": RuleMetadata("electricity_capacity_mismatch", "合同容量与实际容量不一致", "electricity", "medium", "比较合同申报容量与实际用电容量。", "核对合同容量和现场实际容量", "data_quality"),
-    "electricity_meter_reading_reverse": RuleMetadata("electricity_meter_reading_reverse", "电表读数倒退", "electricity", "medium", "检查本次抄表数是否小于上次抄表数。", "核实换表记录、倍率和抄表录入", "data_quality"),
-    "electricity_reading_usage_mismatch": RuleMetadata("electricity_reading_usage_mismatch", "电量与读数不匹配", "electricity", "medium", "比较用电量与本次、上次抄表读数差值。", "核实抄表读数、倍率和用电量计算口径", "data_quality"),
-    "electricity_zero_usage_positive_fee": RuleMetadata("electricity_zero_usage_positive_fee", "零电量有电费", "electricity", "high", "检查用电量为0但仍发生电费支出。", "核实固定费用、录入错误或异常报账"),
-    "electricity_amount_calculation_mismatch": RuleMetadata("electricity_amount_calculation_mismatch", "电费金额异常", "electricity", "high", "比较电费金额与用电量、电价、分摊比例计算值。", "核实电量、电价、分摊比例和支付金额"),
-    "electricity_period_overlap": RuleMetadata("electricity_period_overlap", "时段重叠疑似重复", "electricity", "high", "识别同站址同电表抄表区间交叉重叠。", "核实同一时段是否重复计费"),
-    "electricity_price_commercial_range": RuleMetadata("electricity_price_commercial_range", "电价异常", "electricity", "medium", "检查电价是否偏离常见商业电价范围。", "核实电价依据、供电方式和转供电加价"),
-    "tower_mount_height_exceeds_tower_height": RuleMetadata("tower_mount_height_exceeds_tower_height", "挂高超过塔高", "tower_rent", "high", "检查设备挂高是否超过铁塔塔高。", "核对设备挂高和塔高基础属性"),
-    "tower_site_height_inconsistent": RuleMetadata("tower_site_height_inconsistent", "同站址塔高不一致", "tower_rent", "medium", "识别同一电信站址多订单塔高不一致。", "核对铁塔站址基础属性和订单塔高"),
-    "tower_confirmation_product_changed": RuleMetadata("tower_confirmation_product_changed", "业务确认单产品不一致", "tower_rent", "medium", "识别同一业务确认单前后账期铁塔产品不一致。", "核对业务确认单产品变更依据"),
-    "tower_product_shared_users_inconsistent": RuleMetadata("tower_product_shared_users_inconsistent", "铁塔共享用户数不一致", "tower_rent", "medium", "识别同站址同铁塔产品共享用户数不一致。", "核对同站址多订单的铁塔共享用户数"),
-    "tower_room_shared_users_inconsistent": RuleMetadata("tower_room_shared_users_inconsistent", "机房共享用户数不一致", "tower_rent", "medium", "识别同站址同机房产品共享用户数不一致。", "核对同站址多订单的机房共享用户数"),
-    "tower_duplicate_product_service_fee": RuleMetadata("tower_duplicate_product_service_fee", "产品服务费重复计费", "tower_rent", "high", "识别同账期同站址产品服务费多次计费。", "核实产品服务费是否重复计费"),
-    "tower_duplicate_maintenance_fee": RuleMetadata("tower_duplicate_maintenance_fee", "维护费重复计费", "tower_rent", "high", "识别同账期同站址维护费多次计费。", "核实维护费是否重复计费"),
-    "tower_duplicate_site_fee": RuleMetadata("tower_duplicate_site_fee", "场地费重复计费", "tower_rent", "high", "识别同账期同站址场地费多次计费。", "核实场地费是否重复计费"),
-    "tower_duplicate_power_intro_fee": RuleMetadata("tower_duplicate_power_intro_fee", "电力引入费重复计费", "tower_rent", "high", "识别同账期同站址电力引入费多次计费。", "核实电力引入费是否重复计费"),
-    "tower_product_units_zero_fee_nonzero": RuleMetadata("tower_product_units_zero_fee_nonzero", "产品单元为零但费用非零", "tower_rent", "high", "检查产品单元数为零时是否仍产生产品服务费。", "核对产品配置和费用生成口径"),
-    "tower_maintenance_discount_not_lowest": RuleMetadata("tower_maintenance_discount_not_lowest", "维护费共享折扣非最优惠", "tower_rent", "medium", "检查共享场景下维护费共享折扣是否异常。", "核对共享折扣政策和适用用户数"),
-    "tower_original_owner_power_intro_fee_nonzero": RuleMetadata("tower_original_owner_power_intro_fee_nonzero", "原产权方电力引入费非零", "tower_rent", "high", "检查原产权方站址是否仍收取电力引入费。", "核实站址产权属性和电力引入费依据"),
-    "site_code_missing_in_master": RuleMetadata("site_code_missing_in_master", "站址编码跨表不存在", "all", "high", "检查费用台账中的电信站址编码是否存在于站址台账。", "补充站址主数据或核对费用台账站址编码", "data_quality"),
-    "site_name_mismatch_across_ledgers": RuleMetadata("site_name_mismatch_across_ledgers", "站址名称跨表不一致", "all", "medium", "检查同一站址编码在费用台账与站址台账中的名称是否一致。", "统一站址名称或核对站址编码", "data_quality"),
-    "tower_stopped_site_still_charged": RuleMetadata("tower_stopped_site_still_charged", "停租日期已填仍有费用", "tower_rent", "medium", "检查停租日期已填写但仍产生租费的基础逻辑异常。", "核对停租状态、账期和费用生成口径", "data_quality"),
-    "electricity_lump_sum_still_reimbursed": RuleMetadata("electricity_lump_sum_still_reimbursed", "包干站址仍重复报账", "electricity", "high", "检查包干站址是否仍标记为报账。", "核对包干电费和报账口径，避免重复报账"),
-    "electricity_transfer_without_contract": RuleMetadata("electricity_transfer_without_contract", "转供电无合同", "electricity", "high", "检查转供电站址是否缺少转供电合同。", "补充转供电合同或核实供电方式", "data_quality"),
-    "generator_missing_responsible_party": RuleMetadata("generator_missing_responsible_party", "发电责任方缺失", "all", "medium", "检查存在发电费但站址发电责任方缺失的记录。", "补充站址发电责任方并核对发电费用口径", "data_quality"),
-    "generator_missing_date_with_cost": RuleMetadata("generator_missing_date_with_cost", "发电日期缺失但有费用", "generator", "high", "检查发电费台账有金额或时长时是否缺少发电日期。", "补充发电日期并核对工单", "data_quality"),
-    "generator_duplicate_work_order": RuleMetadata("generator_duplicate_work_order", "发电工单重复", "generator", "high", "识别同一运维系统工单号重复出现在发电费台账。", "核实同一工单是否重复报账"),
-    "generator_duration_mismatch": RuleMetadata("generator_duration_mismatch", "发电时长与起止时间不一致", "generator", "medium", "比较发电开始/结束时间计算时长与填报发电时长。", "核对发电开始时间、结束时间和填报时长"),
-    "fee_amount_period_spike": RuleMetadata("fee_amount_period_spike", "费用金额环比突变", "all", "high", "识别同站址同费用字段相邻账期金额突增或突降。", "核对账期费用、调账冲销和录入口径"),
-    "fee_paid_without_master_site": RuleMetadata("fee_paid_without_master_site", "无站址仍支付费用", "all", "high", "识别站址台账不存在但租费、电费或发电费仍有正向费用支出的记录。", "暂停支付并核实站址主数据、费用依据和报账归属"),
-    "missing_site_code_duplicate_name": RuleMetadata("missing_site_code_duplicate_name", "站址编码缺失且名称重复", "site", "high", "识别站址编码为空但同名站址重复出现。", "补充站址编码并核对是否重复建档", "data_quality"),
-    "tower_charged_after_stop_period": RuleMetadata("tower_charged_after_stop_period", "停租后跨账期持续计费", "tower_rent", "high", "检查账期晚于停租月份但仍产生费用。", "核对停租日期、账期和计费终止口径"),
-    "electricity_price_city_supply_outlier": RuleMetadata("electricity_price_city_supply_outlier", "同区县供电方式电价偏离", "electricity", "medium", "比较同地市区县同供电方式电费单价与中位数偏差。", "核实电价依据、供电方式和转供电合同"),
-    "generator_cost_per_hour_outlier": RuleMetadata("generator_cost_per_hour_outlier", "发电小时单价异常", "generator", "high", "检查发电金额折算小时单价是否明显偏高。", "核实发电时长、金额和结算标准"),
-}
 
 DEFAULT_THRESHOLDS = RuleThresholds()
 
@@ -186,70 +116,22 @@ def all_rules(thresholds: RuleThresholds = DEFAULT_THRESHOLDS) -> list[AuditRule
 
 
 def all_batch_rules(thresholds: RuleThresholds = DEFAULT_THRESHOLDS) -> list[BatchAuditRule]:
+    electricity_rules = {rule.rule_id: rule for rule in electricity_batch_rules(thresholds)}
     return [
-        BatchAuditRule(
-            "electricity_contract_share_variance",
-            "electricity",
-            "medium",
-            _electricity_contract_share_variance(thresholds.contract_share_variance_points),
-        ),
-        BatchAuditRule(
-            "electricity_duplicate_payment",
-            "electricity",
-            "high",
-            _electricity_duplicate_payment,
-        ),
-        BatchAuditRule(
-            "electricity_usage_spike_drop",
-            "electricity",
-            "high",
-            _electricity_usage_spike_drop(thresholds.usage_change_ratio),
-        ),
-        BatchAuditRule(
-            "electricity_capacity_mismatch",
-            "electricity",
-            "medium",
-            _electricity_capacity_mismatch,
-        ),
-        BatchAuditRule("electricity_meter_reading_reverse", "electricity", "medium", _electricity_meter_reading_reverse),
-        BatchAuditRule(
-            "electricity_reading_usage_mismatch",
-            "electricity",
-            "medium",
-            _electricity_reading_usage_mismatch(
-                thresholds.electricity_usage_mismatch_ratio,
-                thresholds.electricity_usage_mismatch_min,
-            ),
-        ),
-        BatchAuditRule("electricity_zero_usage_positive_fee", "electricity", "high", _electricity_zero_usage_positive_fee),
-        BatchAuditRule(
-            "electricity_amount_calculation_mismatch",
-            "electricity",
-            "high",
-            _electricity_amount_calculation_mismatch(
-                thresholds.electricity_amount_variance_ratio,
-                thresholds.electricity_amount_variance_min,
-            ),
-        ),
-        BatchAuditRule("electricity_period_overlap", "electricity", "high", _electricity_period_overlap),
-        BatchAuditRule(
-            "electricity_price_commercial_range",
-            "electricity",
-            "medium",
-            _electricity_price_commercial_range(
-                thresholds.electricity_commercial_price_min,
-                thresholds.electricity_commercial_price_max,
-            ),
-        ),
+        electricity_rules["electricity_contract_share_variance"],
+        electricity_rules["electricity_duplicate_payment"],
+        electricity_rules["electricity_usage_spike_drop"],
+        electricity_rules["electricity_capacity_mismatch"],
+        electricity_rules["electricity_meter_reading_reverse"],
+        electricity_rules["electricity_reading_usage_mismatch"],
+        electricity_rules["electricity_zero_usage_positive_fee"],
+        electricity_rules["electricity_amount_calculation_mismatch"],
+        electricity_rules["electricity_period_overlap"],
+        electricity_rules["electricity_price_commercial_range"],
         BatchAuditRule("amount_negative", "all", "high", _amount_negative),
         BatchAuditRule("fee_amount_period_spike", "all", "high", _fee_amount_period_spike(thresholds.fee_period_change_ratio)),
         BatchAuditRule("fee_paid_without_master_site", "all", "high", _fee_paid_without_master_site),
-        BatchAuditRule(
-            "electricity_price_city_supply_outlier",
-            "electricity",
-            "medium",
-            _electricity_price_city_supply_outlier(thresholds.city_supply_price_deviation_ratio),
-        ),
+        electricity_rules["electricity_price_city_supply_outlier"],
         BatchAuditRule(
             "tower_mount_height_exceeds_tower_height",
             "tower_rent",
@@ -351,8 +233,8 @@ def all_batch_rules(thresholds: RuleThresholds = DEFAULT_THRESHOLDS) -> list[Bat
         BatchAuditRule("site_name_mismatch_across_ledgers", "all", "medium", _site_name_mismatch_across_ledgers),
         BatchAuditRule("tower_stopped_site_still_charged", "tower_rent", "medium", _tower_stopped_site_still_charged),
         BatchAuditRule("tower_charged_after_stop_period", "tower_rent", "high", _tower_charged_after_stop_period),
-        BatchAuditRule("electricity_lump_sum_still_reimbursed", "electricity", "high", _electricity_lump_sum_still_reimbursed),
-        BatchAuditRule("electricity_transfer_without_contract", "electricity", "high", _electricity_transfer_without_contract),
+        electricity_rules["electricity_lump_sum_still_reimbursed"],
+        electricity_rules["electricity_transfer_without_contract"],
         BatchAuditRule("generator_missing_responsible_party", "all", "medium", _generator_missing_responsible_party),
         BatchAuditRule("generator_missing_date_with_cost", "generator", "high", _generator_missing_date_with_cost),
         BatchAuditRule("generator_duplicate_work_order", "generator", "high", _generator_duplicate_work_order),
@@ -438,37 +320,6 @@ def _greater_than_zero(field_name: str, message: str, suggestion: str):
     return evaluate
 
 
-_PRICE_FIELDS = ("电费单价", "单价", "电价")
-_SUPPLY_FIELDS = ("供电方式", "供电类型")
-_PERIOD_FIELDS = ("报账周期", "账期", "账单月份", "计费账期")
-_USAGE_FIELDS = ("用电量", "本期用电量", "用电量(kWh)", "用电量（kWh）")
-_PREVIOUS_READING_FIELDS = ("上次抄表数", "上次读数", "上期抄表数", "上次抄表读数", "起码")
-_CURRENT_READING_FIELDS = ("本次抄表数", "本次读数", "本期抄表数", "本次抄表读数", "止码")
-_METER_MULTIPLIER_FIELDS = ("倍率", "综合倍率", "互感器倍率")
-_ELECTRICITY_AMOUNT_FIELDS = ("电费金额", "实付电费", "实付金额", "应付金额", "支付金额", "电费")
-_METER_PERIOD_START_FIELDS = ("抄表开始日期", "抄表起始日期", "起始日期", "开始日期", "上次抄表日期")
-_METER_PERIOD_END_FIELDS = ("抄表结束日期", "抄表截止日期", "截止日期", "结束日期", "本次抄表日期")
-_CONTRACT_SHARE_FIELDS = ("合同约定分摊比例(%)", "合同分摊比例(%)", "合同约定分摊比例", "合同分摊比例")
-_CONTRACT_CAPACITY_FIELDS = ("合同申报容量", "合同容量", "申报容量")
-_ACTUAL_CAPACITY_FIELDS = ("实际用电容量", "实际容量", "用电容量")
-_TOWER_HEIGHT_FIELDS = ("塔高", "铁塔塔高")
-_MOUNT_HEIGHT_FIELDS = ("挂高", "天线挂高", "设备挂高")
-_TOWER_TYPE_FIELDS = ("塔桅类型", "铁塔类型", "铁塔产品", "铁塔产品类型")
-_POWER_INTRO_FEE_FIELDS = ("电力引入费(元/年)", "电力引入费", "电力引入费（元/年）")
-_PRODUCT_SERVICE_FEE_FIELDS = ("产品服务费合计（元/年）（不含税）", "产品服务费合计", "产品服务费")
-_TOWER_FEE_FIELDS = _PRODUCT_SERVICE_FEE_FIELDS + ("维护费(元/年)", "场地费(元/年)", "电力引入费(元/年)")
-_UNIT_COUNT_FIELDS = ("铁塔产品单元数", "机房产品单元数", "配套产品单元数", "产品单元数")
-_MAINTENANCE_DISCOUNT_FIELDS = ("维护费共享折扣", "维护费最低折扣", "维护费折扣", "维护费折扣系数")
-_SHARING_INFO_FIELDS = ("站址共享信息", "铁塔共享信息", "共享信息")
-_TRANSFER_CONTRACT_FIELDS = ("转供电合同情况", "转供电合同", "合同情况")
-_GENERATOR_AMOUNT_FIELDS = ("最终分摊金额", "分摊金额", "非5G金额", "5G金额")
-_AMOUNT_FIELD_KEYWORDS = ("金额", "费用", "费合计", "维护费", "场地费", "电力引入费")
-_GENERATOR_DATE_FIELDS = ("发电日期", "发电时间 - 停电时间")
-_GENERATOR_START_FIELDS = ("发电时间 - 发电开始时间", "发电开始时间", "开始时间")
-_GENERATOR_END_FIELDS = ("发电时间 - 发电结束时间（断电传感器告警消除时间）", "发电结束时间", "结束时间")
-_FEE_SPIKE_FIELDS = ("电费金额", "应付金额", "实付金额", "最终分摊金额", "分摊金额", "产品服务费合计（元/年）（不含税）", "维护费(元/年)", "场地费(元/年)", "电力引入费(元/年)")
-
-
 def _amount_negative(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
     findings: list[BatchRuleFinding] = []
     for ledger_row in rows:
@@ -548,290 +399,6 @@ def _fee_paid_without_master_site(rows: list[AuditLedgerRow]) -> list[BatchRuleF
             )
         )
     return findings
-
-
-def _electricity_price_city_supply_outlier(deviation_ratio: float) -> Callable[[list[AuditLedgerRow]], list[BatchRuleFinding]]:
-    def evaluate(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
-        grouped: dict[tuple[str, str, str], list[tuple[AuditLedgerRow, float]]] = {}
-        for ledger_row in rows:
-            if ledger_row.ledger_type != "electricity":
-                continue
-            price = _number(_first_value(ledger_row.row, _PRICE_FIELDS))
-            city = normalize_city(ledger_row.city or ledger_row.row.get("地市"))
-            district = _text(ledger_row.district or ledger_row.row.get("区县"))
-            supply = _text(_first_value(ledger_row.row, _SUPPLY_FIELDS))
-            if price is None or not city or not district or not supply:
-                continue
-            grouped.setdefault((city, district, supply), []).append((ledger_row, price))
-        findings: list[BatchRuleFinding] = []
-        for (city, district, supply), values in grouped.items():
-            if len(values) < 4:
-                continue
-            median = _median([price for _, price in values])
-            if median <= 0:
-                continue
-            for ledger_row, price in values:
-                if abs(price - median) / median > deviation_ratio:
-                    findings.append(
-                        BatchRuleFinding(
-                            ledger_row.ledger_row_id,
-                            "电费单价",
-                            f"{city}{district}{supply}电费单价偏离中位数超过{deviation_ratio * 100:g}%：中位数{median:g}，当前{price:g}",
-                            "核实电价依据、供电方式和转供电合同",
-                        )
-                    )
-        return findings
-
-    return evaluate
-
-
-def _electricity_contract_share_variance(variance_points: float) -> Callable[[list[AuditLedgerRow]], list[BatchRuleFinding]]:
-    def evaluate(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
-        findings: list[BatchRuleFinding] = []
-        for ledger_row in rows:
-            actual = _number(ledger_row.row.get("分摊比例(%)"))
-            contract = _number(_first_value(ledger_row.row, _CONTRACT_SHARE_FIELDS))
-            if actual is None or contract is None:
-                continue
-            if abs(actual - contract) > variance_points:
-                findings.append(
-                    BatchRuleFinding(
-                        ledger_row.ledger_row_id,
-                        "分摊比例(%)",
-                        f"铁塔单站分摊比例与合同约定偏差超过±{variance_points:g}个百分点：合同{contract:g}%，当前{actual:g}%",
-                        "按合同约定核对分摊比例",
-                    )
-                )
-        return findings
-
-    return evaluate
-
-
-def _electricity_usage_spike_drop(change_ratio_threshold: float) -> Callable[[list[AuditLedgerRow]], list[BatchRuleFinding]]:
-    def evaluate(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
-        grouped: dict[tuple[str, str], list[tuple[str, AuditLedgerRow, float]]] = {}
-        for ledger_row in rows:
-            site_code = _text(ledger_row.telecom_site_code or ledger_row.row.get("电信站址编码"))
-            meter = _text(ledger_row.row.get("电表户号")) or ""
-            period = _period_key(_first_value(ledger_row.row, _PERIOD_FIELDS))
-            usage = _number(_first_value(ledger_row.row, _USAGE_FIELDS))
-            if not site_code or not period or usage is None:
-                continue
-            grouped.setdefault((site_code, meter), []).append((period, ledger_row, usage))
-
-        findings: list[BatchRuleFinding] = []
-        for values in grouped.values():
-            values.sort(key=lambda item: item[0])
-            for (_, previous_row, previous_usage), (_, current_row, current_usage) in zip(values, values[1:], strict=False):
-                if previous_usage == 0:
-                    continue
-                change = (current_usage - previous_usage) / previous_usage
-                if abs(change) > change_ratio_threshold:
-                    findings.append(
-                        BatchRuleFinding(
-                            current_row.ledger_row_id,
-                            "用电量",
-                            f"用电量较上一账期突变超过{change_ratio_threshold * 100:g}%：上一期{previous_usage:g}，本期{current_usage:g}",
-                            "核对抄表读数、倍率和异常能耗原因",
-                        )
-                    )
-        return findings
-
-    return evaluate
-
-
-def _electricity_duplicate_payment(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
-    grouped: dict[tuple[str, str], list[AuditLedgerRow]] = {}
-    for ledger_row in rows:
-        site_code = _text(ledger_row.telecom_site_code or ledger_row.row.get("电信站址编码"))
-        period = _period_key(_first_value(ledger_row.row, _PERIOD_FIELDS))
-        if not site_code or not period:
-            continue
-        grouped.setdefault((site_code, period), []).append(ledger_row)
-    return [
-        BatchRuleFinding(
-            ledger_row.ledger_row_id,
-            "报账周期",
-            "同一站址同一账期出现多笔缴费记录",
-            "核实是否重复报账或重复缴费",
-        )
-        for group in grouped.values()
-        if len(group) > 1
-        for ledger_row in group
-    ]
-
-
-def _electricity_capacity_mismatch(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
-    findings: list[BatchRuleFinding] = []
-    for ledger_row in rows:
-        contract = _number(_first_value(ledger_row.row, _CONTRACT_CAPACITY_FIELDS))
-        actual = _number(_first_value(ledger_row.row, _ACTUAL_CAPACITY_FIELDS))
-        if contract is None or actual is None:
-            continue
-        if abs(contract - actual) > 0.01:
-            findings.append(
-                BatchRuleFinding(
-                    ledger_row.ledger_row_id,
-                    "实际用电容量",
-                    f"合同申报容量与实际用电容量不匹配：合同{contract:g}，实际{actual:g}",
-                    "核对合同申报容量、现场设备容量和计费容量",
-                )
-            )
-    return findings
-
-
-def _electricity_meter_reading_reverse(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
-    findings: list[BatchRuleFinding] = []
-    for ledger_row in rows:
-        previous = _number(_first_value(ledger_row.row, _PREVIOUS_READING_FIELDS))
-        current = _number(_first_value(ledger_row.row, _CURRENT_READING_FIELDS))
-        if previous is None or current is None:
-            continue
-        if current < previous:
-            findings.append(
-                BatchRuleFinding(
-                    ledger_row.ledger_row_id,
-                    "本次抄表数",
-                    f"本次抄表数小于上次抄表数：上次{previous:g}，本次{current:g}",
-                    "核实是否换表、倍率调整或抄表读数录入错误",
-                )
-            )
-    return findings
-
-
-def _electricity_reading_usage_mismatch(
-    variance_ratio: float,
-    variance_min: float,
-) -> Callable[[list[AuditLedgerRow]], list[BatchRuleFinding]]:
-    def evaluate(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
-        findings: list[BatchRuleFinding] = []
-        for ledger_row in rows:
-            previous = _number(_first_value(ledger_row.row, _PREVIOUS_READING_FIELDS))
-            current = _number(_first_value(ledger_row.row, _CURRENT_READING_FIELDS))
-            usage = _number(_first_value(ledger_row.row, _USAGE_FIELDS))
-            multiplier = _number(_first_value(ledger_row.row, _METER_MULTIPLIER_FIELDS)) or 1
-            if previous is None or current is None or usage is None:
-                continue
-            expected = (current - previous) * multiplier
-            if expected < 0:
-                continue
-            allowed = max(abs(expected) * variance_ratio, variance_min)
-            if abs(usage - expected) > allowed:
-                findings.append(
-                    BatchRuleFinding(
-                        ledger_row.ledger_row_id,
-                        "用电量",
-                        f"用电量与抄表读数差值不匹配：读数计算{expected:g}，填报{usage:g}",
-                        "核实抄表读数、倍率和用电量计算口径",
-                    )
-                )
-        return findings
-
-    return evaluate
-
-
-def _electricity_zero_usage_positive_fee(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
-    findings: list[BatchRuleFinding] = []
-    for ledger_row in rows:
-        usage = _number(_first_value(ledger_row.row, _USAGE_FIELDS))
-        field_name, amount = _positive_field(ledger_row.row, _ELECTRICITY_AMOUNT_FIELDS)
-        if usage == 0 and field_name:
-            findings.append(
-                BatchRuleFinding(
-                    ledger_row.ledger_row_id,
-                    field_name,
-                    f"用电量为0但{field_name}存在正向费用{amount:g}",
-                    "核实是否固定费用、录入错误或异常报账",
-                )
-            )
-    return findings
-
-
-def _electricity_amount_calculation_mismatch(
-    variance_ratio: float,
-    variance_min: float,
-) -> Callable[[list[AuditLedgerRow]], list[BatchRuleFinding]]:
-    def evaluate(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
-        findings: list[BatchRuleFinding] = []
-        for ledger_row in rows:
-            usage = _number(_first_value(ledger_row.row, _USAGE_FIELDS))
-            price = _number(_first_value(ledger_row.row, _PRICE_FIELDS))
-            amount_field, amount = _positive_or_zero_field(ledger_row.row, _ELECTRICITY_AMOUNT_FIELDS)
-            if usage is None or price is None or amount_field is None:
-                continue
-            share = _number(ledger_row.row.get("分摊比例(%)"))
-            share_factor = (share / 100) if share is not None else 1
-            expected = usage * price * share_factor
-            allowed = max(abs(expected) * variance_ratio, variance_min)
-            if abs(amount - expected) > allowed:
-                findings.append(
-                    BatchRuleFinding(
-                        ledger_row.ledger_row_id,
-                        amount_field,
-                        f"{amount_field}与用电量、电价计算值偏差超过阈值：计算{expected:g}，填报{amount:g}",
-                        "核实电量、电价、分摊比例和支付金额",
-                    )
-                )
-        return findings
-
-    return evaluate
-
-
-def _electricity_period_overlap(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
-    grouped: dict[tuple[str, str], list[tuple[datetime, datetime, AuditLedgerRow]]] = {}
-    for ledger_row in rows:
-        site_code = _text(ledger_row.telecom_site_code or ledger_row.row.get("电信站址编码"))
-        meter = _text(ledger_row.row.get("电表户号")) or ""
-        start = _datetime_value(_first_value(ledger_row.row, _METER_PERIOD_START_FIELDS))
-        end = _datetime_value(_first_value(ledger_row.row, _METER_PERIOD_END_FIELDS))
-        if not site_code or start is None or end is None or end < start:
-            continue
-        grouped.setdefault((site_code, meter), []).append((start, end, ledger_row))
-    findings: list[BatchRuleFinding] = []
-    seen: set[int] = set()
-    for values in grouped.values():
-        values.sort(key=lambda item: item[0])
-        for previous, current in zip(values, values[1:], strict=False):
-            previous_start, previous_end, previous_row = previous
-            current_start, current_end, current_row = current
-            if current_start <= previous_end and current_end >= previous_start:
-                for row in (previous_row, current_row):
-                    if row.ledger_row_id in seen:
-                        continue
-                    seen.add(row.ledger_row_id)
-                    findings.append(
-                        BatchRuleFinding(
-                            row.ledger_row_id,
-                            "抄表开始日期",
-                            "同站址同电表抄表区间存在交叉重叠，疑似重复计费",
-                            "核实抄表起止日期和同一时段是否重复报账",
-                        )
-                    )
-    return findings
-
-
-def _electricity_price_commercial_range(
-    minimum: float,
-    maximum: float,
-) -> Callable[[list[AuditLedgerRow]], list[BatchRuleFinding]]:
-    def evaluate(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
-        findings: list[BatchRuleFinding] = []
-        for ledger_row in rows:
-            price = _number(_first_value(ledger_row.row, _PRICE_FIELDS))
-            if price is None:
-                continue
-            if price < minimum or price > maximum:
-                findings.append(
-                    BatchRuleFinding(
-                        ledger_row.ledger_row_id,
-                        "电费单价",
-                        f"电价{price:g}元/度超出{minimum:g}-{maximum:g}元/度参考范围",
-                        "核实电价依据、供电方式和转供电加价",
-                    )
-                )
-        return findings
-
-    return evaluate
 
 
 def _tower_mount_height_exceeds_tower_height(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
@@ -1031,40 +598,6 @@ def _tower_charged_after_stop_period(rows: list[AuditLedgerRow]) -> list[BatchRu
     return findings
 
 
-def _electricity_lump_sum_still_reimbursed(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
-    findings: list[BatchRuleFinding] = []
-    for ledger_row in rows:
-        lump_sum = _text(ledger_row.row.get("是否包干站址"))
-        reimbursed = _text(ledger_row.row.get("是否报账"))
-        if lump_sum == "是" and reimbursed == "是":
-            findings.append(
-                BatchRuleFinding(
-                    ledger_row.ledger_row_id,
-                    "是否报账",
-                    "包干站址仍标记为报账，存在重复报账风险",
-                    "核对包干电费和报账口径，避免重复报账",
-                )
-            )
-    return findings
-
-
-def _electricity_transfer_without_contract(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
-    findings: list[BatchRuleFinding] = []
-    for ledger_row in rows:
-        supply = _text(_first_value(ledger_row.row, _SUPPLY_FIELDS))
-        contract = _text(_first_value(ledger_row.row, _TRANSFER_CONTRACT_FIELDS))
-        if "转供" in supply and (not contract or contract in {"无", "否", "未签订"}):
-            findings.append(
-                BatchRuleFinding(
-                    ledger_row.ledger_row_id,
-                    "转供电合同情况",
-                    "供电方式为转供电但缺少有效合同信息",
-                    "补充转供电合同或核实供电方式",
-                )
-            )
-    return findings
-
-
 def _generator_missing_responsible_party(rows: list[AuditLedgerRow]) -> list[BatchRuleFinding]:
     responsible_by_site = {
         _text(row.telecom_site_code or row.row.get("电信站址编码")): _text(row.row.get("站址发电责任方"))
@@ -1240,100 +773,3 @@ def _inconsistent_in_group(
         return findings
 
     return evaluate
-
-
-def _first_value(row: dict[str, Any], field_names: tuple[str, ...]) -> Any:
-    for field_name in field_names:
-        value = row.get(field_name)
-        if value not in (None, ""):
-            return value
-    return None
-
-
-def _positive_fee_field(row: dict[str, Any]) -> tuple[str | None, float]:
-    for field_name, value in row.items():
-        if not any(keyword in field_name for keyword in _AMOUNT_FIELD_KEYWORDS):
-            continue
-        amount = _number(value)
-        if amount is not None and amount > 0:
-            return field_name, amount
-    return None, 0
-
-
-def _positive_field(row: dict[str, Any], field_names: tuple[str, ...]) -> tuple[str | None, float]:
-    for field_name in field_names:
-        amount = _number(row.get(field_name))
-        if amount is not None and amount > 0:
-            return field_name, amount
-    return None, 0
-
-
-def _positive_or_zero_field(row: dict[str, Any], field_names: tuple[str, ...]) -> tuple[str | None, float]:
-    for field_name in field_names:
-        amount = _number(row.get(field_name))
-        if amount is not None and amount >= 0:
-            return field_name, amount
-    return None, 0
-
-
-def _text(value: Any) -> str:
-    if value is None:
-        return ""
-    return str(value).strip()
-
-
-def _is_placeholder(value: str) -> bool:
-    return value.strip().upper() in {"#N/A", "N/A", "NA", "NULL", "NONE", "-", "--", "无", "缺失"}
-
-
-def _number(value: Any) -> float | None:
-    if value in (None, ""):
-        return None
-    if isinstance(value, int | float):
-        return float(value)
-    text = str(value).strip().replace(",", "").replace("，", "")
-    if text.endswith("%"):
-        text = text[:-1]
-    for unit in ("元/年", "元", "kWh", "KWH", "度", "米", "m", "M"):
-        text = text.replace(unit, "")
-    try:
-        return float(text)
-    except ValueError:
-        return None
-
-
-def _datetime_value(value: Any) -> datetime | None:
-    if value in (None, ""):
-        return None
-    if isinstance(value, datetime):
-        return value
-    text = str(value).strip()
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y-%m-%d", "%Y/%m/%d"):
-        try:
-            return datetime.strptime(text, fmt)
-        except ValueError:
-            continue
-    return None
-
-
-def _month_key(value: Any) -> str:
-    dt = _datetime_value(value)
-    if dt is not None:
-        return dt.strftime("%Y-%m")
-    text = _period_key(value)
-    return text[:7] if len(text) >= 7 else text
-
-
-def _median(values: list[float]) -> float:
-    ordered = sorted(values)
-    midpoint = len(ordered) // 2
-    if len(ordered) % 2:
-        return ordered[midpoint]
-    return (ordered[midpoint - 1] + ordered[midpoint]) / 2
-
-
-def _period_key(value: Any) -> str:
-    text = _text(value)
-    if not text:
-        return ""
-    return text.replace("年", "-").replace("月", "").replace("/", "-").strip()

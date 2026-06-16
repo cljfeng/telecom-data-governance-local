@@ -44,6 +44,21 @@ def test_health_endpoint_returns_ok(app_config):
     assert json.loads(body)["status"] == "ok"
 
 
+def test_version_endpoint_returns_runtime_and_schema_versions(app_config):
+    initialize_database(app_config)
+    app = create_app(app_config)
+
+    status, headers, body = app.handle_test_request("GET", "/api/version")
+
+    payload = json.loads(body)
+    assert status == 200
+    assert headers["content-type"] == "application/json; charset=utf-8"
+    assert payload["app_version"] == "0.1.0"
+    assert payload["template_version"] == "2026-05-05"
+    assert payload["schema_version"] == 1
+    assert payload["python_version"]
+
+
 def test_dashboard_endpoint_returns_json(app_config):
     initialize_database(app_config)
     app = create_app(app_config)
@@ -654,6 +669,20 @@ def test_import_page_exposes_import_strategies():
     assert 'value="new"' in app_js
     assert 'value="append"' in app_js
     assert 'value="replace"' in app_js
+
+
+def test_operator_experience_ui_surfaces_guidance_and_review_decisions():
+    static_dir = AppConfig.for_workspace(Path(".")).static_dir
+    app_js = (static_dir / "app.js").read_text(encoding="utf-8")
+    settings_js = (static_dir / "settings.js").read_text(encoding="utf-8")
+
+    assert "blocked_reason" in app_js
+    assert "review_suggestion" in app_js
+    assert "recommended_action" in app_js
+    assert "top_rules" in app_js
+    assert "导出整改包会更新问题状态" in app_js
+    assert "确认恢复" in settings_js
+    assert "当前数据库会先自动安全备份" in settings_js
 
 
 def test_settings_static_module_calls_settings_and_backup_api():

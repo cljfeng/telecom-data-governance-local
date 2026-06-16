@@ -155,6 +155,8 @@ def test_archive_batch_writes_operation_log_sheet_and_locks_batch(app_config, sa
 
     wb = load_workbook(path)
     assert "操作日志" in wb.sheetnames
+    assert "版本与规则快照" in wb.sheetnames
+    assert wb["版本与规则快照"]["A1"].value == "项目"
     issue_ws = wb["问题清单"]
     assert issue_ws["G1"].value == "规则分类"
     assert issue_ws["G2"].value == "问题稽核"
