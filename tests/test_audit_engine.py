@@ -5,6 +5,7 @@ from governance_app.audit_rules import DEFAULT_THRESHOLDS, all_batch_rules, all_
 from governance_app.rule_catalog import RULE_CATALOG
 from governance_app.rule_fields import PRICE_FIELDS, PERIOD_FIELDS
 from governance_app.rule_types import AuditRule, RuleThresholds
+from governance_app.rules.electricity import electricity_batch_rules
 from governance_app.db import connect, initialize_database
 from governance_app.importer import import_workbook
 from governance_app.rule_settings import upsert_rule_setting
@@ -55,6 +56,26 @@ def test_rule_types_live_in_dedicated_module():
 
     assert threshold.electricity_price_max == 1.2
     assert rule.ledger_type == "electricity"
+
+
+def test_electricity_batch_rules_live_in_dedicated_module():
+    rule_ids = [rule.rule_id for rule in electricity_batch_rules(DEFAULT_THRESHOLDS)]
+
+    assert rule_ids == [
+        "electricity_contract_share_variance",
+        "electricity_duplicate_payment",
+        "electricity_usage_spike_drop",
+        "electricity_capacity_mismatch",
+        "electricity_meter_reading_reverse",
+        "electricity_reading_usage_mismatch",
+        "electricity_zero_usage_positive_fee",
+        "electricity_amount_calculation_mismatch",
+        "electricity_period_overlap",
+        "electricity_price_commercial_range",
+        "electricity_price_city_supply_outlier",
+        "electricity_lump_sum_still_reimbursed",
+        "electricity_transfer_without_contract",
+    ]
 
 
 def test_unknown_rule_metadata_falls_back_to_rule_id():
