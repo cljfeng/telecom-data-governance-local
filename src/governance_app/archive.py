@@ -29,19 +29,44 @@ def archive_precheck(config: AppConfig, batch_id: int) -> dict:
         ).fetchall()
         status_counts = {row["status"]: row["count"] for row in status_rows}
         open_issue_count = sum(count for status, count in status_counts.items() if status not in CLOSED_STATUSES)
+        high_risk_open = conn.execute(
+            """
+            select count(*) as count
+              from issues
+             where batch_id = ?
+               and severity = 'high'
+               and status not in ('closed', 'not_required')
+            """,
+            (batch_id,),
+        ).fetchone()["count"]
+        review_count = conn.execute(
+            """
+            select count(*) as count
+              from issues
+             where batch_id = ?
+               and status = 'needs_review'
+            """,
+            (batch_id,),
+        ).fetchone()["count"]
     blockers = []
+    risk_items = []
     if batch["is_archived"]:
         blockers.append({"type": "archived", "message": "批次已归档，不能重复归档"})
     if batch["status"] != "returning":
         blockers.append({"type": "workflow_status", "message": "批次需要完成导出和回传后再归档"})
     if open_issue_count:
         blockers.append({"type": "open_issues", "message": f"仍有 {open_issue_count} 条问题未闭环"})
+    if high_risk_open:
+        risk_items.append({"type": "high_risk_open", "message": f"仍有 {high_risk_open} 条高风险问题未闭环"})
+    if review_count:
+        risk_items.append({"type": "needs_review", "message": f"仍有 {review_count} 条问题等待省公司复核"})
     return {
         "ready": not blockers,
         "batch_status": batch["status"],
         "is_archived": bool(batch["is_archived"]),
         "open_issue_count": open_issue_count,
         "status_counts": status_counts,
+        "risk_items": risk_items,
         "blockers": blockers,
     }
 
@@ -215,6 +240,28 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
                     _severity_label(issue["severity"]),
                     _status_label(issue["status"]),
                     issue["message"],
+                ]
+            )
+
+        ws = wb.create_sheet("专项复盘")
+        ws.append(["复盘项", "值", "建议"])
+        ws.append(["闭环率", summary["closure_rate"], "低于100%时不得正式归档"])
+        ws.append(["未闭环问题数", summary["open_issue_count"], "优先处理高风险和仍异常问题"])
+        ws.append(["待复核问题数", summary["status_counts"].get("needs_review", 0), "复核通过后更新为已关闭或无需整改"])
+        ws.append(["仍异常问题数", summary["status_counts"].get("still_invalid", 0), "退回地市继续整改"])
+        ws.append([])
+        ws.append(["规则编号", "规则名称", "可信度", "命中数", "未闭环", "无需整改", "仍异常", "闭环率"])
+        for row in summary.get("rule_effectiveness", []):
+            ws.append(
+                [
+                    row["rule_id"],
+                    row["rule_name"],
+                    row.get("confidence_label", ""),
+                    row["total_count"],
+                    row["open_count"],
+                    row["not_required_count"],
+                    row["still_invalid_count"],
+                    row["closure_rate"],
                 ]
             )
 

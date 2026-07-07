@@ -28,6 +28,34 @@ def test_run_audit_generates_issue_for_invalid_electricity_price(app_config, sam
         assert issue["status"] == "pending_export"
 
 
+def test_run_audit_stores_structured_finding_context(app_config, sample_workbook):
+    initialize_database(app_config)
+    result = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+        )
+
+    run_audit(app_config, result.batch_id)
+
+    with connect(app_config) as conn:
+        row = conn.execute(
+            """
+            select result_json
+              from audit_results
+             where rule_id = 'electricity_price_range'
+             limit 1
+            """
+        ).fetchone()
+    payload = json.loads(row["result_json"])
+    assert payload["confidence"] == "high"
+    assert payload["confidence_label"] == "确定性问题"
+    assert payload["evidence"]["field"] == "电费单价"
+    assert payload["evidence"]["ledger_type"] == "electricity"
+    assert payload["evidence"]["site_code"] == "HZ001"
+    assert payload["evidence"]["message"]
+
+
 def test_rule_catalog_covers_all_audit_rules():
     rule_ids = {rule.rule_id for rule in all_rules()} | {rule.rule_id for rule in all_batch_rules()}
 

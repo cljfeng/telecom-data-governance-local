@@ -231,6 +231,58 @@ def test_import_correction_return_updates_issue_status(app_config, sample_workbo
         assert status == "needs_review"
 
 
+def test_import_correction_return_warns_when_high_risk_lacks_note(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+        )
+    run_audit(app_config, imported.batch_id)
+    paths = export_city_issue_packages(app_config, imported.batch_id)
+
+    wb = load_workbook(paths[0])
+    ws = wb["整改问题清单"]
+    _set_correction_cells(ws, 2, result="已修复")
+    wb.save(paths[0])
+
+    result = import_correction_return(app_config, paths[0])
+
+    assert result.matched_count == 1
+    assert result.review_warnings == [f"第2行高风险问题缺少整改说明：{ws['A2'].value}"]
+    assert result.auto_review["still_invalid"] == 1
+    with connect(app_config) as conn:
+        row = conn.execute("select warning_count, warnings_json from correction_returns").fetchone()
+        assert row["warning_count"] == 1
+        assert "高风险问题缺少整改说明" in row["warnings_json"]
+        status = conn.execute("select status from issues where issue_code = ?", (ws["A2"].value,)).fetchone()["status"]
+        assert status == "still_invalid"
+
+
+def test_import_correction_return_auto_closes_not_required_with_note(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+        )
+    run_audit(app_config, imported.batch_id)
+    paths = export_city_issue_packages(app_config, imported.batch_id)
+
+    wb = load_workbook(paths[0])
+    ws = wb["整改问题清单"]
+    _set_correction_cells(ws, 2, result="无需整改", note="经核实该站点执行特殊电价备案")
+    wb.save(paths[0])
+
+    result = import_correction_return(app_config, paths[0])
+
+    assert result.matched_count == 1
+    assert result.auto_review["not_required"] == 1
+    with connect(app_config) as conn:
+        status = conn.execute("select status from issues where issue_code = ?", (ws["A2"].value,)).fetchone()["status"]
+        assert status == "not_required"
+
+
 def test_import_correction_return_reports_duplicate_issue_codes(app_config, sample_workbook):
     initialize_database(app_config)
     imported = import_workbook(app_config, sample_workbook)

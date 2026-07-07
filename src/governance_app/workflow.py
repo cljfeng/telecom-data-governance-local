@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from governance_app.audit_quality import confidence_for, confidence_label, parse_result_payload
 from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
 from governance_app.db import connect
@@ -183,6 +184,7 @@ def get_batch_workflow(config: AppConfig, batch_id: int) -> dict[str, Any]:
         batch = _batch_dict(_require_batch(conn, batch_id))
         status = "archived" if batch["is_archived"] else batch["status"]
         active_index = _step_index(status)
+        todo_summary = _todo_summary(conn, batch_id)
         operations = [
             dict(row)
             for row in conn.execute(
@@ -199,6 +201,8 @@ def get_batch_workflow(config: AppConfig, batch_id: int) -> dict[str, Any]:
         return {
             "batch": batch,
             "next_action": NEXT_ACTIONS.get(status, "继续处理"),
+            "guidance": _workflow_guidance(status, todo_summary),
+            "todo_summary": todo_summary,
             "steps": [
                 {
                     "key": key,
@@ -214,6 +218,83 @@ def get_batch_workflow(config: AppConfig, batch_id: int) -> dict[str, Any]:
         }
 
 
+def _todo_summary(conn, batch_id: int) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        select count(*) as total_issue_count,
+               sum(case when status not in ('closed', 'not_required') then 1 else 0 end) as open_issue_count,
+               sum(case when status = 'pending_correction' then 1 else 0 end) as pending_count,
+               sum(case when status = 'needs_review' then 1 else 0 end) as review_count,
+               sum(case when status = 'still_invalid' then 1 else 0 end) as still_invalid_count
+          from issues
+         where batch_id = ?
+        """,
+        (batch_id,),
+    ).fetchone()
+    ledger_count = conn.execute(
+        "select count(*) as count from ledger_rows where batch_id = ?",
+        (batch_id,),
+    ).fetchone()["count"]
+    return {
+        "ledger_count": int(ledger_count or 0),
+        "total_issue_count": int(row["total_issue_count"] or 0),
+        "open_issue_count": int(row["open_issue_count"] or 0),
+        "pending_count": int(row["pending_count"] or 0),
+        "review_count": int(row["review_count"] or 0),
+        "still_invalid_count": int(row["still_invalid_count"] or 0),
+    }
+
+
+def _workflow_guidance(status: str, todo_summary: dict[str, Any]) -> dict[str, str]:
+    guidance = {
+        "created": {
+            "title": "下一步：导入台账",
+            "reason": "当前批次还没有台账数据，先导入省公司模板后才能执行稽核。",
+            "primary_label": "导入台账",
+            "primary_view": "import",
+        },
+        "imported": {
+            "title": "下一步：执行稽核",
+            "reason": "台账已导入，当前批次还没有形成可整改的问题清单。",
+            "primary_label": "执行稽核",
+            "primary_view": "audit",
+        },
+        "audited": {
+            "title": "下一步：导出整改包",
+            "reason": f"已生成 {todo_summary['total_issue_count']} 条问题，请确认后下发地市整改。",
+            "primary_label": "导出整改包",
+            "primary_view": "export",
+        },
+        "distributed": {
+            "title": "下一步：导入回传",
+            "reason": f"仍有 {todo_summary['pending_count']} 条问题等待地市回传整改结果。",
+            "primary_label": "导入回传",
+            "primary_view": "corrections",
+        },
+        "returning": {
+            "title": "下一步：复核并归档",
+            "reason": f"待复核 {todo_summary['review_count']} 条，仍异常 {todo_summary['still_invalid_count']} 条，闭环后可归档。",
+            "primary_label": "查看分析报表",
+            "primary_view": "reports",
+        },
+        "archived": {
+            "title": "已归档",
+            "reason": "当前批次已经锁定归档，可查看归档汇总和分析报表。",
+            "primary_label": "查看归档",
+            "primary_view": "reports",
+        },
+    }
+    return guidance.get(
+        status,
+        {
+            "title": "下一步：继续处理",
+            "reason": "请按当前流程继续完成专项治理。",
+            "primary_label": "查看工作台",
+            "primary_view": "dashboard",
+        },
+    )
+
+
 def list_issues(
     config: AppConfig,
     batch_id: int,
@@ -222,25 +303,32 @@ def list_issues(
     offset: int = 0,
 ) -> list[dict[str, Any]] | dict[str, Any]:
     filters = filters or {}
-    where = ["batch_id = ?"]
+    where = ["issues.batch_id = ?"]
     params: list[Any] = [batch_id]
     for key, column in {
-        "city": "coalesce(city, '未填地市')",
-        "ledger_type": "ledger_type",
-        "severity": "severity",
-        "status": "status",
-        "rule_id": "rule_id",
+        "city": "coalesce(issues.city, '未填地市')",
+        "ledger_type": "issues.ledger_type",
+        "severity": "issues.severity",
+        "status": "issues.status",
+        "rule_id": "issues.rule_id",
     }.items():
         value = filters.get(key)
         if value:
             where.append(f"{column} = ?")
             params.append(value)
+    closure = filters.get("closure")
+    if closure == "open":
+        where.append("issues.status not in ('closed', 'not_required')")
+    elif closure == "closed":
+        where.append("issues.status in ('closed', 'not_required')")
     base_where = " and ".join(where)
     sql = f"""
-        select issue_code, coalesce(city, '未填地市') as city, district, telecom_site_code,
-               telecom_site_name, ledger_type, rule_id, severity, status, message, suggestion,
-               correction_value, correction_note, updated_at
+        select issues.issue_code, coalesce(issues.city, '未填地市') as city, issues.district,
+               issues.telecom_site_code, issues.telecom_site_name, issues.ledger_type,
+               issues.rule_id, issues.severity, issues.status, issues.message, issues.suggestion,
+               issues.correction_value, issues.correction_note, issues.updated_at, ar.result_json
           from issues
+          left join audit_results ar on ar.id = issues.audit_result_id
          where {base_where}
          order by updated_at desc, issue_code
     """
@@ -260,13 +348,49 @@ def list_issues(
         for row in conn.execute(sql, query_params):
             item = dict(row)
             metadata = rule_metadata(item["rule_id"])
+            result = parse_result_payload(item.pop("result_json", None))
+            confidence = result.get("confidence") or confidence_for(metadata.category, item["severity"])
             item["rule_name"] = metadata.name
+            item["confidence"] = confidence
+            item["confidence_label"] = result.get("confidence_label") or confidence_label(confidence)
+            item["evidence"] = result.get("evidence") or _fallback_evidence(item)
+            item["group"] = _issue_group(conn, batch_id, item)
             item["explanation"] = _issue_explanation(item, metadata)
             item["review_suggestion"] = _review_suggestion(item)
             issues.append(item)
         if limit is None:
             return issues
         return {"issues": issues, "total": total, "limit": safe_limit, "offset": safe_offset}
+
+
+def _issue_group(conn, batch_id: int, issue: dict[str, Any]) -> dict[str, Any]:
+    count = conn.execute(
+        """
+        select count(*) as count
+          from issues
+         where batch_id = ?
+           and rule_id = ?
+           and coalesce(telecom_site_code, '') = coalesce(?, '')
+        """,
+        (batch_id, issue["rule_id"], issue.get("telecom_site_code")),
+    ).fetchone()["count"]
+    return {
+        "same_site_rule_count": int(count or 0),
+        "label": "同站址同规则聚合" if int(count or 0) > 1 else "单条问题",
+    }
+
+
+def _fallback_evidence(issue: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "field": None,
+        "value": None,
+        "message": issue.get("message"),
+        "ledger_type": issue.get("ledger_type"),
+        "city": issue.get("city"),
+        "district": issue.get("district"),
+        "site_code": issue.get("telecom_site_code"),
+        "site_name": issue.get("telecom_site_name"),
+    }
 
 
 def list_issue_rules(config: AppConfig, batch_id: int) -> list[dict[str, Any]]:
@@ -289,6 +413,101 @@ def list_issue_rules(config: AppConfig, batch_id: int) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+def list_issue_groups(config: AppConfig, batch_id: int, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    filters = filters or {}
+    where = ["batch_id = ?"]
+    params: list[Any] = [batch_id]
+    for key, column in {
+        "city": "coalesce(city, '未填地市')",
+        "ledger_type": "ledger_type",
+        "rule_id": "rule_id",
+    }.items():
+        value = filters.get(key)
+        if value:
+            where.append(f"{column} = ?")
+            params.append(value)
+    closure = filters.get("closure")
+    if closure == "open":
+        where.append("status not in ('closed', 'not_required')")
+    elif closure == "closed":
+        where.append("status in ('closed', 'not_required')")
+    sql = f"""
+        select coalesce(city, '未填地市') as city,
+               ledger_type,
+               rule_id,
+               severity,
+               coalesce(telecom_site_code, '') as telecom_site_code,
+               max(telecom_site_name) as telecom_site_name,
+               count(*) as issue_count,
+               sum(case when status not in ('closed', 'not_required') then 1 else 0 end) as open_count,
+               sum(case when status = 'needs_review' then 1 else 0 end) as review_count,
+               sum(case when status = 'still_invalid' then 1 else 0 end) as still_invalid_count,
+               sum(case when status = 'closed' then 1 else 0 end) as closed_count,
+               sum(case when status = 'not_required' then 1 else 0 end) as not_required_count,
+               min(issue_code) as representative_issue_code,
+               max(updated_at) as updated_at
+          from issues
+         where {" and ".join(where)}
+         group by coalesce(city, '未填地市'), ledger_type, rule_id, severity, coalesce(telecom_site_code, '')
+         order by open_count desc, issue_count desc, city, telecom_site_code, rule_id
+         limit 200
+    """
+    with connect(config) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    groups = []
+    for row in rows:
+        metadata = rule_metadata(row["rule_id"])
+        groups.append(
+            {
+                "city": normalize_city(row["city"]),
+                "ledger_type": row["ledger_type"],
+                "rule_id": row["rule_id"],
+                "rule_name": metadata.name,
+                "severity": row["severity"],
+                "telecom_site_code": row["telecom_site_code"],
+                "telecom_site_name": row["telecom_site_name"],
+                "issue_count": int(row["issue_count"] or 0),
+                "open_count": int(row["open_count"] or 0),
+                "review_count": int(row["review_count"] or 0),
+                "still_invalid_count": int(row["still_invalid_count"] or 0),
+                "closed_count": int(row["closed_count"] or 0),
+                "not_required_count": int(row["not_required_count"] or 0),
+                "representative_issue_code": row["representative_issue_code"],
+                "updated_at": row["updated_at"],
+            }
+        )
+    return groups
+
+
+def update_issue_group_status(config: AppConfig, batch_id: int, group: dict[str, str], status: IssueStatus) -> int:
+    if status not in ISSUE_STATUSES:
+        raise ValueError("invalid issue status")
+    where = ["batch_id = ?", "rule_id = ?", "ledger_type = ?", "coalesce(city, '未填地市') = ?", "coalesce(telecom_site_code, '') = ?"]
+    params: list[Any] = [
+        batch_id,
+        group.get("rule_id", ""),
+        group.get("ledger_type", ""),
+        group.get("city", ""),
+        group.get("telecom_site_code", ""),
+    ]
+    with connect(config) as conn:
+        batch = conn.execute("select is_archived from import_batches where id = ?", (batch_id,)).fetchone()
+        if batch is None:
+            raise ValueError("batch not found")
+        if batch["is_archived"]:
+            raise ValueError("batch is archived")
+        cursor = conn.execute(
+            f"update issues set status = ?, updated_at = current_timestamp where {' and '.join(where)}",
+            [status] + params,
+        )
+        if cursor.rowcount:
+            conn.execute(
+                "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
+                (batch_id, "update_issue_group_status", f"批量更新问题组：{group.get('rule_id')} -> {status}，{cursor.rowcount} 条"),
+            )
+        return int(cursor.rowcount or 0)
 
 
 def city_progress(config: AppConfig, batch_id: int) -> list[dict[str, Any]]:

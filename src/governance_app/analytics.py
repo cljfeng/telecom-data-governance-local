@@ -1,5 +1,6 @@
 from typing import Any
 
+from governance_app.audit_quality import confidence_for, confidence_label
 from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
 from governance_app.db import connect
@@ -117,6 +118,36 @@ def dashboard_summary(config: AppConfig, batch_id: int) -> dict[str, Any]:
         total_issues = sum(status_counts.values())
         closed_count = int(status_counts.get("closed", 0) or 0) + int(status_counts.get("not_required", 0) or 0)
         open_issue_count = total_issues - closed_count
+        rule_effectiveness = []
+        for row in conn.execute(
+            """
+            select rule_id, severity,
+                   count(*) as total_count,
+                   sum(case when status not in ('closed', 'not_required') then 1 else 0 end) as open_count,
+                   sum(case when status in ('closed', 'not_required') then 1 else 0 end) as closed_count,
+                   sum(case when status = 'not_required' then 1 else 0 end) as not_required_count,
+                   sum(case when status = 'still_invalid' then 1 else 0 end) as still_invalid_count
+              from issues
+             where batch_id = ?
+             group by rule_id, severity
+             order by case severity when 'high' then 0 when 'medium' then 1 else 2 end,
+                      total_count desc,
+                      rule_id
+            """,
+            (batch_id,),
+        ):
+            item = dict(row)
+            metadata = rule_metadata(item["rule_id"])
+            confidence = confidence_for(metadata.category, item["severity"])
+            total = int(item["total_count"] or 0)
+            closed = int(item["closed_count"] or 0)
+            item["rule_name"] = metadata.name
+            item["category"] = metadata.category
+            item["category_label"] = _rule_category_label(metadata.category)
+            item["confidence"] = confidence
+            item["confidence_label"] = confidence_label(confidence)
+            item["closure_rate"] = round((closed / total) * 100, 1) if total else 0.0
+            rule_effectiveness.append(item)
         return {
             "batch_id": batch_id,
             "ledger_counts": ledger_counts,
@@ -129,6 +160,7 @@ def dashboard_summary(config: AppConfig, batch_id: int) -> dict[str, Any]:
             "city_ledger_matrix": city_ledger_matrix,
             "city_severity_matrix": city_severity_matrix,
             "status_counts": status_counts,
+            "rule_effectiveness": rule_effectiveness,
             "open_issue_count": open_issue_count,
             "closure_rate": round((closed_count / total_issues) * 100, 1) if total_issues else 0.0,
         }

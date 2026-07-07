@@ -9,11 +9,13 @@ from governance_app.workflow import (
     create_batch,
     get_batch_workflow,
     list_batches,
+    list_issue_groups,
     list_issues,
     list_ledger_rows,
     set_current_batch,
     transition_batch,
     update_issue_status,
+    update_issue_group_status,
 )
 
 
@@ -48,6 +50,11 @@ def test_workflow_next_action_tracks_batch_status(app_config, sample_workbook):
     assert current_step["can_operate"] is True
     assert current_step["primary_action"]["view"] == "audit"
     assert workflow["steps"][3]["blocked_reason"] == "请先完成执行稽核"
+    assert workflow["guidance"]["title"] == "下一步：执行稽核"
+    assert workflow["guidance"]["primary_view"] == "audit"
+    assert workflow["guidance"]["reason"] == "台账已导入，当前批次还没有形成可整改的问题清单。"
+    assert workflow["todo_summary"]["open_issue_count"] == 0
+    assert workflow["todo_summary"]["review_count"] == 0
 
 
 def test_issue_filters_and_city_progress(app_config, sample_workbook):
@@ -67,6 +74,10 @@ def test_issue_filters_and_city_progress(app_config, sample_workbook):
     assert issues[0]["ledger_type"] == "electricity"
     assert issues[0]["rule_name"] == "电费高单价"
     assert issues[0]["explanation"]["rule_name"] == "电费高单价"
+    assert issues[0]["confidence"] == "high"
+    assert issues[0]["confidence_label"] == "确定性问题"
+    assert issues[0]["evidence"]["field"] == "电费单价"
+    assert issues[0]["group"]["same_site_rule_count"] == 1
     assert issues[0]["explanation"]["recommended_action"]
     assert issues[0]["review_suggestion"]["decision"] == "等待整改"
     assert progress[0]["city"] == "杭州"
@@ -89,6 +100,65 @@ def test_list_issues_returns_total_and_supports_pagination(app_config, sample_wo
     assert page["limit"] == 1
     assert page["offset"] == 0
     assert len(page["issues"]) == 1
+
+
+def test_list_issues_filters_by_closure_state(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute("update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
+    run_audit(app_config, imported.batch_id)
+    issues = list_issues(app_config, imported.batch_id, {})
+    update_issue_status(app_config, issues[0]["issue_code"], "closed")
+
+    open_page = list_issues(app_config, imported.batch_id, {"closure": "open"}, limit=20)
+    closed_page = list_issues(app_config, imported.batch_id, {"closure": "closed"}, limit=20)
+
+    assert open_page["total"] == 1
+    assert open_page["issues"][0]["status"] != "closed"
+    assert closed_page["total"] == 1
+    assert closed_page["issues"][0]["status"] == "closed"
+
+
+def test_issue_groups_can_be_reviewed_in_bulk(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute("update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
+        row_json = '{"地市":"杭州","区县":"西湖","电信站址编码":"HZ001","电信站址名称":"西湖一站","电表户号":"M002","报账周期":"2026-05","电费单价":9.9,"供电方式":"直供电","分摊比例(%)":100}'
+        conn.execute(
+            """
+            insert into ledger_rows(batch_id, ledger_type, city, district, telecom_site_code, telecom_site_name, row_json)
+            values (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (imported.batch_id, "electricity", "杭州", "西湖", "HZ001", "西湖一站", row_json),
+        )
+    run_audit(app_config, imported.batch_id)
+
+    groups = list_issue_groups(app_config, imported.batch_id, {})
+    target = next(group for group in groups if group["rule_id"] == "electricity_price_range" and group["telecom_site_code"] == "HZ001")
+
+    assert target["issue_count"] == 2
+    assert target["open_count"] == 2
+    assert target["representative_issue_code"]
+
+    updated = update_issue_group_status(
+        app_config,
+        imported.batch_id,
+        {
+            "city": "杭州",
+            "ledger_type": "electricity",
+            "rule_id": "electricity_price_range",
+            "telecom_site_code": "HZ001",
+        },
+        "not_required",
+    )
+
+    assert updated == 2
+    refreshed = list_issue_groups(app_config, imported.batch_id, {})
+    target = next(group for group in refreshed if group["rule_id"] == "electricity_price_range" and group["telecom_site_code"] == "HZ001")
+    assert target["open_count"] == 0
+    assert target["not_required_count"] == 2
 
 
 def test_list_ledger_rows_filters_and_exposes_grouped_fields(app_config, sample_workbook):

@@ -219,6 +219,31 @@ def export_preview_errors(config: AppConfig, workbook_path: Path, result: Import
     return path
 
 
+def preview_error_payload(error: ValidationErrorDetail) -> dict[str, Any]:
+    severity = classify_preview_error(error)
+    return {
+        "row_number": error.row_number,
+        "field_name": error.field_name,
+        "message": error.message,
+        "severity": severity,
+        "severity_label": "必须修复" if severity == "blocker" else "建议修复",
+        "action": _suggestion_for(error),
+    }
+
+
+def preview_error_summary(errors: list[ValidationErrorDetail]) -> dict[str, int]:
+    summary = {"blocker": 0, "warning": 0}
+    for error in errors:
+        summary[classify_preview_error(error)] += 1
+    return summary
+
+
+def classify_preview_error(error: ValidationErrorDetail) -> str:
+    if "缺少必需" in error.message or "sheet" in error.message:
+        return "blocker"
+    return "warning"
+
+
 def _safe_filename_part(value: str) -> str:
     text = re.sub(r'[\\/:*?"<>|\s]+', "_", value.strip())
     while ".." in text:

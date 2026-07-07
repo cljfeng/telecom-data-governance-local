@@ -17,9 +17,9 @@ from governance_app.archive import archive_batch, archive_precheck, export_notic
 from governance_app.audit_engine import run_audit
 from governance_app.config import AppConfig
 from governance_app.corrections import import_correction_return
-from governance_app.db import initialize_database
+from governance_app.db import connect, initialize_database
 from governance_app.exporter import export_issue_packages
-from governance_app.import_preview import export_preview_errors, preview_workbook
+from governance_app.import_preview import export_preview_errors, preview_error_payload, preview_error_summary, preview_workbook
 from governance_app.importer import import_workbook
 from governance_app.recent_files import list_recent_files
 from governance_app.routes.system import handle_system_route
@@ -30,11 +30,13 @@ from governance_app.workflow import (
     create_batch,
     get_batch_workflow,
     list_batches,
+    list_issue_groups,
     list_issue_rules,
     list_issues,
     list_ledger_rows,
     record_operation,
     set_current_batch,
+    update_issue_group_status,
     update_issue_status,
 )
 
@@ -117,6 +119,13 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
             return _json({"issues": list_issues(config, batch_id, filters), "rules": list_issue_rules(config, batch_id)})
         page = list_issues(config, batch_id, filters, limit=limit, offset=offset)
         return _json({**page, "rules": list_issue_rules(config, batch_id)})
+    if method == "GET" and parsed.path == "/api/issue-groups":
+        batch_id, error = _batch_id_from_query(parsed.query)
+        if error:
+            return error
+        query = parse_qs(parsed.query)
+        filters = {key: values[0] for key, values in query.items() if key != "batch_id" and values and values[0]}
+        return _json({"groups": list_issue_groups(config, batch_id, filters)})
     if method == "GET" and parsed.path == "/api/ledger-rows":
         batch_id, error = _batch_id_from_query(parsed.query)
         if error:
@@ -130,7 +139,15 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
             return error
         return _json({"cities": city_progress(config, batch_id)})
     if method == "GET" and parsed.path == "/api/rules":
-        return _json({"rules": _rule_settings_payload(config)})
+        query = parse_qs(parsed.query)
+        raw_batch_id = query.get("batch_id", [""])[0]
+        batch_id = None
+        if raw_batch_id:
+            try:
+                batch_id = int(raw_batch_id)
+            except ValueError:
+                return _json({"error": "invalid batch_id"}, status=400)
+        return _json({"rules": _rule_settings_payload(config, batch_id=batch_id)})
     if method == "POST" and parsed.path == "/api/rules/settings":
         payload, error = _json_body(body)
         if error:
@@ -205,7 +222,15 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
             result = import_correction_return(config, Path(path_value))
         except ValueError as exc:
             return _json({"error": str(exc)}, status=400)
-        return _json({"matched_count": result.matched_count, "errors": result.errors}, status=200 if not result.errors else 400)
+        return _json(
+            {
+                "matched_count": result.matched_count,
+                "errors": result.errors,
+                "review_warnings": result.review_warnings,
+                "auto_review": result.auto_review,
+            },
+            status=200 if not result.errors else 400,
+        )
     if method == "POST" and parsed.path == "/api/issues/status":
         payload, error = _json_body(body)
         if error:
@@ -219,6 +244,22 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         except ValueError as exc:
             return _json({"error": str(exc)}, status=400)
         return _json({"status": "updated"})
+    if method == "POST" and parsed.path == "/api/issues/group-status":
+        payload, error = _json_body(body)
+        if error:
+            return error
+        batch_id, error = _batch_id_from_payload(payload)
+        if error:
+            return error
+        status_value = payload.get("status")
+        group = payload.get("group")
+        if not isinstance(status_value, str) or not isinstance(group, dict):
+            return _json({"error": "group and status are required"}, status=400)
+        try:
+            updated = update_issue_group_status(config, batch_id, group, status_value)
+        except ValueError as exc:
+            return _json({"error": str(exc)}, status=400)
+        return _json({"status": "updated", "updated_count": updated})
     if method == "POST" and parsed.path == "/api/archive":
         payload, error = _json_body(body)
         if error:
@@ -271,7 +312,15 @@ def _route_upload(
             result = import_correction_return(config, workbook_path)
         except ValueError as exc:
             return _json({"error": str(exc)}, status=400)
-        return _json({"matched_count": result.matched_count, "errors": result.errors}, status=200 if not result.errors else 400)
+        return _json(
+            {
+                "matched_count": result.matched_count,
+                "errors": result.errors,
+                "review_warnings": result.review_warnings,
+                "auto_review": result.auto_review,
+            },
+            status=200 if not result.errors else 400,
+        )
     return _preview_from_payload(config, payload)
 
 
@@ -293,7 +342,8 @@ def _preview_from_payload(config: AppConfig, payload: dict) -> tuple[int, dict[s
             "ok": result.ok,
             "batch_name": result.batch_name,
             "ledger_counts": result.ledger_counts,
-            "errors": [error.__dict__ for error in result.errors],
+            "errors": [preview_error_payload(error) for error in result.errors],
+            "error_summary": preview_error_summary(result.errors),
             "error_export_path": error_export_path,
         },
         status=200 if result.ok else 400,
@@ -416,13 +466,15 @@ def _pagination_from_query(query: dict[str, list[str]]) -> tuple[int | None, int
     return limit, offset
 
 
-def _rule_settings_payload(config: AppConfig) -> list[dict]:
+def _rule_settings_payload(config: AppConfig, batch_id: int | None = None) -> list[dict]:
     settings = load_rule_settings(config)
+    effectiveness = _rule_effectiveness_by_rule(config, batch_id) if batch_id is not None else {}
     rule_ids = sorted({rule.rule_id for rule in all_rules()} | {rule.rule_id for rule in all_batch_rules()})
     payload = []
     for rule_id in rule_ids:
         metadata = rule_metadata(rule_id)
         setting = settings.get(rule_id)
+        rule_effectiveness = effectiveness.get(rule_id, _empty_rule_effectiveness())
         payload.append(
             {
                 "rule_id": rule_id,
@@ -435,9 +487,71 @@ def _rule_settings_payload(config: AppConfig) -> list[dict]:
                 "config": {} if setting is None else setting.config,
                 "category": metadata.category,
                 "parameters": _rule_parameters(rule_id),
+                "effectiveness": rule_effectiveness,
+                "tuning_recommendation": _rule_tuning_recommendation(rule_effectiveness, metadata.severity),
             }
         )
     return payload
+
+
+def _rule_effectiveness_by_rule(config: AppConfig, batch_id: int | None) -> dict[str, dict]:
+    if batch_id is None:
+        return {}
+    with connect(config) as conn:
+        rows = conn.execute(
+            """
+            select rule_id,
+                   count(*) as total_count,
+                   sum(case when status not in ('closed', 'not_required') then 1 else 0 end) as open_count,
+                   sum(case when status = 'not_required' then 1 else 0 end) as not_required_count,
+                   sum(case when status = 'still_invalid' then 1 else 0 end) as still_invalid_count
+              from issues
+             where batch_id = ?
+             group by rule_id
+            """,
+            (batch_id,),
+        ).fetchall()
+    result: dict[str, dict] = {}
+    for row in rows:
+        total = int(row["total_count"] or 0)
+        not_required = int(row["not_required_count"] or 0)
+        open_count = int(row["open_count"] or 0)
+        result[row["rule_id"]] = {
+            "total_count": total,
+            "open_count": open_count,
+            "not_required_count": not_required,
+            "still_invalid_count": int(row["still_invalid_count"] or 0),
+            "not_required_rate": round((not_required / total) * 100, 1) if total else 0.0,
+            "open_rate": round((open_count / total) * 100, 1) if total else 0.0,
+        }
+    return result
+
+
+def _empty_rule_effectiveness() -> dict:
+    return {
+        "total_count": 0,
+        "open_count": 0,
+        "not_required_count": 0,
+        "still_invalid_count": 0,
+        "not_required_rate": 0.0,
+        "open_rate": 0.0,
+    }
+
+
+def _rule_tuning_recommendation(effectiveness: dict, severity: str) -> dict[str, str]:
+    total = int(effectiveness.get("total_count") or 0)
+    if not total:
+        return {"level": "neutral", "message": "当前批次未命中，可保持默认口径"}
+    not_required_rate = float(effectiveness.get("not_required_rate") or 0)
+    open_count = int(effectiveness.get("open_count") or 0)
+    still_invalid_count = int(effectiveness.get("still_invalid_count") or 0)
+    if not_required_rate >= 50:
+        return {"level": "warning", "message": "无需整改率较高，建议复核规则口径或适当调整阈值"}
+    if severity == "high" and open_count:
+        return {"level": "danger", "message": "高风险规则仍有未闭环问题，建议优先推动整改"}
+    if still_invalid_count:
+        return {"level": "warning", "message": "回传后仍异常较多，建议检查整改说明和佐证材料"}
+    return {"level": "success", "message": "规则效果稳定，可继续沿用当前口径"}
 
 
 _RULE_PARAMETERS = {

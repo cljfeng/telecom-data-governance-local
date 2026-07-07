@@ -82,6 +82,15 @@ export async function renderAnalytics({
       <div id="ledger-tabs" class="analytics-tabs"></div>
       <div id="ledger-analysis-sections"></div>
     </section>
+    <section class="card analytics-panel">
+      <header class="panel-header">
+        <div>
+          <h3 class="panel-title">规则效果复盘</h3>
+          <p class="panel-description">按规则查看命中、未闭环、无需整改和闭环率，用来判断规则是否过宽、过严或需要优先复核。</p>
+        </div>
+      </header>
+      <div id="rule-effectiveness" class="table-wrap">正在加载</div>
+    </section>
     <section class="analytics-overview-grid analytics-ops-grid">
       <div class="card analytics-panel">
         ${shellHeader("稽核问题通报", "通报导出")}
@@ -129,16 +138,16 @@ export async function renderAnalytics({
       setOperationResult("pending", "正在检查归档条件...");
       const data = await fetchJson(`/api/archive/precheck?batch_id=${state.batchId}`);
       const blockers = data.blockers || [];
+      const riskItems = data.risk_items || [];
+      const details = [
+        data.ready ? "当前批次满足归档条件。" : "当前批次暂不满足归档条件。",
+        `未闭环 ${formatNumber(data.open_issue_count)}，批次状态 ${data.batch_status}`,
+      ]
+        .concat(blockers.map((item) => `阻断：${item.message}`))
+        .concat(riskItems.map((item) => `风险：${item.message}`));
       setOperationResult(
         data.ready ? "success" : "error",
-        `
-          <p>${data.ready ? "当前批次满足归档条件。" : "当前批次暂不满足归档条件。"}</p>
-          <div class="mini-grid">
-            <span>未闭环 ${formatNumber(data.open_issue_count)}</span>
-            <span>批次状态 ${escapeHtml(data.batch_status)}</span>
-          </div>
-          ${blockers.length ? `<ul class="path-list">${blockers.map((item) => `<li>${escapeHtml(item.message)}</li>`).join("")}</ul>` : ""}
-        `,
+        details.join("\n"),
       );
     });
   });
@@ -172,6 +181,40 @@ async function loadAnalytics(batchId) {
   renderLedgerShareRows(data.issues_by_ledger_type || [], totalIssues);
   renderHeatmap(data.city_rule_matrix || []);
   renderLedgerSections(data);
+  renderRuleEffectiveness(data.rule_effectiveness || []);
+}
+
+function renderRuleEffectiveness(rows) {
+  const container = document.querySelector("#rule-effectiveness");
+  if (!container) return;
+  if (!rows.length) {
+    container.innerHTML = '<div class="empty-state">暂无规则效果数据</div>';
+    return;
+  }
+  container.innerHTML = `
+    <table>
+      <thead><tr><th>规则</th><th>可信度</th><th>问题数</th><th>未闭环</th><th>无需整改</th><th>仍异常</th><th>闭环率</th></tr></thead>
+      <tbody>
+        ${rows.slice(0, 12).map((row) => `
+          <tr>
+            <td><strong>${escapeHtml(row.rule_name || row.rule_id)}</strong><p class="table-note">${escapeHtml(row.category_label || "")}</p></td>
+            <td><span class="chip chip-${confidenceTone(row.confidence)}">${escapeHtml(row.confidence_label || "疑似问题")}</span></td>
+            <td>${formatNumber(row.total_count)}</td>
+            <td>${formatNumber(row.open_count)}</td>
+            <td>${formatNumber(row.not_required_count)}</td>
+            <td>${formatNumber(row.still_invalid_count)}</td>
+            <td>${formatNumber(row.closure_rate)}%</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function confidenceTone(confidence) {
+  if (confidence === "high") return "danger";
+  if (confidence === "low") return "info";
+  return "warning";
 }
 
 function renderLedgerSections(data) {

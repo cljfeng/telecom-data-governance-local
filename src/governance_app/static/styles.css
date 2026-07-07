@@ -905,7 +905,8 @@ tbody tr:last-child td {
 }
 
 .analytics-tabs,
-.rule-filter-bar {
+.rule-filter-bar,
+.quick-filter-bar {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -1342,6 +1343,41 @@ tbody tr:last-child td {
 
 .recent-files {
   min-height: 86px;
+}
+
+.todo-strip,
+.preview-summary,
+.issue-summary-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.todo-strip span,
+.issue-summary-panel span {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: #ffffff;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.issue-summary-panel {
+  padding: 0 18px 14px;
+}
+
+.error-group {
+  display: grid;
+  gap: 8px;
+}
+
+.error-group > strong {
+  font-size: 14px;
 }
 
 .ledger-data-list {

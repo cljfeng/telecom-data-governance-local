@@ -11,7 +11,9 @@ from governance_app.audit_rules import (
     all_batch_rules,
     all_rules,
     parse_row,
+    rule_metadata,
 )
+from governance_app.audit_quality import result_payload
 from governance_app.config import AppConfig
 from governance_app.db import connect
 from governance_app.rule_settings import RuleSetting, load_rule_settings
@@ -154,7 +156,25 @@ def _insert_finding(
     severity: str,
     finding: RuleFinding | BatchRuleFinding,
 ) -> None:
-    result_json = json.dumps({"field": finding.field_name, "message": finding.message}, ensure_ascii=False)
+    metadata = rule_metadata(rule_id)
+    row_data = parse_row(ledger_row["effective_row_json"])
+    result_json = json.dumps(
+        result_payload(
+            rule_id=rule_id,
+            rule_name=metadata.name,
+            category=metadata.category,
+            severity=severity,
+            field_name=finding.field_name,
+            message=finding.message,
+            ledger_type=ledger_row["ledger_type"],
+            city=ledger_row["city"],
+            district=ledger_row["district"],
+            site_code=ledger_row["telecom_site_code"],
+            site_name=ledger_row["telecom_site_name"],
+            row=row_data,
+        ),
+        ensure_ascii=False,
+    )
     audit_result_id = conn.execute(
         """
         insert into audit_results(audit_run_id, ledger_row_id, rule_id, severity, message, field_name, result_json)

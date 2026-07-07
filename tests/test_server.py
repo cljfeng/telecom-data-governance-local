@@ -3,6 +3,9 @@ from pathlib import Path
 
 from governance_app.config import AppConfig
 from governance_app.db import connect, initialize_database
+from governance_app.audit_engine import run_audit
+from governance_app.importer import import_workbook
+from governance_app.workflow import list_issues, update_issue_status
 from governance_app.server import create_app
 
 
@@ -229,6 +232,26 @@ def test_import_preview_upload_endpoint_accepts_selected_file(app_config, sample
     assert (app_config.data_dir / "uploads").exists()
     with connect(app_config) as conn:
         assert conn.execute("select count(*) as c from import_batches").fetchone()["c"] == 0
+
+
+def test_rules_endpoint_includes_tuning_recommendations_for_current_batch(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute("update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
+    run_audit(app_config, imported.batch_id)
+    issue = next(issue for issue in list_issues(app_config, imported.batch_id, {}) if issue["rule_id"] == "electricity_price_range")
+    update_issue_status(app_config, issue["issue_code"], "not_required")
+    app = create_app(app_config)
+
+    status, _headers, body = app.handle_test_request("GET", f"/api/rules?batch_id={imported.batch_id}")
+
+    assert status == 200
+    rule = next(item for item in json.loads(body)["rules"] if item["rule_id"] == "electricity_price_range")
+    assert rule["effectiveness"]["total_count"] == 1
+    assert rule["effectiveness"]["not_required_rate"] == 100.0
+    assert rule["tuning_recommendation"]["level"] == "warning"
+    assert "无需整改率较高" in rule["tuning_recommendation"]["message"]
 
 
 def test_import_upload_endpoint_imports_selected_file(app_config, sample_workbook):

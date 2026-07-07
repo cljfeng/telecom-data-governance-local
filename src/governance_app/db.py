@@ -153,6 +153,8 @@ def initialize_database(config: AppConfig) -> None:
         _ensure_column(conn, "ledger_rows", "sheet_name", "text")
         _ensure_column(conn, "ledger_rows", "row_number", "integer")
         _ensure_column(conn, "ledger_rows", "raw_row_id", "integer references raw_rows(id) on delete cascade")
+        _ensure_column(conn, "correction_returns", "warning_count", "integer not null default 0")
+        _ensure_column(conn, "correction_returns", "warnings_json", "text not null default '[]'")
         conn.execute("insert or ignore into schema_migrations(version) values (?)", (SCHEMA_VERSION,))
 
 

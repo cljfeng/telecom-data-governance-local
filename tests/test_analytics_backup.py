@@ -30,6 +30,9 @@ def test_dashboard_summary_counts_batch_and_issues(app_config, sample_workbook):
     assert summary["city_rule_matrix"][0]["city"] == "杭州"
     assert {row["rule_name"] for row in summary["city_rule_matrix"]} >= {"电费高单价", "电价异常"}
     assert summary["city_ledger_matrix"][0]["ledger_type"] == "electricity"
+    assert summary["rule_effectiveness"][0]["rule_name"]
+    assert summary["rule_effectiveness"][0]["confidence_label"] == "确定性问题"
+    assert summary["rule_effectiveness"][0]["open_count"] >= 1
     assert summary["open_issue_count"] >= 1
     assert summary["closure_rate"] == 0.0
 
@@ -186,6 +189,7 @@ def test_archive_precheck_reports_open_issues_before_archive(app_config, sample_
     assert result["open_issue_count"] == 2
     assert result["status_counts"]["pending_correction"] == 2
     assert result["blockers"][0]["type"] == "open_issues"
+    assert any(item["type"] == "high_risk_open" for item in result["risk_items"])
 
 
 def test_archive_batch_adds_risk_rule_and_open_issue_sheets(app_config, sample_workbook):
@@ -213,7 +217,10 @@ def test_archive_batch_adds_risk_rule_and_open_issue_sheets(app_config, sample_w
     assert "规则命中排行" in wb.sheetnames
     assert "风险等级分布" in wb.sheetnames
     assert "未闭环问题" in wb.sheetnames
+    assert "专项复盘" in wb.sheetnames
     assert wb["规则命中排行"]["A1"].value == "规则分类"
     assert wb["规则命中排行"]["C2"].value == "电费高单价"
     assert wb["风险等级分布"]["A2"].value == "高"
     assert wb["未闭环问题"]["A2"].value is None
+    assert wb["专项复盘"]["A1"].value == "复盘项"
+    assert wb["专项复盘"]["A2"].value == "闭环率"

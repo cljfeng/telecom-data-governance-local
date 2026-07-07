@@ -29,6 +29,25 @@ def test_preview_workbook_reports_missing_required_headers(app_config, workbook_
     assert result.errors[0].message == "缺少必需字段"
 
 
+def test_preview_error_payload_groups_blockers_and_warnings(app_config, workbook_missing_site_code):
+    from governance_app.server import create_app
+
+    initialize_database(app_config)
+    app = create_app(app_config)
+
+    status, _headers, body = app.handle_test_request(
+        "POST",
+        "/api/import/preview",
+        f'{{"path": "{workbook_missing_site_code}"}}',
+    )
+
+    assert status == 400
+    payload = __import__("json").loads(body)
+    assert payload["error_summary"] == {"blocker": 1, "warning": 0}
+    assert payload["errors"][0]["severity"] == "blocker"
+    assert payload["errors"][0]["action"] == "按省公司模板补齐字段列名后重新预检"
+
+
 def test_export_preview_errors_writes_excel_detail(app_config, workbook_missing_site_code):
     initialize_database(app_config)
     result = preview_workbook(app_config, workbook_missing_site_code)

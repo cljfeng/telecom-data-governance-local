@@ -15,7 +15,8 @@ const severityLabels = {
   low: "低",
 };
 
-export async function renderRules({ mainContent, shellHeader }) {
+export async function renderRules({ mainContent, shellHeader, state, refreshBatches }) {
+  await refreshBatches?.().catch(() => []);
   mainContent.innerHTML = `
     <section class="card">
       ${shellHeader("规则设置", "稽核规则")}
@@ -33,6 +34,7 @@ export async function renderRules({ mainContent, shellHeader }) {
               <th>规则</th>
               <th>台账</th>
               <th>风险</th>
+              <th>效果与建议</th>
               <th>阈值</th>
               <th>操作</th>
             </tr>
@@ -42,18 +44,22 @@ export async function renderRules({ mainContent, shellHeader }) {
       </div>
     </section>
   `;
-  await loadRules();
+  await loadRules(state?.batchId);
 }
 
 let allRuleRows = [];
 let activeRuleFilter = "all";
+let currentRuleBatchId = null;
 
-async function loadRules() {
-  const data = await fetchJson("/api/rules");
+async function loadRules(batchId) {
+  if (batchId !== undefined) currentRuleBatchId = batchId || null;
+  const activeBatchId = batchId !== undefined ? batchId : currentRuleBatchId;
+  const suffix = activeBatchId ? `?batch_id=${encodeURIComponent(activeBatchId)}` : "";
+  const data = await fetchJson(`/api/rules${suffix}`);
   allRuleRows = data.rules || [];
   bindRuleFilters();
   renderRuleRows(filteredRules());
-  setRulesResult("success", `已加载 ${formatNumber(allRuleRows.length)} 条规则`);
+  setRulesResult("success", `已加载 ${formatNumber(allRuleRows.length)} 条规则${activeBatchId ? "，已结合当前批次生成效果建议" : ""}`);
 }
 
 function bindRuleFilters() {
@@ -74,7 +80,7 @@ function filteredRules() {
 function renderRuleRows(rules) {
   const tbody = document.querySelector("#rules-table");
   if (!rules.length) {
-    tbody.innerHTML = '<tr><td colspan="6">暂无规则</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7">暂无规则</td></tr>';
     return;
   }
   tbody.innerHTML = rules
@@ -89,6 +95,7 @@ function renderRuleRows(rules) {
           </td>
           <td>${escapeHtml(ledgerLabels[rule.ledger_type] || rule.ledger_type)}</td>
           <td><span class="chip chip-info">${escapeHtml(severityLabels[rule.severity] || rule.severity)}</span></td>
+          <td>${renderRuleEffect(rule)}</td>
           <td>${renderRuleParameters(rule)}</td>
           <td>
             <div class="rule-action-stack">
@@ -126,6 +133,21 @@ function renderRuleRows(rules) {
       });
     });
   });
+}
+
+function renderRuleEffect(rule) {
+  const effect = rule.effectiveness || {};
+  const recommendation = rule.tuning_recommendation || { level: "neutral", message: "当前批次暂无效果数据" };
+  return `
+    <div class="rule-effect-cell">
+      <div class="mini-grid rule-effect-grid">
+        <span>命中 ${formatNumber(effect.total_count || 0)}</span>
+        <span>未闭环 ${formatNumber(effect.open_count || 0)}</span>
+        <span>无需整改 ${formatNumber(effect.not_required_rate || 0)}%</span>
+      </div>
+      <p class="table-note recommendation-${escapeHtml(recommendation.level || "neutral")}">${escapeHtml(recommendation.message || "")}</p>
+    </div>
+  `;
 }
 
 function renderRuleParameters(rule) {

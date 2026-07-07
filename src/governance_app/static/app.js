@@ -129,6 +129,13 @@ function severityTone(severity) {
   return "success";
 }
 
+function statusTone(status) {
+  if (status === "still_invalid") return "danger";
+  if (status === "needs_review" || status === "returned") return "warning";
+  if (status === "closed" || status === "not_required") return "success";
+  return "info";
+}
+
 function cityProgressTone(row) {
   const rate = percentValue(row.completion_rate);
   const review = Number(row.review_count || 0);
@@ -453,6 +460,8 @@ function renderBatchRows() {
 
 function renderWorkflow(workflow) {
   const action = actionForWorkflow(workflow);
+  const guidance = workflow.guidance || {};
+  const todo = workflow.todo_summary || {};
   document.querySelector("#workflow-area").innerHTML = `
     <div class="workflow-layout">
       <div class="workflow-steps">
@@ -470,10 +479,16 @@ function renderWorkflow(workflow) {
       </div>
       <div class="next-action">
         <p class="eyebrow">下一步动作</p>
-        <h3>${escapeHtml(workflow.next_action)}</h3>
-        <p>系统会按当前批次状态引导完成导入、稽核、导出、回传和归档。不可操作步骤会显示 blocked_reason，避免越级处理。</p>
+        <h3>${escapeHtml(guidance.title || workflow.next_action)}</h3>
+        <p>${escapeHtml(guidance.reason || "系统会按当前批次状态引导完成导入、稽核、导出、回传和归档。")}</p>
+        <div class="todo-strip">
+          <span>台账 ${formatNumber(todo.ledger_count || 0)}</span>
+          <span>未闭环 ${formatNumber(todo.open_issue_count || 0)}</span>
+          <span>待复核 ${formatNumber(todo.review_count || 0)}</span>
+          <span>仍异常 ${formatNumber(todo.still_invalid_count || 0)}</span>
+        </div>
         <div class="button-row">
-          <button class="primary-button" type="button" data-next-view="${escapeHtml(workflow.steps.find((step) => step.can_operate)?.primary_action?.view || action.view)}">${escapeHtml(workflow.steps.find((step) => step.can_operate)?.primary_action?.label || action.label)}</button>
+          <button class="primary-button" type="button" data-next-view="${escapeHtml(guidance.primary_view || workflow.steps.find((step) => step.can_operate)?.primary_action?.view || action.view)}">${escapeHtml(guidance.primary_label || workflow.steps.find((step) => step.can_operate)?.primary_action?.label || action.label)}</button>
           <button class="secondary-button" type="button" data-next-view="${escapeHtml(action.secondaryView)}">${escapeHtml(action.secondary)}</button>
         </div>
       </div>
@@ -672,6 +687,9 @@ async function renderImport() {
 function renderImportPreviewResult(data, message) {
   const counts = data.ledger_counts || {};
   const errors = data.errors || [];
+  const summary = data.error_summary || { blocker: errors.length, warning: 0 };
+  const blockerErrors = errors.filter((error) => (error.severity || "blocker") === "blocker");
+  const warningErrors = errors.filter((error) => error.severity === "warning");
   const detailMessage = data.error && data.error !== message ? `<p>${escapeHtml(data.error)}</p>` : "";
   return `
     <p><strong>${escapeHtml(message)}</strong></p>
@@ -685,9 +703,15 @@ function renderImportPreviewResult(data, message) {
     </div>
     ${
       errors.length
-        ? `<ul class="path-list">${errors.map((error) => `<li>${escapeHtml(error.field_name)}：${escapeHtml(error.message)}</li>`).join("")}</ul>`
+        ? `<div class="preview-summary"><span class="chip chip-danger">必须修复 ${formatNumber(summary.blocker || 0)}</span><span class="chip chip-warning">建议修复 ${formatNumber(summary.warning || 0)}</span></div>`
         : ""
     }
+    ${
+      blockerErrors.length
+        ? `<div class="error-group"><strong>必须修复</strong><ul class="path-list">${blockerErrors.map((error) => `<li>${escapeHtml(error.field_name)}：${escapeHtml(error.message)}。${escapeHtml(error.action || "")}</li>`).join("")}</ul></div>`
+        : ""
+    }
+    ${warningErrors.length ? `<div class="error-group"><strong>建议修复</strong><ul class="path-list">${warningErrors.map((error) => `<li>第 ${escapeHtml(error.row_number)} 行 ${escapeHtml(error.field_name)}：${escapeHtml(error.message)}。${escapeHtml(error.action || "")}</li>`).join("")}</ul></div>` : ""}
     ${data.error_export_path ? `<p>错误明细：${escapeHtml(data.error_export_path)}</p>` : ""}
   `;
 }
@@ -753,15 +777,27 @@ async function renderAudit() {
   mainContent.innerHTML = `
     <section class="card">
       ${shellHeader("稽核结果", "问题清单", renderBatchSelector())}
+      <div id="issue-summary" class="issue-summary-panel">正在加载问题摘要</div>
+      <div class="quick-filter-bar">
+        <button class="segmented-button is-active" type="button" data-issue-view="list">明细视图</button>
+        <button class="segmented-button" type="button" data-issue-view="groups">聚合视图</button>
+      </div>
+      <div class="quick-filter-bar">
+        <button class="segmented-button is-active" type="button" data-quick-filter="all">全部问题</button>
+        <button class="segmented-button" type="button" data-quick-filter="high">高风险优先</button>
+        <button class="segmented-button" type="button" data-quick-filter="needs_review">待复核</button>
+        <button class="segmented-button" type="button" data-quick-filter="open">未闭环</button>
+        <button class="segmented-button" type="button" data-quick-filter="closed">已闭环</button>
+      </div>
       <div class="filter-grid audit-filter-grid">
         <input id="filter-city" placeholder="地市">
         <select id="filter-ledger"><option value="">全部台账</option><option value="site">站址</option><option value="tower_rent">铁塔租费</option><option value="electricity">电费</option><option value="generator">发电费</option></select>
         <select id="filter-rule"><option value="">全部规则</option></select>
-        <select id="filter-status"><option value="">全部状态</option><option value="pending_export">待导出</option><option value="pending_correction">待整改</option><option value="needs_review">待人工复核</option><option value="closed">已关闭</option><option value="not_required">无需整改</option></select>
+        <select id="filter-status"><option value="">全部状态</option><option value="pending_export">待导出</option><option value="pending_correction">待整改</option><option value="returned">已回传</option><option value="still_invalid">仍异常</option><option value="needs_review">待人工复核</option><option value="closed">已关闭</option><option value="not_required">无需整改</option></select>
         <button id="run-audit" class="primary-button" type="button">执行稽核</button>
         <button id="load-issues" class="secondary-button" type="button">查询问题</button>
       </div>
-      <div class="table-wrap issue-table-wrap"><table class="issue-table"><thead><tr><th>问题编号</th><th>地市</th><th>台账</th><th>规则</th><th>风险</th><th>状态</th><th>说明</th><th>操作</th></tr></thead><tbody id="issue-table"><tr><td colspan="8">点击查询问题</td></tr></tbody></table></div>
+      <div id="issue-table-wrap" class="table-wrap issue-table-wrap"></div>
       <div class="pagination-bar">
         <button id="issue-prev-page" class="secondary-button" type="button">上一页</button>
         <span id="issue-page-info">第 1 页</span>
@@ -770,6 +806,8 @@ async function renderAudit() {
     </section>
   `;
   bindBatchSelector(renderAudit);
+  state.issueView = state.issueView || "list";
+  renderIssueTableShell();
   document.querySelector("#run-audit").addEventListener("click", async (event) => {
     await withBusy(event.currentTarget, "稽核中...", async () => {
       await postJson("/api/audit", { batch_id: state.batchId });
@@ -779,6 +817,24 @@ async function renderAudit() {
   document.querySelector("#load-issues").addEventListener("click", async () => {
     state.issueOffset = 0;
     await loadIssues();
+  });
+  document.querySelectorAll("[data-quick-filter]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      state.issueQuickFilter = button.dataset.quickFilter;
+      document.querySelectorAll("[data-quick-filter]").forEach((item) => item.classList.toggle("is-active", item === button));
+      applyQuickIssueFilter(state.issueQuickFilter);
+      state.issueOffset = 0;
+      await loadIssues();
+    });
+  });
+  document.querySelectorAll("[data-issue-view]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      state.issueView = button.dataset.issueView;
+      document.querySelectorAll("[data-issue-view]").forEach((item) => item.classList.toggle("is-active", item === button));
+      renderIssueTableShell();
+      state.issueOffset = 0;
+      await loadIssues();
+    });
   });
   ["#filter-city", "#filter-ledger", "#filter-rule", "#filter-status"].forEach((selector) => {
     const control = document.querySelector(selector);
@@ -812,14 +868,118 @@ async function loadIssues() {
   const ledger = document.querySelector("#filter-ledger").value;
   const rule = document.querySelector("#filter-rule").value;
   const status = document.querySelector("#filter-status").value;
+  const severity = state.issueQuickFilter === "high" ? "high" : "";
+  const closure = ["open", "closed"].includes(state.issueQuickFilter) ? state.issueQuickFilter : "";
   if (city) params.set("city", city);
   if (ledger) params.set("ledger_type", ledger);
   if (rule) params.set("rule_id", rule);
   if (status) params.set("status", status);
+  if (severity) params.set("severity", severity);
+  if (closure) params.set("closure", closure);
+  if (state.issueView === "groups") {
+    const groupData = await fetchJson(`/api/issue-groups?${params.toString()}`);
+    renderIssueGroupSummary(groupData.groups || []);
+    renderIssueGroupRows(groupData.groups || []);
+    renderIssuePagination(0, limit, 0);
+    return;
+  }
   const data = await fetchJson(`/api/issues?${params.toString()}`);
   renderIssueRuleOptions(data.rules || [], rule);
+  renderIssueSummary(data.issues || [], data.total || 0);
   renderIssueRows(data.issues || []);
   renderIssuePagination(data.total || 0, data.limit || limit, data.offset || offset);
+}
+
+function renderIssueTableShell() {
+  const wrap = document.querySelector("#issue-table-wrap");
+  if (!wrap) return;
+  if (state.issueView === "groups") {
+    wrap.innerHTML = `<table class="issue-table"><thead><tr><th>地市</th><th>站址</th><th>台账</th><th>规则</th><th>风险</th><th>问题数</th><th>未闭环</th><th>状态构成</th><th>操作</th></tr></thead><tbody id="issue-table"><tr><td colspan="9">正在加载聚合问题</td></tr></tbody></table>`;
+  } else {
+    wrap.innerHTML = `<table class="issue-table"><thead><tr><th>问题编号</th><th>地市</th><th>台账</th><th>规则</th><th>风险</th><th>可信度</th><th>状态</th><th>说明</th><th>操作</th></tr></thead><tbody id="issue-table"><tr><td colspan="9">点击查询问题</td></tr></tbody></table>`;
+  }
+}
+
+function renderIssueGroupSummary(groups) {
+  const total = groups.reduce((sum, group) => sum + Number(group.issue_count || 0), 0);
+  const open = groups.reduce((sum, group) => sum + Number(group.open_count || 0), 0);
+  const review = groups.reduce((sum, group) => sum + Number(group.review_count || 0), 0);
+  const container = document.querySelector("#issue-summary");
+  if (!container) return;
+  container.innerHTML = `
+    <span>聚合组 ${formatNumber(groups.length)}</span>
+    <span>问题总数 ${formatNumber(total)}</span>
+    <span>未闭环 ${formatNumber(open)}</span>
+    <span>待复核 ${formatNumber(review)}</span>
+  `;
+}
+
+function renderIssueGroupRows(groups) {
+  const tbody = document.querySelector("#issue-table");
+  if (!groups.length) {
+    tbody.innerHTML = '<tr><td colspan="9">当前筛选条件下暂无聚合问题</td></tr>';
+    return;
+  }
+  tbody.innerHTML = groups
+    .map((group) => `
+      <tr>
+        <td>${escapeHtml(group.city)}</td>
+        <td><strong>${escapeHtml(group.telecom_site_code || "未填编码")}</strong><p class="table-note">${escapeHtml(group.telecom_site_name || "")}</p></td>
+        <td>${escapeHtml(ledgerLabel(group.ledger_type))}</td>
+        <td class="rule-cell"><strong>${escapeHtml(group.rule_name || group.rule_id)}</strong><span>${escapeHtml(group.rule_id)}</span></td>
+        <td><span class="chip chip-${severityTone(group.severity)}">${escapeHtml(severityLabel(group.severity))}</span></td>
+        <td>${formatNumber(group.issue_count)}</td>
+        <td>${formatNumber(group.open_count)}</td>
+        <td>
+          <span class="mini-chip">待复核 ${formatNumber(group.review_count)}</span>
+          <span class="mini-chip">仍异常 ${formatNumber(group.still_invalid_count)}</span>
+          <span class="mini-chip">已关闭 ${formatNumber(group.closed_count)}</span>
+          <span class="mini-chip">无需整改 ${formatNumber(group.not_required_count)}</span>
+        </td>
+        <td>
+          <button class="text-button" data-group-status="closed" data-group='${escapeHtml(JSON.stringify(groupStatusPayload(group)))}' type="button">批量关闭</button>
+          <button class="text-button" data-group-status="not_required" data-group='${escapeHtml(JSON.stringify(groupStatusPayload(group)))}' type="button">批量无需整改</button>
+        </td>
+      </tr>
+    `)
+    .join("");
+  tbody.querySelectorAll("[data-group-status]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const group = JSON.parse(button.dataset.group);
+      await postJson("/api/issues/group-status", { batch_id: state.batchId, group, status: button.dataset.groupStatus });
+      await loadIssues();
+    });
+  });
+}
+
+function groupStatusPayload(group) {
+  return {
+    city: group.city,
+    ledger_type: group.ledger_type,
+    rule_id: group.rule_id,
+    telecom_site_code: group.telecom_site_code || "",
+  };
+}
+
+function applyQuickIssueFilter(filter) {
+  const status = document.querySelector("#filter-status");
+  if (!status) return;
+  if (filter === "needs_review") status.value = "needs_review";
+  if (filter === "all" || filter === "high" || filter === "open" || filter === "closed") status.value = "";
+}
+
+function renderIssueSummary(issues, total) {
+  const container = document.querySelector("#issue-summary");
+  if (!container) return;
+  const high = issues.filter((issue) => issue.severity === "high").length;
+  const review = issues.filter((issue) => issue.status === "needs_review").length;
+  const open = issues.filter((issue) => !["closed", "not_required"].includes(issue.status)).length;
+  container.innerHTML = `
+    <span>当前筛选共 ${formatNumber(total)} 条</span>
+    <span>本页高风险 ${formatNumber(high)}</span>
+    <span>本页未闭环 ${formatNumber(open)}</span>
+    <span>本页待复核 ${formatNumber(review)}</span>
+  `;
 }
 
 function renderIssueRuleOptions(rules, selectedRule) {
@@ -850,7 +1010,7 @@ function renderIssuePagination(total, limit, offset) {
 function renderIssueRows(issues) {
   const tbody = document.querySelector("#issue-table");
   if (!issues.length) {
-    tbody.innerHTML = '<tr><td colspan="8">当前筛选条件下暂无问题</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9">当前筛选条件下暂无问题</td></tr>';
     return;
   }
   tbody.innerHTML = issues
@@ -862,10 +1022,13 @@ function renderIssueRows(issues) {
           <td>${escapeHtml(ledgerLabel(issue.ledger_type))}</td>
           <td class="rule-cell"><strong>${escapeHtml(issue.rule_name || issue.rule_id)}</strong><span>${escapeHtml(issue.rule_id)}</span></td>
           <td><span class="chip chip-${severityTone(issue.severity)}">${escapeHtml(severityLabel(issue.severity))}</span></td>
-          <td><span class="chip chip-info">${escapeHtml(statusLabel(issue.status))}</span></td>
+          <td><span class="chip chip-${confidenceTone(issue.confidence)}">${escapeHtml(issue.confidence_label || "疑似问题")}</span></td>
+          <td><span class="chip chip-${statusTone(issue.status)}">${escapeHtml(statusLabel(issue.status))}</span></td>
           <td class="message-cell">
             <strong>${escapeHtml(issue.explanation?.what_happened || issue.message)}</strong>
             <span>${escapeHtml(issue.explanation?.judgement_basis || "")}</span>
+            <span>证据：${escapeHtml(issue.evidence?.field || "规则命中")} ${issue.evidence?.value !== undefined && issue.evidence?.value !== null ? `= ${escapeHtml(String(issue.evidence.value))}` : ""}</span>
+            <span>${escapeHtml(issue.group?.label || "单条问题")}${Number(issue.group?.same_site_rule_count || 0) > 1 ? ` · ${formatNumber(issue.group.same_site_rule_count)} 条` : ""}</span>
             <span>建议：${escapeHtml(issue.explanation?.recommended_action || issue.suggestion || "")}</span>
             <span>复核：${escapeHtml(issue.review_suggestion?.decision || "")} · ${escapeHtml(issue.review_suggestion?.reason || "")}</span>
           </td>
@@ -889,6 +1052,12 @@ function renderIssueRows(issues) {
       await loadIssues();
     });
   });
+}
+
+function confidenceTone(confidence) {
+  if (confidence === "high") return "danger";
+  if (confidence === "low") return "info";
+  return "warning";
 }
 
 async function renderExport() {
@@ -987,7 +1156,7 @@ async function renderCorrections() {
         const formData = new FormData();
         formData.append("file", file);
         const data = await postFormData("/api/corrections/upload", formData);
-        setOperationResult("success", `匹配问题数：${formatNumber(data.matched_count)}${data.errors?.length ? `；错误：${data.errors.map(escapeHtml).join("；")}` : ""}`);
+        setOperationHtml("success", renderCorrectionImportResult(data));
         const progress = await fetchJson(`/api/city-progress?batch_id=${state.batchId}`);
         renderCityProgress(progress.cities || []);
       } catch (error) {
@@ -997,6 +1166,23 @@ async function renderCorrections() {
   });
   const progress = await fetchJson(`/api/city-progress?batch_id=${state.batchId}`).catch(() => ({ cities: [] }));
   renderCityProgress(progress.cities || []);
+}
+
+function renderCorrectionImportResult(data) {
+  const errors = data.errors || [];
+  const warnings = data.review_warnings || [];
+  const review = data.auto_review || {};
+  return `
+    <p><strong>匹配问题数：${formatNumber(data.matched_count)}</strong></p>
+    <div class="mini-grid">
+      <span>待复核 ${formatNumber(review.needs_review || 0)}</span>
+      <span>仍异常 ${formatNumber(review.still_invalid || 0)}</span>
+      <span>无需整改 ${formatNumber(review.not_required || 0)}</span>
+    </div>
+    ${warnings.length ? `<div class="error-group"><strong>复核提醒</strong><ul class="path-list">${warnings.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>` : ""}
+    ${errors.length ? `<div class="error-group"><strong>导入错误</strong><ul class="path-list">${errors.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>` : ""}
+    ${!warnings.length && !errors.length ? "<p>回传已导入，问题已进入待复核。</p>" : ""}
+  `;
 }
 
 async function renderReports() {
@@ -1042,7 +1228,7 @@ function activateView(view) {
       fieldValue,
       ledgerLabel,
     });
-  if (view === "rules") return renderRules({ mainContent, shellHeader });
+  if (view === "rules") return renderRules({ mainContent, shellHeader, state, refreshBatches });
   if (view === "audit") return renderAudit();
   if (view === "export") return renderExport();
   if (view === "corrections") return renderCorrections();
