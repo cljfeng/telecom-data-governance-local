@@ -96,6 +96,31 @@ def initialize_database(config: AppConfig) -> None:
                 updated_at text not null default current_timestamp
             );
 
+            create table if not exists analysis_opportunities (
+                id integer primary key autoincrement,
+                batch_id integer not null references import_batches(id) on delete cascade,
+                ledger_row_id integer references ledger_rows(id) on delete cascade,
+                domain text not null,
+                opportunity_code text not null unique,
+                opportunity_type text not null,
+                severity text not null,
+                city text,
+                district text,
+                telecom_site_code text,
+                telecom_site_name text,
+                period text,
+                meter_no text,
+                current_amount real not null default 0,
+                reference_amount real not null default 0,
+                recoverable_amount real not null default 0,
+                saving_opportunity_amount real not null default 0,
+                confidence text not null,
+                source_rule_ids_json text not null default '[]',
+                message text not null,
+                suggestion text not null,
+                created_at text not null default current_timestamp
+            );
+
             create table if not exists correction_returns (
                 id integer primary key autoincrement,
                 source_file text not null,
@@ -144,6 +169,12 @@ def initialize_database(config: AppConfig) -> None:
 
             create index if not exists idx_issues_batch_city_status_rule
                 on issues(batch_id, city, status, rule_id);
+
+            create index if not exists idx_analysis_opportunities_batch_domain_type
+                on analysis_opportunities(batch_id, domain, opportunity_type);
+
+            create index if not exists idx_analysis_opportunities_batch_city
+                on analysis_opportunities(batch_id, city);
             """
         )
         _ensure_column(conn, "import_batches", "name", "text")

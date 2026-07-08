@@ -35,3 +35,38 @@ def test_initialize_database_records_schema_version(app_config):
         ).fetchone()
 
     assert row["version"] == 1
+
+
+def test_initialize_database_creates_analysis_opportunities(app_config):
+    initialize_database(app_config)
+
+    with connect(app_config) as conn:
+        columns = {row["name"] for row in conn.execute("pragma table_info(analysis_opportunities)")}
+        indexes = {row["name"] for row in conn.execute("pragma index_list(analysis_opportunities)")}
+
+    assert {
+        "id",
+        "batch_id",
+        "ledger_row_id",
+        "domain",
+        "opportunity_code",
+        "opportunity_type",
+        "severity",
+        "city",
+        "district",
+        "telecom_site_code",
+        "telecom_site_name",
+        "period",
+        "meter_no",
+        "current_amount",
+        "reference_amount",
+        "recoverable_amount",
+        "saving_opportunity_amount",
+        "confidence",
+        "source_rule_ids_json",
+        "message",
+        "suggestion",
+        "created_at",
+    }.issubset(columns)
+    assert "idx_analysis_opportunities_batch_domain_type" in indexes
+    assert "idx_analysis_opportunities_batch_city" in indexes
