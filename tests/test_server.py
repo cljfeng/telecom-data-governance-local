@@ -292,6 +292,26 @@ def test_electricity_analysis_rejects_invalid_batch_path(app_config):
     assert json.loads(body)["error"] == "invalid batch_id"
 
 
+def test_tower_rent_analysis_rejects_invalid_batch_path(app_config):
+    initialize_database(app_config)
+    app = create_app(app_config)
+
+    status, _headers, body = app.handle_test_request("POST", "/api/batches/not-a-number/tower-rent-analysis/run")
+
+    assert status == 400
+    assert json.loads(body)["error"] == "invalid batch_id"
+
+
+def test_tower_rent_analysis_endpoint_reports_missing_batch(app_config):
+    initialize_database(app_config)
+    app = create_app(app_config)
+
+    status, _headers, body = app.handle_test_request("GET", "/api/batches/999/tower-rent-analysis/summary")
+
+    assert status == 400
+    assert json.loads(body)["error"] == "批次不存在"
+
+
 def test_import_upload_endpoint_imports_selected_file(app_config, sample_workbook):
     initialize_database(app_config)
     app = create_app(app_config)
