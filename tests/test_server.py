@@ -254,6 +254,44 @@ def test_rules_endpoint_includes_tuning_recommendations_for_current_batch(app_co
     assert "无需整改率较高" in rule["tuning_recommendation"]["message"]
 
 
+def test_electricity_analysis_endpoints(app_config, sample_workbook):
+    initialize_database(app_config)
+    app = create_app(app_config)
+    app.handle_test_request("POST", "/api/import", json.dumps({"path": str(sample_workbook)}))
+    with connect(app_config) as conn:
+        raw = conn.execute("select id, row_json from raw_rows where ledger_type = 'electricity'").fetchone()
+        row = json.loads(raw["row_json"])
+        row.update({"电费单价": 1.2, "用电量": 100, "电费金额": 300, "供电方式": "转供电", "转供电合同情况": "无"})
+        conn.execute("update raw_rows set row_json = ? where id = ?", (json.dumps(row, ensure_ascii=False), raw["id"]))
+    app.handle_test_request("POST", "/api/audit", json.dumps({"batch_id": 1}))
+
+    status, _headers, body = app.handle_test_request("POST", "/api/batches/1/electricity-analysis/run")
+    assert status == 200
+    assert json.loads(body)["opportunity_count"] >= 3
+
+    status, _headers, body = app.handle_test_request("GET", "/api/batches/1/electricity-analysis/summary")
+    assert status == 200
+    assert json.loads(body)["batch_id"] == 1
+
+    status, _headers, body = app.handle_test_request("GET", "/api/batches/1/electricity-analysis/opportunities")
+    assert status == 200
+    assert "opportunities" in json.loads(body)
+
+    status, _headers, body = app.handle_test_request("POST", "/api/batches/1/electricity-analysis/export")
+    assert status == 200
+    assert json.loads(body)["path"].endswith(".xlsx")
+
+
+def test_electricity_analysis_rejects_invalid_batch_path(app_config):
+    initialize_database(app_config)
+    app = create_app(app_config)
+
+    status, _headers, body = app.handle_test_request("POST", "/api/batches/not-a-number/electricity-analysis/run")
+
+    assert status == 400
+    assert json.loads(body)["error"] == "invalid batch_id"
+
+
 def test_import_upload_endpoint_imports_selected_file(app_config, sample_workbook):
     initialize_database(app_config)
     app = create_app(app_config)
