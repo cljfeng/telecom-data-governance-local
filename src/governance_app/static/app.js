@@ -6,6 +6,7 @@ import { renderRules } from "/rules.js?v=20260517-1";
 import { renderSettings } from "/settings.js?v=20260517-1";
 import { renderAnalytics } from "/analytics.js?v=20260517-1";
 import { renderElectricityAnalysis } from "/electricity-analysis.js?v=20260708-1";
+import { renderTowerRentAnalysis } from "/tower-rent-analysis.js?v=20260708-1";
 
 const views = {
   dashboard: "专项工作台",
@@ -17,6 +18,7 @@ const views = {
   export: "问题包导出",
   corrections: "整改回传",
   electricityAnalysis: "电费压降分析",
+  towerRentAnalysis: "租费异常分析",
   reports: "分析报表",
   settings: "本地设置",
 };
@@ -1236,6 +1238,21 @@ function activateView(view) {
   if (view === "corrections") return renderCorrections();
   if (view === "electricityAnalysis")
     return renderElectricityAnalysis({
+      mainContent,
+      state,
+      refreshBatches,
+      currentBatch,
+      renderNoBatchPrompt,
+      renderBatchSelector,
+      bindBatchSelector,
+      shellHeader,
+      metricCard,
+      escapeHtml,
+      formatNumber,
+      withBusy,
+    });
+  if (view === "towerRentAnalysis")
+    return renderTowerRentAnalysis({
       mainContent,
       state,
       refreshBatches,
