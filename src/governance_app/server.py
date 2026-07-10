@@ -27,6 +27,7 @@ from governance_app.electricity_analysis import (
 from governance_app.exporter import export_issue_packages
 from governance_app.import_preview import export_preview_errors, preview_error_payload, preview_error_summary, preview_workbook
 from governance_app.importer import import_workbook
+from governance_app.operation_guard import OperationConflict, exclusive_operation
 from governance_app.recent_files import list_recent_files
 from governance_app.routes.system import handle_system_route
 from governance_app.rule_settings import load_rule_settings, upsert_rule_setting
@@ -51,6 +52,8 @@ from governance_app.workflow import (
     update_issue_group_status,
     update_issue_status,
 )
+
+MAX_REQUEST_BODY_BYTES = 100 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -228,7 +231,11 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         batch_id, error = _batch_id_from_payload(payload)
         if error:
             return error
-        result = run_audit(config, batch_id)
+        try:
+            with exclusive_operation(config, "audit"):
+                result = run_audit(config, batch_id)
+        except OperationConflict as exc:
+            return _json({"error": str(exc)}, status=409)
         return _json({"audit_run_id": result.audit_run_id, "issue_count": result.issue_count})
     if method == "POST" and parsed.path == "/api/export":
         payload, error = _json_body(body)
@@ -314,7 +321,10 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         if error:
             return error
         try:
-            path = archive_batch(config, batch_id)
+            with exclusive_operation(config, "archive"):
+                path = archive_batch(config, batch_id)
+        except OperationConflict as exc:
+            return _json({"error": str(exc)}, status=409)
         except ValueError as exc:
             return _json({"error": str(exc)}, status=400)
         return _json({"path": str(path)})
@@ -405,12 +415,15 @@ def _import_from_payload(config: AppConfig, payload: dict) -> tuple[int, dict[st
         return _json({"error": "strategy must be string"}, status=400)
     batch_id = payload.get("batch_id")
     try:
-        result = import_workbook(
-            config,
-            Path(path_value),
-            strategy=strategy,
-            batch_id=int(batch_id) if batch_id not in (None, "") else None,
-        )
+        with exclusive_operation(config, "import"):
+            result = import_workbook(
+                config,
+                Path(path_value),
+                strategy=strategy,
+                batch_id=int(batch_id) if batch_id not in (None, "") else None,
+            )
+    except OperationConflict as exc:
+        return _json({"error": str(exc)}, status=409)
     except (TypeError, ValueError, OSError, InvalidFileException, BadZipFile) as exc:
         return _json({"error": str(exc)}, status=400)
     return _json(
@@ -452,6 +465,18 @@ def _json_body(body: str) -> tuple[dict, tuple[int, dict[str, str], str] | None]
     if not isinstance(payload, dict):
         return {}, _json({"error": "json object required"}, status=400)
     return payload, None
+
+
+def _content_length(value: str | None) -> tuple[int | None, tuple[int, dict[str, str], str] | None]:
+    try:
+        length = int(value) if value is not None else -1
+    except ValueError:
+        length = -1
+    if length < 0:
+        return None, _json({"error": "Content-Length 缺失或无效"}, status=400)
+    if length > MAX_REQUEST_BODY_BYTES:
+        return None, _json({"error": "上传内容不能超过 100 MiB"}, status=413)
+    return length, None
 
 
 def _multipart_body(
@@ -695,7 +720,15 @@ class RequestHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         if self.path.startswith("/api/"):
-            length = int(self.headers.get("content-length", "0"))
+            length, length_error = _content_length(self.headers.get("content-length"))
+            if length_error is not None:
+                status, headers, response_body = length_error
+                self.send_response(status)
+                for key, value in headers.items():
+                    self.send_header(key, value)
+                self.end_headers()
+                self.wfile.write(response_body.encode("utf-8"))
+                return
             content_type = self.headers.get("content-type", "")
             raw_body = self.rfile.read(length)
             if content_type.startswith("multipart/form-data"):

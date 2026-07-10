@@ -1,6 +1,10 @@
 import json
+from io import BytesIO
 from pathlib import Path
 
+import pytest
+
+import governance_app.server as server_module
 from governance_app.config import AppConfig
 from governance_app.db import connect, initialize_database
 from governance_app.db import SCHEMA_VERSION
@@ -130,6 +134,82 @@ def test_import_audit_export_and_correction_endpoints(app_config, sample_workboo
 
     assert status == 200
     assert "matched_count" in json.loads(body)
+
+
+def test_heavy_operation_conflict_returns_409(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    app = create_app(app_config)
+    guard = getattr(server_module, "exclusive_operation", None)
+    assert guard is not None
+
+    with guard(app_config, "test"):
+        status, _headers, body = app.handle_test_request(
+            "POST", "/api/audit", json.dumps({"batch_id": imported.batch_id})
+        )
+
+    assert status == 409
+    assert json.loads(body)["error"] == "系统正在执行其他数据操作，请稍后重试"
+
+
+def test_operation_lock_releases_after_exception(app_config):
+    guard = getattr(server_module, "exclusive_operation", None)
+    assert guard is not None
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with guard(app_config, "failing"):
+            raise RuntimeError("boom")
+
+    with guard(app_config, "next"):
+        pass
+
+
+@pytest.mark.parametrize("value", [None, "invalid", "-1"])
+def test_content_length_rejects_missing_invalid_and_negative_values(value):
+    parser = getattr(server_module, "_content_length", None)
+    assert parser is not None
+
+    length, error = parser(value)
+
+    assert length is None
+    assert error[0] == 400
+
+
+def test_content_length_rejects_request_above_100_mib():
+    parser = getattr(server_module, "_content_length", None)
+    maximum = getattr(server_module, "MAX_REQUEST_BODY_BYTES", None)
+    assert parser is not None
+    assert maximum == 100 * 1024 * 1024
+
+    length, error = parser(str(maximum + 1))
+
+    assert length is None
+    assert error[0] == 413
+    assert "100 MiB" in json.loads(error[2])["error"]
+
+
+def test_oversized_request_is_rejected_without_reading_body(app_config):
+    maximum = getattr(server_module, "MAX_REQUEST_BODY_BYTES", None)
+    assert maximum is not None
+
+    class NoRead(BytesIO):
+        def read(self, *args, **kwargs):
+            raise AssertionError("request body must not be read")
+
+    handler = object.__new__(server_module.RequestHandler)
+    handler.config = app_config
+    handler.path = "/api/import/upload"
+    handler.headers = {"content-length": str(maximum + 1), "content-type": "multipart/form-data"}
+    handler.rfile = NoRead()
+    handler.wfile = BytesIO()
+    statuses = []
+    handler.send_response = statuses.append
+    handler.send_header = lambda _key, _value: None
+    handler.end_headers = lambda: None
+
+    handler.do_POST()
+
+    assert statuses == [413]
 
 
 def test_export_endpoint_accepts_province_mode(app_config, sample_workbook):
