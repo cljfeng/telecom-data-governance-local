@@ -403,4 +403,5 @@ def _status_label(value: str | None) -> str:
         "needs_review": "待复核",
         "closed": "已关闭",
         "not_required": "无需整改",
+        "resolved_by_reaudit": "复核稽核已解除",
     }.get(str(value or ""), str(value or "未知"))

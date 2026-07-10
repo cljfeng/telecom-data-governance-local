@@ -537,7 +537,8 @@ def city_progress(config: AppConfig, batch_id: int) -> list[dict[str, Any]]:
                    sum(case when status = 'needs_review' then 1 else 0 end) as review_count,
                    sum(case when status = 'still_invalid' then 1 else 0 end) as still_invalid_count,
                    sum(case when status = 'closed' then 1 else 0 end) as closed_count,
-                   sum(case when status = 'not_required' then 1 else 0 end) as not_required_count
+                   sum(case when status = 'not_required' then 1 else 0 end) as not_required_count,
+                   sum(case when status = 'resolved_by_reaudit' then 1 else 0 end) as resolved_count
               from issues
              where batch_id = ?
              group by coalesce(city, '未填地市')
@@ -560,13 +561,18 @@ def city_progress(config: AppConfig, batch_id: int) -> list[dict[str, Any]]:
                 "still_invalid_count": 0,
                 "closed_count": 0,
                 "not_required_count": 0,
+                "resolved_count": 0,
             },
         )
-        for key in ("total_count", "pending_count", "returned_count", "review_count", "still_invalid_count", "closed_count", "not_required_count"):
+        for key in ("total_count", "pending_count", "returned_count", "review_count", "still_invalid_count", "closed_count", "not_required_count", "resolved_count"):
             target[key] += int(item[key] or 0)
     progress: list[dict[str, Any]] = []
     for item in merged.values():
-        closed = int(item["closed_count"] or 0) + int(item["not_required_count"] or 0)
+        closed = (
+            int(item["closed_count"] or 0)
+            + int(item["not_required_count"] or 0)
+            + int(item["resolved_count"] or 0)
+        )
         total = int(item["total_count"] or 0)
         item["completion_rate"] = round((closed / total) * 100, 1) if total else 0.0
         item["top_rules"] = top_rules.get(item["city"], [])

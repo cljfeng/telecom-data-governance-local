@@ -9,6 +9,7 @@ from governance_app.rules.electricity import electricity_batch_rules
 from governance_app.db import connect, initialize_database
 from governance_app.importer import import_workbook
 from governance_app.rule_settings import upsert_rule_setting
+from governance_app.workflow import city_progress
 
 
 def test_run_audit_generates_issue_for_invalid_electricity_price(app_config, sample_workbook):
@@ -212,6 +213,7 @@ def test_repeated_audit_resolves_and_reopens_issue_with_history(app_config, samp
     assert resolved["status"] == "resolved_by_reaudit"
     assert resolved["resolved_at"]
     assert resolve_event["source"] == "reaudit_resolve"
+    assert city_progress(app_config, imported.batch_id)[0]["completion_rate"] == 100.0
 
     run_audit(app_config, imported.batch_id)
 
