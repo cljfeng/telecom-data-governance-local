@@ -893,5 +893,8 @@ def test_check_script_runs_project_verification_commands():
     assert script.exists()
     content = script.read_text(encoding="utf-8")
     assert ".venv/bin/python -m pytest -q" in content
-    assert "node --check src/governance_app/static/app.js" in content
+    assert "python -m compileall -q src" in content
+    assert "src/governance_app/static/*.js" in content
+    assert "node --check src/governance_app/static/app.js" not in content
     assert "bash -n scripts/start.sh" in content
+    assert "bash -n scripts/build_app.sh" in content
