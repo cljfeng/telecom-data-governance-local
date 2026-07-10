@@ -92,6 +92,13 @@ def export_city_issue_packages(config: AppConfig, batch_id: int) -> list[Path]:
                 """,
                 [(issue["id"],) for issue in issues],
             )
+            conn.executemany(
+                """
+                insert into issue_events(issue_id, from_status, to_status, source, note)
+                values (?, ?, 'pending_correction', 'export', '导出地市整改包')
+                """,
+                [(issue["id"], issue["status"]) for issue in issues],
+            )
             paths.append(path)
         if paths:
             transition_batch_in_conn(conn, batch_id, "export")
@@ -142,6 +149,13 @@ def _export_province_issue_package(config: AppConfig, batch_id: int) -> list[Pat
              where batch_id = ?
             """,
             (batch_id,),
+        )
+        conn.executemany(
+            """
+            insert into issue_events(issue_id, from_status, to_status, source, note)
+            values (?, ?, 'pending_correction', 'export', '导出全省整改包')
+            """,
+            [(issue["id"], issue["status"]) for issue in issues],
         )
         transition_batch_in_conn(conn, batch_id, "export")
         conn.execute(

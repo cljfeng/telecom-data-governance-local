@@ -68,6 +68,17 @@ def test_run_electricity_analysis_refreshes_existing_rows(app_config, sample_wor
     assert first["opportunity_count"] == second["opportunity_count"]
 
 
+def test_reaudit_invalidates_stale_electricity_analysis(app_config, sample_workbook):
+    batch_id = _import_and_audit(app_config, sample_workbook)
+    first = run_electricity_analysis(app_config, batch_id)
+    assert first["opportunity_count"] > 0
+
+    run_audit(app_config, batch_id)
+
+    assert get_electricity_summary(app_config, batch_id)["opportunity_count"] == 0
+    assert get_electricity_opportunities(app_config, batch_id) == []
+
+
 def test_electricity_analysis_ignores_issues_resolved_by_reaudit(app_config, sample_workbook):
     batch_id = _import_and_audit(app_config, sample_workbook)
     with connect(app_config) as conn:

@@ -67,7 +67,7 @@ BATCH_TRANSITIONS = {
         "to": "imported",
     },
     "audit": {
-        "from": {"imported", "audited"},
+        "from": {"imported", "audited", "distributed", "returning"},
         "to": "audited",
     },
     "export": {

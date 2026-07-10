@@ -59,7 +59,7 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
             seen_issue_codes.add(issue_code_text)
             batch_row = conn.execute(
                 """
-                select i.batch_id, i.severity, i.status, b.is_archived
+                select i.id, i.batch_id, i.severity, i.status, b.is_archived
                   from issues i
                   join import_batches b on b.id = i.batch_id
                  where i.issue_code = ?
@@ -92,6 +92,18 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
             else:
                 if batch_row is not None:
                     matched_batch_ids.add(batch_row["batch_id"])
+                    conn.execute(
+                        """
+                        insert into issue_events(issue_id, from_status, to_status, source, note)
+                        values (?, ?, ?, 'correction_return', ?)
+                        """,
+                        (
+                            batch_row["id"],
+                            batch_row["status"],
+                            target_status,
+                            f"导入整改回传：{issue_code_text}",
+                        ),
+                    )
                 auto_review[target_status] = auto_review.get(target_status, 0) + 1
                 matched_count += 1
         conn.execute(

@@ -145,6 +145,16 @@ def test_failed_migration_rolls_back_schema_and_version(tmp_path):
     assert "schema_migrations" not in tables
 
 
+def test_apply_migrations_accepts_standard_sqlite_connection():
+    conn = sqlite3.connect(":memory:")
+
+    apply_migrations(conn)
+
+    version = conn.execute("select max(version) from schema_migrations").fetchone()[0]
+    conn.close()
+    assert version == SCHEMA_VERSION
+
+
 def test_initialize_database_rejects_newer_schema(app_config):
     initialize_database(app_config)
     with connect(app_config) as conn:

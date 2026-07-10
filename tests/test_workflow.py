@@ -207,6 +207,19 @@ def test_transition_batch_rejects_invalid_forward_transition(app_config):
         transition_batch(app_config, batch_id, "export")
 
 
+@pytest.mark.parametrize("status", ["distributed", "returning"])
+def test_reaudit_returns_advanced_workflow_to_audited(app_config, status):
+    initialize_database(app_config)
+    batch_id = create_batch(app_config, "专项批次")
+    with connect(app_config) as conn:
+        conn.execute("update import_batches set status = ? where id = ?", (status, batch_id))
+
+    result = transition_batch(app_config, batch_id, "audit")
+
+    assert result == "audited"
+    assert get_batch_workflow(app_config, batch_id)["batch"]["status"] == "audited"
+
+
 def test_update_issue_status_rejects_unknown_status(app_config, sample_workbook):
     initialize_database(app_config)
     imported = import_workbook(app_config, sample_workbook)

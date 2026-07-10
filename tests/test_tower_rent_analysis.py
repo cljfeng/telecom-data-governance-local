@@ -142,6 +142,17 @@ def test_run_tower_rent_analysis_refreshes_existing_rows(app_config):
     assert first["clue_count"] == second["clue_count"]
 
 
+def test_reaudit_invalidates_stale_tower_rent_analysis(app_config):
+    batch_id = _audited_tower_batch(app_config)
+    first = run_tower_rent_analysis(app_config, batch_id)
+    assert first["clue_count"] > 0
+
+    run_audit(app_config, batch_id)
+
+    assert get_tower_rent_summary(app_config, batch_id)["clue_count"] == 0
+    assert get_tower_rent_clues(app_config, batch_id) == []
+
+
 def test_tower_rent_analysis_ignores_issues_resolved_by_reaudit(app_config):
     batch_id = _audited_tower_batch(app_config)
     with connect(app_config) as conn:

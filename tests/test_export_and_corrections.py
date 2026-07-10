@@ -43,6 +43,11 @@ def test_export_city_issue_packages_writes_issue_workbook(app_config, sample_wor
     assert "：" not in ws["O2"].value
     assert ws["Q1"].value == "整改结果"
     assert ws.data_validations.count >= 1
+    with connect(app_config) as conn:
+        export_events = conn.execute(
+            "select count(*) as c from issue_events where source = 'export'"
+        ).fetchone()["c"]
+    assert export_events >= 1
 
 
 def test_export_issue_packages_can_write_single_province_workbook(app_config, sample_workbook):
@@ -228,7 +233,11 @@ def test_import_correction_return_updates_issue_status(app_config, sample_workbo
     assert result.matched_count == 1
     with connect(app_config) as conn:
         status = conn.execute("select status from issues limit 1").fetchone()["status"]
+        correction_event = conn.execute(
+            "select source from issue_events where source = 'correction_return' limit 1"
+        ).fetchone()
         assert status == "needs_review"
+        assert correction_event["source"] == "correction_return"
 
 
 def test_import_correction_return_warns_when_high_risk_lacks_note(app_config, sample_workbook):

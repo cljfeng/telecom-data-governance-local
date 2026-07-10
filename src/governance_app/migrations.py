@@ -19,7 +19,7 @@ def current_schema_version(conn: sqlite3.Connection) -> int:
     if table is None:
         return 0
     row = conn.execute("select max(version) as version from schema_migrations").fetchone()
-    return int(row["version"] or 0)
+    return int(row[0] or 0)
 
 
 def apply_migrations(
@@ -230,7 +230,7 @@ def _execute_script(conn: sqlite3.Connection, script: str) -> None:
 
 
 def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:
-    columns = {row["name"] for row in conn.execute(f"pragma table_info({table_name})")}
+    columns = {row[1] for row in conn.execute(f"pragma table_info({table_name})")}
     if column_name not in columns:
         conn.execute(f"alter table {table_name} add column {column_name} {definition}")
 

@@ -106,6 +106,7 @@ def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
                 seen_issue_codes.add(issue_code)
                 issue_count += 1
         _resolve_missing_issues(conn, batch_id, audit_run_id, seen_issue_codes)
+        conn.execute("delete from analysis_opportunities where batch_id = ?", (batch_id,))
         transition_batch_in_conn(conn, batch_id, "audit")
         elapsed = perf_counter() - started_at
         conn.execute(
