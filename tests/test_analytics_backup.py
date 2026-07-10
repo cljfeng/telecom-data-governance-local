@@ -3,10 +3,15 @@ from openpyxl import load_workbook
 
 from governance_app.archive import archive_batch, archive_precheck, export_notice_report
 from governance_app.audit_engine import run_audit
+import pytest
+
+import governance_app.backup as backup_service
+import governance_app.settings_service as settings_service
 from governance_app.backup import create_backup, restore_backup
 from governance_app.db import connect, initialize_database
 from governance_app.exporter import export_city_issue_packages
 from governance_app.importer import import_workbook
+from governance_app.settings_service import restore_backup_safely
 
 
 def test_dashboard_summary_counts_batch_and_issues(app_config, sample_workbook):
@@ -110,6 +115,51 @@ def test_create_backup_does_not_overwrite_same_second_backup(app_config, sample_
     assert first != second
     assert first.exists()
     assert second.exists()
+
+
+def test_create_backup_passes_integrity_check(app_config, sample_workbook):
+    initialize_database(app_config)
+    import_workbook(app_config, sample_workbook)
+
+    backup_path = create_backup(app_config)
+
+    backup_service.check_database_integrity(backup_path)
+
+
+def test_safe_restore_rejects_corrupt_backup_without_changing_active_database(app_config, sample_workbook):
+    initialize_database(app_config)
+    import_workbook(app_config, sample_workbook)
+    backup_dir = app_config.workspace_dir / "backups"
+    backup_dir.mkdir()
+    corrupt = backup_dir / "corrupt.sqlite3"
+    corrupt.write_bytes(b"not sqlite")
+
+    with pytest.raises(ValueError, match="完整性校验失败"):
+        restore_backup_safely(app_config, corrupt)
+
+    with connect(app_config) as conn:
+        count = conn.execute("select count(*) as c from import_batches").fetchone()["c"]
+    assert count == 1
+
+
+def test_safe_restore_rolls_back_when_post_restore_initialization_fails(app_config, sample_workbook, monkeypatch):
+    initialize_database(app_config)
+    import_workbook(app_config, sample_workbook)
+    source_backup = create_backup(app_config)
+    import_workbook(app_config, sample_workbook)
+
+    monkeypatch.setattr(
+        settings_service,
+        "initialize_database",
+        lambda _config: (_ for _ in ()).throw(RuntimeError("post restore failed")),
+    )
+
+    with pytest.raises(ValueError, match="已还原恢复前数据库"):
+        restore_backup_safely(app_config, source_backup)
+
+    with connect(app_config) as conn:
+        count = conn.execute("select count(*) as c from import_batches").fetchone()["c"]
+    assert count == 2
 
 
 def test_restore_backup_rejects_file_outside_backup_dir(app_config, sample_workbook):

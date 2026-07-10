@@ -108,6 +108,25 @@ def test_initialize_database_upgrades_version_one_without_losing_data(app_config
     assert version == SCHEMA_VERSION
 
 
+def test_initialize_database_backs_up_version_one_before_upgrade(app_config):
+    app_config.data_dir.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(app_config.database_path)
+    conn.row_factory = sqlite3.Row
+    apply_migrations(conn, MIGRATIONS[:1])
+    conn.close()
+
+    initialize_database(app_config)
+
+    backups = list((app_config.workspace_dir / "backups").glob("*.sqlite3"))
+    assert len(backups) == 1
+
+
+def test_initialize_database_does_not_backup_fresh_database(app_config):
+    initialize_database(app_config)
+
+    assert not (app_config.workspace_dir / "backups").exists()
+
+
 def test_failed_migration_rolls_back_schema_and_version(tmp_path):
     path = tmp_path / "failed.sqlite3"
     conn = sqlite3.connect(path)
