@@ -248,6 +248,7 @@ _ISSUE_EXPORT_SQL = """
               left join ledger_rows lr on lr.id = ar.ledger_row_id
               left join raw_rows rr on rr.id = lr.raw_row_id
              where i.batch_id = ?
+               and i.status <> 'resolved_by_reaudit'
 """
 
 

@@ -563,7 +563,7 @@ def _rule_effectiveness_by_rule(config: AppConfig, batch_id: int | None) -> dict
             """
             select rule_id,
                    count(*) as total_count,
-                   sum(case when status not in ('closed', 'not_required') then 1 else 0 end) as open_count,
+                   sum(case when status not in ('closed', 'not_required', 'resolved_by_reaudit') then 1 else 0 end) as open_count,
                    sum(case when status = 'not_required' then 1 else 0 end) as not_required_count,
                    sum(case when status = 'still_invalid' then 1 else 0 end) as still_invalid_count
               from issues

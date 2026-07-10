@@ -140,6 +140,118 @@ def test_run_audit_generates_stable_issue_codes(app_config, sample_workbook):
         assert total == distinct_total
 
 
+def test_repeated_audit_updates_latest_result_and_preserves_manual_fields(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+        )
+    first = run_audit(app_config, imported.batch_id)
+    with connect(app_config) as conn:
+        original = conn.execute(
+            "select id, audit_result_id from issues where rule_id = 'electricity_price_range'"
+        ).fetchone()
+        conn.execute(
+            "update issues set status = 'needs_review', correction_value = '0.8', correction_note = '已核查' where id = ?",
+            (original["id"],),
+        )
+
+    second = run_audit(app_config, imported.batch_id)
+
+    with connect(app_config) as conn:
+        issue = conn.execute(
+            """
+            select audit_result_id, last_seen_audit_run_id, status, correction_value, correction_note
+              from issues
+             where id = ?
+            """,
+            (original["id"],),
+        ).fetchone()
+    assert first.audit_run_id != second.audit_run_id
+    assert issue["audit_result_id"] != original["audit_result_id"]
+    assert issue["last_seen_audit_run_id"] == second.audit_run_id
+    assert issue["status"] == "needs_review"
+    assert issue["correction_value"] == "0.8"
+    assert issue["correction_note"] == "已核查"
+
+
+def test_repeated_audit_resolves_and_reopens_issue_with_history(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+        )
+    run_audit(app_config, imported.batch_id)
+    with connect(app_config) as conn:
+        issue = conn.execute(
+            "select id from issues where rule_id = 'electricity_price_range'"
+        ).fetchone()
+        conn.execute(
+            "update issues set correction_value = '0.8', correction_note = '保留说明' where id = ?",
+            (issue["id"],),
+        )
+        conn.execute(
+            "update raw_rows set row_json = replace(row_json, '9.9', '0.8') where ledger_type = 'electricity'"
+        )
+
+    run_audit(app_config, imported.batch_id)
+
+    with connect(app_config) as conn:
+        resolved = conn.execute(
+            "select status, resolved_at from issues where id = ?", (issue["id"],)
+        ).fetchone()
+        resolve_event = conn.execute(
+            "select source from issue_events where issue_id = ? and source = 'reaudit_resolve'",
+            (issue["id"],),
+        ).fetchone()
+        conn.execute(
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+        )
+    assert resolved["status"] == "resolved_by_reaudit"
+    assert resolved["resolved_at"]
+    assert resolve_event["source"] == "reaudit_resolve"
+
+    run_audit(app_config, imported.batch_id)
+
+    with connect(app_config) as conn:
+        reopened = conn.execute(
+            "select status, resolved_at, correction_value, correction_note from issues where id = ?",
+            (issue["id"],),
+        ).fetchone()
+        reopen_event = conn.execute(
+            "select source from issue_events where issue_id = ? and source = 'reaudit_reopen'",
+            (issue["id"],),
+        ).fetchone()
+    assert reopened["status"] == "pending_export"
+    assert reopened["resolved_at"] is None
+    assert reopened["correction_value"] == "0.8"
+    assert reopened["correction_note"] == "保留说明"
+    assert reopen_event["source"] == "reaudit_reopen"
+
+
+def test_run_audit_rejects_archived_batch_before_creating_run(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update import_batches set status = 'archived', is_archived = 1 where id = ?",
+            (imported.batch_id,),
+        )
+
+    try:
+        run_audit(app_config, imported.batch_id)
+    except ValueError as exc:
+        assert str(exc) == "batch is archived"
+    else:
+        raise AssertionError("archived batch should reject audit")
+
+    with connect(app_config) as conn:
+        count = conn.execute("select count(*) as c from audit_runs").fetchone()["c"]
+    assert count == 0
+
+
 def test_run_audit_applies_electricity_governance_rules(app_config):
     initialize_database(app_config)
     batch_id = _create_batch(app_config)

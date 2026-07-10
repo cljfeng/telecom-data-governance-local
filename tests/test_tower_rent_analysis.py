@@ -142,6 +142,19 @@ def test_run_tower_rent_analysis_refreshes_existing_rows(app_config):
     assert first["clue_count"] == second["clue_count"]
 
 
+def test_tower_rent_analysis_ignores_issues_resolved_by_reaudit(app_config):
+    batch_id = _audited_tower_batch(app_config)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update issues set status = 'resolved_by_reaudit' where batch_id = ? and ledger_type = 'tower_rent'",
+            (batch_id,),
+        )
+
+    result = run_tower_rent_analysis(app_config, batch_id)
+
+    assert result["clue_count"] == 0
+
+
 def test_tower_rent_summary_groups_amounts(app_config):
     batch_id = _audited_tower_batch(app_config)
     run_tower_rent_analysis(app_config, batch_id)

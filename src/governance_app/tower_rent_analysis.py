@@ -271,6 +271,7 @@ def _issue_rows(conn, batch_id: int):
           join ledger_rows lr on lr.id = ar.ledger_row_id
           left join raw_rows rr on rr.id = lr.raw_row_id
          where i.batch_id = ? and i.ledger_type = 'tower_rent'
+           and i.status <> 'resolved_by_reaudit'
          order by i.id
         """,
         (batch_id,),

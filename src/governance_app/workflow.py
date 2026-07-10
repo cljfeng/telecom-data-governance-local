@@ -21,6 +21,7 @@ ISSUE_STATUSES = {
     "needs_review",
     "closed",
     "not_required",
+    "resolved_by_reaudit",
 }
 
 
@@ -222,7 +223,7 @@ def _todo_summary(conn, batch_id: int) -> dict[str, Any]:
     row = conn.execute(
         """
         select count(*) as total_issue_count,
-               sum(case when status not in ('closed', 'not_required') then 1 else 0 end) as open_issue_count,
+               sum(case when status not in ('closed', 'not_required', 'resolved_by_reaudit') then 1 else 0 end) as open_issue_count,
                sum(case when status = 'pending_correction' then 1 else 0 end) as pending_count,
                sum(case when status = 'needs_review' then 1 else 0 end) as review_count,
                sum(case when status = 'still_invalid' then 1 else 0 end) as still_invalid_count
@@ -318,9 +319,9 @@ def list_issues(
             params.append(value)
     closure = filters.get("closure")
     if closure == "open":
-        where.append("issues.status not in ('closed', 'not_required')")
+        where.append("issues.status not in ('closed', 'not_required', 'resolved_by_reaudit')")
     elif closure == "closed":
-        where.append("issues.status in ('closed', 'not_required')")
+        where.append("issues.status in ('closed', 'not_required', 'resolved_by_reaudit')")
     base_where = " and ".join(where)
     sql = f"""
         select issues.issue_code, coalesce(issues.city, '未填地市') as city, issues.district,
@@ -430,9 +431,9 @@ def list_issue_groups(config: AppConfig, batch_id: int, filters: dict[str, str] 
             params.append(value)
     closure = filters.get("closure")
     if closure == "open":
-        where.append("status not in ('closed', 'not_required')")
+        where.append("status not in ('closed', 'not_required', 'resolved_by_reaudit')")
     elif closure == "closed":
-        where.append("status in ('closed', 'not_required')")
+        where.append("status in ('closed', 'not_required', 'resolved_by_reaudit')")
     sql = f"""
         select coalesce(city, '未填地市') as city,
                ledger_type,
@@ -441,7 +442,7 @@ def list_issue_groups(config: AppConfig, batch_id: int, filters: dict[str, str] 
                coalesce(telecom_site_code, '') as telecom_site_code,
                max(telecom_site_name) as telecom_site_name,
                count(*) as issue_count,
-               sum(case when status not in ('closed', 'not_required') then 1 else 0 end) as open_count,
+               sum(case when status not in ('closed', 'not_required', 'resolved_by_reaudit') then 1 else 0 end) as open_count,
                sum(case when status = 'needs_review' then 1 else 0 end) as review_count,
                sum(case when status = 'still_invalid' then 1 else 0 end) as still_invalid_count,
                sum(case when status = 'closed' then 1 else 0 end) as closed_count,
@@ -498,11 +499,25 @@ def update_issue_group_status(config: AppConfig, batch_id: int, group: dict[str,
             raise ValueError("batch not found")
         if batch["is_archived"]:
             raise ValueError("batch is archived")
+        affected = conn.execute(
+            f"select id, status from issues where {' and '.join(where)}",
+            params,
+        ).fetchall()
         cursor = conn.execute(
             f"update issues set status = ?, updated_at = current_timestamp where {' and '.join(where)}",
             [status] + params,
         )
         if cursor.rowcount:
+            conn.executemany(
+                """
+                insert into issue_events(issue_id, from_status, to_status, source, note)
+                values (?, ?, ?, 'manual_group', ?)
+                """,
+                [
+                    (row["id"], row["status"], status, f"批量更新问题组：{group.get('rule_id')}")
+                    for row in affected
+                ],
+            )
             conn.execute(
                 "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
                 (batch_id, "update_issue_group_status", f"批量更新问题组：{group.get('rule_id')} -> {status}，{cursor.rowcount} 条"),
@@ -660,7 +675,7 @@ def _review_suggestion(issue: dict[str, Any]) -> dict[str, str]:
         if issue["severity"] == "high" and not note:
             return {"decision": "需要人工判断", "reason": "高风险问题缺少整改说明"}
         return {"decision": "建议复核", "reason": "已回传整改信息，请核对佐证和原始台账"}
-    if status in {"closed", "not_required"}:
+    if status in {"closed", "not_required", "resolved_by_reaudit"}:
         return {"decision": "已闭环", "reason": "当前状态已计入闭环"}
     if status == "still_invalid":
         return {"decision": "建议退回", "reason": "回传后仍异常，需要地市继续整改"}
@@ -677,7 +692,7 @@ def update_issue_status(config: AppConfig, issue_code: str, status: IssueStatus)
     with connect(config) as conn:
         row = conn.execute(
             """
-            select i.batch_id, b.is_archived
+            select i.id, i.batch_id, i.status, b.is_archived
               from issues i
               join import_batches b on b.id = i.batch_id
              where i.issue_code = ?
@@ -691,6 +706,13 @@ def update_issue_status(config: AppConfig, issue_code: str, status: IssueStatus)
         conn.execute(
             "update issues set status = ?, updated_at = current_timestamp where issue_code = ?",
             (status, issue_code),
+        )
+        conn.execute(
+            """
+            insert into issue_events(issue_id, from_status, to_status, source, note)
+            values (?, ?, ?, 'manual', ?)
+            """,
+            (row["id"], row["status"], status, f"人工更新问题状态：{issue_code}"),
         )
         conn.execute(
             "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",

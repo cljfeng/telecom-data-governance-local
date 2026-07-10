@@ -33,6 +33,11 @@ def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
     rules = _enabled_rules(all_rules(thresholds), rule_settings)
     batch_rules = _enabled_rules(all_batch_rules(thresholds), rule_settings)
     with connect(config) as conn:
+        batch = conn.execute("select is_archived from import_batches where id = ?", (batch_id,)).fetchone()
+        if batch is None:
+            raise ValueError("batch not found")
+        if batch["is_archived"]:
+            raise ValueError("batch is archived")
         audit_run_id = conn.execute(
             "insert into audit_runs(batch_id, rule_count) values (?, ?)",
             (batch_id, len(rules) + len(batch_rules)),
@@ -52,6 +57,7 @@ def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
             (batch_id,),
         ).fetchall()
         issue_count = 0
+        seen_issue_codes: set[str] = set()
         audit_rows = [
             AuditLedgerRow(
                 ledger_row_id=ledger_row["id"],
@@ -72,7 +78,7 @@ def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
                 finding = rule.evaluate(row_data)
                 if finding is None:
                     continue
-                _insert_finding(
+                issue_code = _insert_finding(
                     conn,
                     audit_run_id,
                     batch_id,
@@ -81,13 +87,14 @@ def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
                     rule.severity,
                     finding,
                 )
+                seen_issue_codes.add(issue_code)
                 issue_count += 1
         ledger_rows_by_id = {ledger_row["id"]: ledger_row for ledger_row in rows}
         for rule in batch_rules:
             matching_rows = audit_rows if rule.ledger_type == "all" else [row for row in audit_rows if row.ledger_type == rule.ledger_type]
             for finding in rule.evaluate(matching_rows):
                 ledger_row = ledger_rows_by_id[finding.ledger_row_id]
-                _insert_finding(
+                issue_code = _insert_finding(
                     conn,
                     audit_run_id,
                     batch_id,
@@ -96,7 +103,9 @@ def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
                     rule.severity,
                     finding,
                 )
+                seen_issue_codes.add(issue_code)
                 issue_count += 1
+        _resolve_missing_issues(conn, batch_id, audit_run_id, seen_issue_codes)
         transition_batch_in_conn(conn, batch_id, "audit")
         elapsed = perf_counter() - started_at
         conn.execute(
@@ -155,7 +164,7 @@ def _insert_finding(
     rule_id: str,
     severity: str,
     finding: RuleFinding | BatchRuleFinding,
-) -> None:
+) -> str:
     metadata = rule_metadata(rule_id)
     row_data = parse_row(ledger_row["effective_row_json"])
     result_json = json.dumps(
@@ -191,25 +200,129 @@ def _insert_finding(
         ),
     ).lastrowid
     issue_code = _issue_code(batch_id, ledger_row["id"], rule_id)
+    _sync_issue(
+        conn,
+        issue_code=issue_code,
+        audit_result_id=audit_result_id,
+        audit_run_id=audit_run_id,
+        batch_id=batch_id,
+        ledger_row=ledger_row,
+        rule_id=rule_id,
+        severity=severity,
+        finding=finding,
+    )
+    return issue_code
+
+
+def _sync_issue(
+    conn,
+    *,
+    issue_code: str,
+    audit_result_id: int,
+    audit_run_id: int,
+    batch_id: int,
+    ledger_row,
+    rule_id: str,
+    severity: str,
+    finding: RuleFinding | BatchRuleFinding,
+) -> str:
+    existing = conn.execute("select id, status from issues where issue_code = ?", (issue_code,)).fetchone()
+    values = (
+        audit_result_id,
+        audit_run_id,
+        ledger_row["city"],
+        ledger_row["district"],
+        ledger_row["telecom_site_code"],
+        ledger_row["telecom_site_name"],
+        severity,
+        finding.message,
+        finding.suggestion,
+    )
+    if existing is None:
+        issue_id = conn.execute(
+            """
+            insert into issues(
+                issue_code, audit_result_id, last_seen_audit_run_id, batch_id,
+                city, district, telecom_site_code, telecom_site_name,
+                ledger_type, rule_id, severity, message, suggestion
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                issue_code,
+                audit_result_id,
+                audit_run_id,
+                batch_id,
+                ledger_row["city"],
+                ledger_row["district"],
+                ledger_row["telecom_site_code"],
+                ledger_row["telecom_site_name"],
+                ledger_row["ledger_type"],
+                rule_id,
+                severity,
+                finding.message,
+                finding.suggestion,
+            ),
+        ).lastrowid
+        _record_issue_event(conn, issue_id, None, "pending_export", "audit", "首次命中稽核规则")
+        return "created"
+
+    reopened = existing["status"] == "resolved_by_reaudit"
+    target_status = "pending_export" if reopened else existing["status"]
     conn.execute(
         """
-        insert or ignore into issues(
-            issue_code, audit_result_id, batch_id, city, district, telecom_site_code, telecom_site_name,
-            ledger_type, rule_id, severity, message, suggestion
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        update issues
+           set audit_result_id = ?, last_seen_audit_run_id = ?, city = ?, district = ?,
+               telecom_site_code = ?, telecom_site_name = ?, severity = ?, message = ?, suggestion = ?,
+               status = ?, resolved_at = null, updated_at = current_timestamp
+         where id = ?
         """,
-        (
-            issue_code,
-            audit_result_id,
-            batch_id,
-            ledger_row["city"],
-            ledger_row["district"],
-            ledger_row["telecom_site_code"],
-            ledger_row["telecom_site_name"],
-            ledger_row["ledger_type"],
-            rule_id,
-            severity,
-            finding.message,
-            finding.suggestion,
-        ),
+        values + (target_status, existing["id"]),
+    )
+    if reopened:
+        _record_issue_event(
+            conn,
+            existing["id"],
+            "resolved_by_reaudit",
+            "pending_export",
+            "reaudit_reopen",
+            "重复稽核再次命中",
+        )
+        return "reopened"
+    return "updated"
+
+
+def _resolve_missing_issues(conn, batch_id: int, audit_run_id: int, seen_codes: set[str]) -> int:
+    rows = conn.execute(
+        "select id, issue_code, status from issues where batch_id = ? and status <> 'resolved_by_reaudit'",
+        (batch_id,),
+    ).fetchall()
+    missing = [row for row in rows if row["issue_code"] not in seen_codes]
+    for row in missing:
+        conn.execute(
+            """
+            update issues
+               set status = 'resolved_by_reaudit', resolved_at = current_timestamp,
+                   updated_at = current_timestamp
+             where id = ?
+            """,
+            (row["id"],),
+        )
+        _record_issue_event(
+            conn,
+            row["id"],
+            row["status"],
+            "resolved_by_reaudit",
+            "reaudit_resolve",
+            f"稽核运行 {audit_run_id} 未再次命中",
+        )
+    return len(missing)
+
+
+def _record_issue_event(conn, issue_id: int, from_status: str | None, to_status: str, source: str, note: str) -> None:
+    conn.execute(
+        """
+        insert into issue_events(issue_id, from_status, to_status, source, note)
+        values (?, ?, ?, ?, ?)
+        """,
+        (issue_id, from_status, to_status, source, note),
     )

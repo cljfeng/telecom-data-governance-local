@@ -10,6 +10,7 @@ IssueStatus = Literal[
     "needs_review",
     "closed",
     "not_required",
+    "resolved_by_reaudit",
 ]
 Severity = Literal["high", "medium", "low"]
 

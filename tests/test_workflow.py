@@ -219,6 +219,29 @@ def test_update_issue_status_rejects_unknown_status(app_config, sample_workbook)
         update_issue_status(app_config, issue["issue_code"], "bad_status")
 
 
+def test_update_issue_status_records_manual_event(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute("update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
+    run_audit(app_config, imported.batch_id)
+    issue = list_issues(app_config, imported.batch_id, {})[0]
+
+    update_issue_status(app_config, issue["issue_code"], "closed")
+
+    with connect(app_config) as conn:
+        event = conn.execute(
+            """
+            select from_status, to_status, source
+              from issue_events e
+              join issues i on i.id = e.issue_id
+             where i.issue_code = ? and e.source = 'manual'
+            """,
+            (issue["issue_code"],),
+        ).fetchone()
+    assert dict(event) == {"from_status": "pending_export", "to_status": "closed", "source": "manual"}
+
+
 def test_update_issue_status_rejects_archived_batch(app_config, sample_workbook):
     initialize_database(app_config)
     imported = import_workbook(app_config, sample_workbook)

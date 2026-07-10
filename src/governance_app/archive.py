@@ -10,7 +10,7 @@ from governance_app.rule_settings import load_rule_settings
 from governance_app.version import version_payload
 from governance_app.workflow import city_progress, transition_batch_in_conn
 
-CLOSED_STATUSES = {"closed", "not_required"}
+CLOSED_STATUSES = {"closed", "not_required", "resolved_by_reaudit"}
 
 
 def archive_precheck(config: AppConfig, batch_id: int) -> dict:
@@ -35,7 +35,7 @@ def archive_precheck(config: AppConfig, batch_id: int) -> dict:
               from issues
              where batch_id = ?
                and severity = 'high'
-               and status not in ('closed', 'not_required')
+               and status not in ('closed', 'not_required', 'resolved_by_reaudit')
             """,
             (batch_id,),
         ).fetchone()["count"]
@@ -223,7 +223,7 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
                    ledger_type, rule_id, severity, status, message
               from issues
              where batch_id = ?
-               and status not in ('closed', 'not_required')
+               and status not in ('closed', 'not_required', 'resolved_by_reaudit')
              order by city, issue_code
             """,
             (batch_id,),

@@ -116,15 +116,19 @@ def dashboard_summary(config: AppConfig, batch_id: int) -> dict[str, Any]:
             )
         }
         total_issues = sum(status_counts.values())
-        closed_count = int(status_counts.get("closed", 0) or 0) + int(status_counts.get("not_required", 0) or 0)
+        closed_count = (
+            int(status_counts.get("closed", 0) or 0)
+            + int(status_counts.get("not_required", 0) or 0)
+            + int(status_counts.get("resolved_by_reaudit", 0) or 0)
+        )
         open_issue_count = total_issues - closed_count
         rule_effectiveness = []
         for row in conn.execute(
             """
             select rule_id, severity,
                    count(*) as total_count,
-                   sum(case when status not in ('closed', 'not_required') then 1 else 0 end) as open_count,
-                   sum(case when status in ('closed', 'not_required') then 1 else 0 end) as closed_count,
+                   sum(case when status not in ('closed', 'not_required', 'resolved_by_reaudit') then 1 else 0 end) as open_count,
+                   sum(case when status in ('closed', 'not_required', 'resolved_by_reaudit') then 1 else 0 end) as closed_count,
                    sum(case when status = 'not_required' then 1 else 0 end) as not_required_count,
                    sum(case when status = 'still_invalid' then 1 else 0 end) as still_invalid_count
               from issues

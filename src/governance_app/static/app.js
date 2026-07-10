@@ -104,6 +104,7 @@ function statusLabel(status) {
     needs_review: "待复核",
     closed: "已关闭",
     not_required: "无需整改",
+    resolved_by_reaudit: "复核稽核已解除",
   };
   return labels[status] || status || "未开始";
 }
@@ -136,7 +137,7 @@ function severityTone(severity) {
 function statusTone(status) {
   if (status === "still_invalid") return "danger";
   if (status === "needs_review" || status === "returned") return "warning";
-  if (status === "closed" || status === "not_required") return "success";
+  if (status === "closed" || status === "not_required" || status === "resolved_by_reaudit") return "success";
   return "info";
 }
 
@@ -977,7 +978,7 @@ function renderIssueSummary(issues, total) {
   if (!container) return;
   const high = issues.filter((issue) => issue.severity === "high").length;
   const review = issues.filter((issue) => issue.status === "needs_review").length;
-  const open = issues.filter((issue) => !["closed", "not_required"].includes(issue.status)).length;
+  const open = issues.filter((issue) => !["closed", "not_required", "resolved_by_reaudit"].includes(issue.status)).length;
   container.innerHTML = `
     <span>当前筛选共 ${formatNumber(total)} 条</span>
     <span>本页高风险 ${formatNumber(high)}</span>

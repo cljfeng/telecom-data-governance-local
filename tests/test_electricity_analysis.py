@@ -68,6 +68,19 @@ def test_run_electricity_analysis_refreshes_existing_rows(app_config, sample_wor
     assert first["opportunity_count"] == second["opportunity_count"]
 
 
+def test_electricity_analysis_ignores_issues_resolved_by_reaudit(app_config, sample_workbook):
+    batch_id = _import_and_audit(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update issues set status = 'resolved_by_reaudit' where batch_id = ? and ledger_type = 'electricity'",
+            (batch_id,),
+        )
+
+    result = run_electricity_analysis(app_config, batch_id)
+
+    assert result["opportunity_count"] == 0
+
+
 def test_electricity_summary_groups_amounts(app_config, sample_workbook):
     batch_id = _import_and_audit(app_config, sample_workbook)
     run_electricity_analysis(app_config, batch_id)
