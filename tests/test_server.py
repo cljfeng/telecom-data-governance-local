@@ -3,6 +3,7 @@ from pathlib import Path
 
 from governance_app.config import AppConfig
 from governance_app.db import connect, initialize_database
+from governance_app.db import SCHEMA_VERSION
 from governance_app.audit_engine import run_audit
 from governance_app.importer import import_workbook
 from governance_app.workflow import list_issues, update_issue_status
@@ -58,7 +59,7 @@ def test_version_endpoint_returns_runtime_and_schema_versions(app_config):
     assert headers["content-type"] == "application/json; charset=utf-8"
     assert payload["app_version"] == "0.1.0"
     assert payload["template_version"] == "2026-05-05"
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == SCHEMA_VERSION
     assert payload["python_version"]
 
 
