@@ -3,6 +3,7 @@ from pathlib import Path
 from governance_app.backup import create_backup, restore_backup, validate_backup
 from governance_app.config import AppConfig
 from governance_app.db import initialize_database
+from governance_app.version import TEMPLATE_VERSION
 
 
 def local_settings(config: AppConfig) -> dict[str, str]:
@@ -12,7 +13,7 @@ def local_settings(config: AppConfig) -> dict[str, str]:
         "database_size_bytes": str(config.database_path.stat().st_size if config.database_path.exists() else 0),
         "export_dir": str(config.export_dir),
         "backup_dir": str(config.workspace_dir / "backups"),
-        "template_version": "2026-05-05",
+        "template_version": TEMPLATE_VERSION,
     }
 
 

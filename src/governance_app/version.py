@@ -1,17 +1,14 @@
 import platform
-from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 from governance_app.db import SCHEMA_VERSION
 
 TEMPLATE_VERSION = "2026-05-05"
+APP_VERSION = "0.2.0"
 
 
 def app_version() -> str:
-    try:
-        return version("local-base-data-governance")
-    except PackageNotFoundError:
-        return "0.1.0"
+    return APP_VERSION
 
 
 def version_payload() -> dict[str, Any]:

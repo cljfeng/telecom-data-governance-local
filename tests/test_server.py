@@ -61,7 +61,7 @@ def test_version_endpoint_returns_runtime_and_schema_versions(app_config):
     payload = json.loads(body)
     assert status == 200
     assert headers["content-type"] == "application/json; charset=utf-8"
-    assert payload["app_version"] == "0.1.0"
+    assert payload["app_version"] == "0.2.0"
     assert payload["template_version"] == "2026-05-05"
     assert payload["schema_version"] == SCHEMA_VERSION
     assert payload["python_version"]
@@ -759,6 +759,9 @@ def test_settings_endpoint_reports_local_paths(app_config):
     assert payload["export_dir"].endswith("exports")
     assert payload["backup_dir"].endswith("backups")
     assert payload["template_version"] == "2026-05-05"
+    version_status, _version_headers, version_body = app.handle_test_request("GET", "/api/version")
+    assert version_status == 200
+    assert payload["template_version"] == json.loads(version_body)["template_version"]
 
 
 def test_restore_endpoint_creates_safety_backup(app_config, sample_workbook):
