@@ -64,8 +64,6 @@ def test_mypy_policy_targets_stable_boundaries():
 def test_coverage_policy_covers_the_package_and_has_a_gate():
     assert PROJECT["tool"]["coverage"]["run"]["source"] == ["governance_app"]
     assert PROJECT["tool"]["coverage"]["report"]["show_missing"] is True
-    assert PROJECT["tool"]["coverage"]["report"]["fail_under"] > 0
-    assert "--cov=governance_app" in PROJECT["tool"]["pytest"]["ini_options"]["addopts"]
 ```
 
 - [ ] **Step 2: Run the contract tests and verify red**
@@ -160,6 +158,8 @@ gate = (P // 5) * 5 if P >= 70 else int(P)
 ```
 
 - [ ] **Step 2: Lock pytest and Coverage.py configuration**
+
+First add a failing contract test asserting the exact computed gate and the pytest coverage arguments. Run the focused test and confirm it fails because neither setting exists. Then set the configuration below.
 
 Set:
 
