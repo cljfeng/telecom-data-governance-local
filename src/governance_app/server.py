@@ -18,26 +18,15 @@ from governance_app.audit_engine import run_audit
 from governance_app.config import AppConfig
 from governance_app.corrections import import_correction_return
 from governance_app.db import connect, initialize_database
-from governance_app.electricity_analysis import (
-    export_electricity_opportunities,
-    get_electricity_opportunities,
-    get_electricity_summary,
-    run_electricity_analysis,
-)
 from governance_app.exporter import export_issue_packages
 from governance_app.import_preview import export_preview_errors, preview_error_payload, preview_error_summary, preview_workbook
 from governance_app.importer import import_workbook
 from governance_app.operation_guard import OperationConflict, exclusive_operation
 from governance_app.recent_files import list_recent_files
+from governance_app.routes.analysis import handle_analysis_route
 from governance_app.routes.system import handle_system_route
 from governance_app.rule_settings import load_rule_settings, upsert_rule_setting
 from governance_app.audit_rules import all_batch_rules, all_rules, rule_metadata
-from governance_app.tower_rent_analysis import (
-    export_tower_rent_clues,
-    get_tower_rent_clues,
-    get_tower_rent_summary,
-    run_tower_rent_analysis,
-)
 from governance_app.workflow import (
     city_progress,
     create_batch,
@@ -82,40 +71,9 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
     system_response = handle_system_route(config, method, parsed, body)
     if system_response is not None:
         return system_response
-    try:
-        analysis_path = _analysis_path(parsed.path)
-    except ValueError as exc:
-        return _json({"error": str(exc)}, status=400)
-    if analysis_path is not None:
-        domain, batch_id, action = analysis_path
-        try:
-            if domain == "electricity-analysis":
-                if method == "POST" and action == "run":
-                    return _json(run_electricity_analysis(config, batch_id))
-                if method == "GET" and action == "summary":
-                    return _json(get_electricity_summary(config, batch_id))
-                if method == "GET" and action == "opportunities":
-                    query = parse_qs(parsed.query)
-                    filters = {key: values[0] for key, values in query.items() if values and values[0]}
-                    return _json({"opportunities": get_electricity_opportunities(config, batch_id, filters=filters)})
-                if method == "POST" and action == "export":
-                    path_value = export_electricity_opportunities(config, batch_id)
-                    return _json({"path": str(path_value)})
-            if domain == "tower-rent-analysis":
-                if method == "POST" and action == "run":
-                    return _json(run_tower_rent_analysis(config, batch_id))
-                if method == "GET" and action == "summary":
-                    return _json(get_tower_rent_summary(config, batch_id))
-                if method == "GET" and action == "opportunities":
-                    query = parse_qs(parsed.query)
-                    filters = {key: values[0] for key, values in query.items() if values and values[0]}
-                    return _json({"opportunities": get_tower_rent_clues(config, batch_id, filters=filters)})
-                if method == "POST" and action == "export":
-                    path_value = export_tower_rent_clues(config, batch_id)
-                    return _json({"path": str(path_value)})
-        except ValueError as exc:
-            return _json({"error": str(exc)}, status=400)
-        return _json({"error": "not found"}, status=404)
+    analysis_response = handle_analysis_route(config, method, parsed, body)
+    if analysis_response is not None:
+        return analysis_response
     if method == "GET" and parsed.path == "/api/dashboard":
         query = parse_qs(parsed.query)
         try:
@@ -522,21 +480,6 @@ def _batch_id_from_query(query_string: str) -> tuple[int, tuple[int, dict[str, s
         return int(query.get("batch_id", ["1"])[0]), None
     except ValueError:
         return 0, _json({"error": "invalid batch_id"}, status=400)
-
-
-def _analysis_path(path: str) -> tuple[str, int, str] | None:
-    parts = path.strip("/").split("/")
-    actions = {"run", "summary", "opportunities", "export"}
-    domains = {"electricity-analysis", "tower-rent-analysis"}
-    if len(parts) < 4 or parts[:2] != ["api", "batches"]:
-        return None
-    if len(parts) != 5 or parts[3] not in domains or parts[4] not in actions:
-        return None
-    try:
-        batch_id = int(parts[2])
-    except ValueError as exc:
-        raise ValueError("invalid batch_id") from exc
-    return parts[3], batch_id, parts[4]
 
 
 def _pagination_from_query(query: dict[str, list[str]]) -> tuple[int | None, int]:
