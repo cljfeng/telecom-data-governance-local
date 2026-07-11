@@ -10,6 +10,7 @@ from governance_app.db import connect, initialize_database
 from governance_app.db import SCHEMA_VERSION
 from governance_app.audit_engine import run_audit
 from governance_app.importer import import_workbook
+from governance_app.operation_guard import exclusive_operation
 from governance_app.workflow import list_issues, update_issue_status
 from governance_app.server import create_app
 
@@ -140,10 +141,7 @@ def test_heavy_operation_conflict_returns_409(app_config, sample_workbook):
     initialize_database(app_config)
     imported = import_workbook(app_config, sample_workbook)
     app = create_app(app_config)
-    guard = getattr(server_module, "exclusive_operation", None)
-    assert guard is not None
-
-    with guard(app_config, "test"):
+    with exclusive_operation(app_config, "test"):
         status, _headers, body = app.handle_test_request(
             "POST", "/api/audit", json.dumps({"batch_id": imported.batch_id})
         )
@@ -153,14 +151,11 @@ def test_heavy_operation_conflict_returns_409(app_config, sample_workbook):
 
 
 def test_operation_lock_releases_after_exception(app_config):
-    guard = getattr(server_module, "exclusive_operation", None)
-    assert guard is not None
-
     with pytest.raises(RuntimeError, match="boom"):
-        with guard(app_config, "failing"):
+        with exclusive_operation(app_config, "failing"):
             raise RuntimeError("boom")
 
-    with guard(app_config, "next"):
+    with exclusive_operation(app_config, "next"):
         pass
 
 

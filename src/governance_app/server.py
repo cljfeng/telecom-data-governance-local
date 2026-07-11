@@ -9,7 +9,6 @@ from urllib.parse import urlparse
 
 from governance_app.config import AppConfig
 from governance_app.db import initialize_database
-from governance_app.operation_guard import exclusive_operation
 from governance_app.routes.analysis import handle_analysis_route
 from governance_app.routes.audits import handle_audit_route
 from governance_app.routes.batches import handle_batch_route
