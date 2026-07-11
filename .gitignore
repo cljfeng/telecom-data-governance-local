@@ -11,7 +11,7 @@ __pycache__/
 *.pyc
 *.egg-info/
 *.spec
-.venv/
+.venv
 .uv-cache/
 .uv-python/
 .pytest_cache/

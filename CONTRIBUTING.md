@@ -40,6 +40,18 @@ http://127.0.0.1:8765
 scripts/check.sh
 ```
 
+该命令会依次执行 Ruff 静态检查、mypy 分层类型检查、带覆盖率门槛的完整测试，以及 Python、JavaScript 和 Shell 语法检查。任一环节失败都会阻止质量门通过。
+
+调试单项问题时可以分别运行：
+
+```bash
+.venv/bin/python -m ruff check src tests
+.venv/bin/python -m mypy
+.venv/bin/python -m pytest -q --cov=governance_app --cov-report=term-missing
+```
+
+运行单个 pytest 用例时不强制计算全项目覆盖率，便于保持测试先行的快速反馈；提交前仍必须运行完整 `scripts/check.sh`。
+
 如果改动涉及打包，也请验证对应平台的构建脚本：
 
 ```bash

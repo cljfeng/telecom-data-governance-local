@@ -4,6 +4,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROJECT = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())
 GITIGNORE = (PROJECT_ROOT / ".gitignore").read_text().splitlines()
+CHECK_SCRIPT = (PROJECT_ROOT / "scripts" / "check.sh").read_text()
+QUALITY_WORKFLOW = (PROJECT_ROOT / ".github" / "workflows" / "quality.yml").read_text()
 EXPECTED_MYPY_FILES = [
     "src/governance_app/rule_types.py",
     "src/governance_app/rule_fields.py",
@@ -65,3 +67,18 @@ def test_coverage_policy_locks_the_measured_baseline():
 
 def test_coverage_data_file_is_ignored():
     assert ".coverage" in GITIGNORE
+
+
+def test_check_script_runs_the_complete_gate_in_order():
+    ruff_index = CHECK_SCRIPT.index("-m ruff check src tests")
+    mypy_index = CHECK_SCRIPT.index("-m mypy")
+    pytest_index = CHECK_SCRIPT.index("-m pytest -q --cov=governance_app --cov-report=term-missing")
+
+    assert ruff_index < mypy_index < pytest_index
+    assert "ruff format" not in CHECK_SCRIPT
+    assert "--no-cov" not in CHECK_SCRIPT
+
+
+def test_ci_uses_the_same_quality_gate():
+    assert '.venv/bin/python -m pip install -e ".[test]"' in QUALITY_WORKFLOW
+    assert "run: scripts/check.sh" in QUALITY_WORKFLOW
