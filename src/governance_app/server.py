@@ -23,6 +23,7 @@ from governance_app.importer import import_workbook
 from governance_app.operation_guard import OperationConflict, exclusive_operation
 from governance_app.recent_files import list_recent_files
 from governance_app.routes.analysis import handle_analysis_route
+from governance_app.routes.audits import handle_audit_route
 from governance_app.routes.batches import handle_batch_route
 from governance_app.routes.imports import handle_import_route, handle_import_upload
 from governance_app.routes.system import handle_system_route
@@ -78,6 +79,9 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
     import_response = handle_import_route(config, method, parsed, body)
     if import_response is not None:
         return import_response
+    audit_response = handle_audit_route(config, method, parsed, body)
+    if audit_response is not None:
+        return audit_response
     analysis_response = handle_analysis_route(config, method, parsed, body)
     if analysis_response is not None:
         return analysis_response
