@@ -45,6 +45,9 @@ def test_factories_do_not_import_domain_modules():
     imported_modules = {
         node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module
     }
+    imported_modules.update(
+        alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names
+    )
 
     assert not imported_modules.intersection({
         "governance_app.rules.site",
