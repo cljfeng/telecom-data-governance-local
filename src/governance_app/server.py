@@ -26,6 +26,7 @@ from governance_app.routes.analysis import handle_analysis_route
 from governance_app.routes.audits import handle_audit_route
 from governance_app.routes.batches import handle_batch_route
 from governance_app.routes.imports import handle_import_route, handle_import_upload
+from governance_app.routes.reports import handle_report_route, handle_report_upload
 from governance_app.routes.system import handle_system_route
 from governance_app.rule_settings import load_rule_settings, upsert_rule_setting
 from governance_app.audit_rules import all_batch_rules, all_rules, rule_metadata
@@ -85,6 +86,9 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
     analysis_response = handle_analysis_route(config, method, parsed, body)
     if analysis_response is not None:
         return analysis_response
+    report_response = handle_report_route(config, method, parsed, body)
+    if report_response is not None:
+        return report_response
     if method == "GET" and parsed.path == "/api/issues":
         batch_id, error = _batch_id_from_query(parsed.query)
         if error:
@@ -252,6 +256,9 @@ def _route_upload(
     import_response = handle_import_upload(config, path, fields, files)
     if import_response is not None:
         return import_response
+    report_response = handle_report_upload(config, path, fields, files)
+    if report_response is not None:
+        return report_response
     parsed = urlparse(path)
     if parsed.path != "/api/corrections/upload":
         return _json({"error": "not found"}, status=404)
