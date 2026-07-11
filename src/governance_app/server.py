@@ -12,7 +12,6 @@ from zipfile import BadZipFile
 
 from openpyxl.utils.exceptions import InvalidFileException
 
-from governance_app.analytics import dashboard_summary
 from governance_app.archive import archive_batch, archive_precheck, export_notice_report
 from governance_app.audit_engine import run_audit
 from governance_app.config import AppConfig
@@ -24,6 +23,7 @@ from governance_app.importer import import_workbook
 from governance_app.operation_guard import OperationConflict, exclusive_operation
 from governance_app.recent_files import list_recent_files
 from governance_app.routes.analysis import handle_analysis_route
+from governance_app.routes.batches import handle_batch_route
 from governance_app.routes.system import handle_system_route
 from governance_app.rule_settings import load_rule_settings, upsert_rule_setting
 from governance_app.audit_rules import all_batch_rules, all_rules, rule_metadata
@@ -71,50 +71,12 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
     system_response = handle_system_route(config, method, parsed, body)
     if system_response is not None:
         return system_response
+    batch_response = handle_batch_route(config, method, parsed, body)
+    if batch_response is not None:
+        return batch_response
     analysis_response = handle_analysis_route(config, method, parsed, body)
     if analysis_response is not None:
         return analysis_response
-    if method == "GET" and parsed.path == "/api/dashboard":
-        query = parse_qs(parsed.query)
-        try:
-            batch_id = int(query.get("batch_id", ["1"])[0])
-        except ValueError:
-            return _json({"error": "invalid batch_id"}, status=400)
-        return _json(dashboard_summary(config, batch_id))
-    if method == "GET" and parsed.path == "/api/batches":
-        return _json({"batches": list_batches(config)})
-    if method == "POST" and parsed.path == "/api/batches":
-        payload, error = _json_body(body)
-        if error:
-            return error
-        name = payload.get("name")
-        if not isinstance(name, str) or not name.strip():
-            return _json({"error": "name is required"}, status=400)
-        try:
-            batch_id = create_batch(config, name)
-        except ValueError as exc:
-            return _json({"error": str(exc)}, status=400)
-        return _json({"batch_id": batch_id})
-    if method == "POST" and parsed.path == "/api/batches/current":
-        payload, error = _json_body(body)
-        if error:
-            return error
-        batch_id, error = _batch_id_from_payload(payload)
-        if error:
-            return error
-        try:
-            set_current_batch(config, batch_id)
-        except ValueError as exc:
-            return _json({"error": str(exc)}, status=404)
-        return _json({"status": "selected"})
-    if method == "GET" and parsed.path == "/api/workflow":
-        batch_id, error = _batch_id_from_query(parsed.query)
-        if error:
-            return error
-        try:
-            return _json(get_batch_workflow(config, batch_id))
-        except ValueError as exc:
-            return _json({"error": str(exc)}, status=404)
     if method == "GET" and parsed.path == "/api/issues":
         batch_id, error = _batch_id_from_query(parsed.query)
         if error:
@@ -133,18 +95,6 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
         query = parse_qs(parsed.query)
         filters = {key: values[0] for key, values in query.items() if key != "batch_id" and values and values[0]}
         return _json({"groups": list_issue_groups(config, batch_id, filters)})
-    if method == "GET" and parsed.path == "/api/ledger-rows":
-        batch_id, error = _batch_id_from_query(parsed.query)
-        if error:
-            return error
-        query = parse_qs(parsed.query)
-        filters = {key: values[0] for key, values in query.items() if key != "batch_id" and values and values[0]}
-        return _json({"rows": list_ledger_rows(config, batch_id, filters)})
-    if method == "GET" and parsed.path == "/api/city-progress":
-        batch_id, error = _batch_id_from_query(parsed.query)
-        if error:
-            return error
-        return _json({"cities": city_progress(config, batch_id)})
     if method == "GET" and parsed.path == "/api/rules":
         query = parse_qs(parsed.query)
         raw_batch_id = query.get("batch_id", [""])[0]
