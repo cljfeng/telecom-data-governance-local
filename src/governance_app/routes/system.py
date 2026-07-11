@@ -6,13 +6,12 @@ from governance_app.config import AppConfig
 from governance_app.maintenance import compact_database
 from governance_app.operation_guard import OperationConflict, exclusive_operation
 from governance_app.reset import reset_system
+from governance_app.routes.common import JsonResponse, json_body, json_response
 from governance_app.settings_service import local_settings, restore_backup_safely
 from governance_app.version import version_payload
 
-JsonResponse = tuple[int, dict[str, str], str]
 
-
-def handle_system_route(config: AppConfig, method: str, parsed: ParseResult, body: str, json_response, json_body) -> JsonResponse | None:
+def handle_system_route(config: AppConfig, method: str, parsed: ParseResult, body: str) -> JsonResponse | None:
     if method == "GET" and parsed.path == "/api/health":
         return json_response({"status": "ok"})
     if method == "GET" and parsed.path == "/api/version":

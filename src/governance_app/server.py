@@ -79,7 +79,7 @@ def create_app(config: AppConfig) -> LocalApp:
 
 def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[int, dict[str, str], str]:
     parsed = urlparse(path)
-    system_response = handle_system_route(config, method, parsed, body, _json, _json_body)
+    system_response = handle_system_route(config, method, parsed, body)
     if system_response is not None:
         return system_response
     try:
