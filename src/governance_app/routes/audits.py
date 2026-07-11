@@ -119,7 +119,7 @@ def handle_audit_route(config: AppConfig, method: str, parsed: ParseResult, body
             updated = update_issue_group_status(
                 config,
                 batch_id,
-                cast(dict[str, str], group),
+                group,
                 cast(IssueStatus, status_value),
             )
         except ValueError as exc:

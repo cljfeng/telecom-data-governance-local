@@ -486,7 +486,7 @@ def list_issue_groups(config: AppConfig, batch_id: int, filters: dict[str, str] 
     return groups
 
 
-def update_issue_group_status(config: AppConfig, batch_id: int, group: dict[str, str], status: IssueStatus) -> int:
+def update_issue_group_status(config: AppConfig, batch_id: int, group: dict[str, Any], status: IssueStatus) -> int:
     if status not in ISSUE_STATUSES:
         raise ValueError("invalid issue status")
     where = ["batch_id = ?", "rule_id = ?", "ledger_type = ?", "coalesce(city, '未填地市') = ?", "coalesce(telecom_site_code, '') = ?"]

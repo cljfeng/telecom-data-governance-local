@@ -1,3 +1,4 @@
+import re
 import tomllib
 from pathlib import Path
 
@@ -32,6 +33,7 @@ def test_ruff_policy_is_high_value_and_non_formatting():
     assert ruff["lint"]["select"] == ["E4", "E7", "E9", "F", "I", "B"]
     assert ruff["lint"]["isort"]["combine-as-imports"] is True
     assert "format" not in ruff
+    assert not {"ignore", "extend-ignore", "per-file-ignores", "extend-per-file-ignores"}.intersection(ruff["lint"])
 
 
 def test_mypy_policy_targets_stable_boundaries():
@@ -46,13 +48,14 @@ def test_mypy_policy_targets_stable_boundaries():
     assert mypy["warn_return_any"] is True
     assert mypy["ignore_missing_imports"] is True
     assert mypy["follow_imports"] == "silent"
-    assert "ignore_errors" not in mypy
+    assert not {"ignore_errors", "exclude", "overrides", "disable_error_code"}.intersection(mypy)
 
 
 def test_coverage_policy_covers_the_complete_package():
     coverage = PROJECT["tool"]["coverage"]
 
     assert coverage["run"]["source"] == ["governance_app"]
+    assert "omit" not in coverage["run"]
     assert coverage["report"]["show_missing"] is True
     assert coverage["report"]["exclude_also"] == ['if __name__ == .__main__.:']
 
@@ -70,15 +73,26 @@ def test_coverage_data_file_is_ignored():
 
 
 def test_check_script_runs_the_complete_gate_in_order():
-    ruff_index = CHECK_SCRIPT.index("-m ruff check src tests")
-    mypy_index = CHECK_SCRIPT.index("-m mypy")
-    pytest_index = CHECK_SCRIPT.index("-m pytest -q --cov=governance_app --cov-report=term-missing")
+    active_lines = [
+        line.strip()
+        for line in CHECK_SCRIPT.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    gate_commands = [
+        ".venv/bin/python -m ruff check src tests",
+        ".venv/bin/python -m mypy",
+        ".venv/bin/python -m pytest -q --cov=governance_app --cov-report=term-missing",
+        ".venv/bin/python -m compileall -q src",
+    ]
+    gate_start = active_lines.index(gate_commands[0])
 
-    assert ruff_index < mypy_index < pytest_index
+    assert active_lines[gate_start : gate_start + len(gate_commands)] == gate_commands
+    assert not any(line.startswith(("exit ", "return ")) for line in active_lines[: gate_start + len(gate_commands)])
     assert "ruff format" not in CHECK_SCRIPT
     assert "--no-cov" not in CHECK_SCRIPT
 
 
 def test_ci_uses_the_same_quality_gate():
-    assert '.venv/bin/python -m pip install -e ".[test]"' in QUALITY_WORKFLOW
-    assert "run: scripts/check.sh" in QUALITY_WORKFLOW
+    assert re.search(r'^\s+run: \|\s*\n\s+python -m venv \.venv\s*\n\s+\.venv/bin/python -m pip install -e "\.\[test\]"\s*$', QUALITY_WORKFLOW, re.MULTILINE)
+    assert re.search(r"^\s+run: scripts/check\.sh\s*$", QUALITY_WORKFLOW, re.MULTILINE)
+    assert "continue-on-error: true" not in QUALITY_WORKFLOW
