@@ -1,9 +1,11 @@
+from typing import Any, cast
 from urllib.parse import ParseResult, parse_qs
 
 from governance_app.audit_engine import run_audit
 from governance_app.audit_rules import all_batch_rules, all_rules, rule_metadata
 from governance_app.config import AppConfig
 from governance_app.db import connect
+from governance_app.models import IssueStatus
 from governance_app.operation_guard import OperationConflict, exclusive_operation
 from governance_app.routes.common import (
     JsonResponse,
@@ -38,7 +40,7 @@ def handle_audit_route(config: AppConfig, method: str, parsed: ParseResult, body
         rules = list_issue_rules(config, batch_id)
         if limit is None:
             return json_response({"issues": list_issues(config, batch_id, filters), "rules": rules})
-        page = list_issues(config, batch_id, filters, limit=limit, offset=offset)
+        page = cast(dict[str, Any], list_issues(config, batch_id, filters, limit=limit, offset=offset))
         return json_response({**page, "rules": rules})
     if method == "GET" and parsed.path == "/api/issue-groups":
         batch_id, error = batch_id_from_query(parsed.query)
@@ -54,13 +56,13 @@ def handle_audit_route(config: AppConfig, method: str, parsed: ParseResult, body
     if method == "GET" and parsed.path == "/api/rules":
         query = parse_qs(parsed.query)
         raw_batch_id = query.get("batch_id", [""])[0]
-        batch_id = None
+        selected_batch_id: int | None = None
         if raw_batch_id:
             try:
-                batch_id = int(raw_batch_id)
+                selected_batch_id = int(raw_batch_id)
             except ValueError:
                 return json_response({"error": "invalid batch_id"}, status=400)
-        return json_response({"rules": _rule_settings_payload(config, batch_id)})
+        return json_response({"rules": _rule_settings_payload(config, selected_batch_id)})
     if method == "POST" and parsed.path == "/api/rules/settings":
         payload, error = json_body(body)
         if error:
@@ -98,7 +100,7 @@ def handle_audit_route(config: AppConfig, method: str, parsed: ParseResult, body
         if not isinstance(issue_code, str) or not isinstance(status_value, str):
             return json_response({"error": "issue_code and status are required"}, status=400)
         try:
-            update_issue_status(config, issue_code, status_value)
+            update_issue_status(config, issue_code, cast(IssueStatus, status_value))
         except ValueError as exc:
             return json_response({"error": str(exc)}, status=400)
         return json_response({"status": "updated"})
@@ -114,7 +116,12 @@ def handle_audit_route(config: AppConfig, method: str, parsed: ParseResult, body
         if not isinstance(status_value, str) or not isinstance(group, dict):
             return json_response({"error": "group and status are required"}, status=400)
         try:
-            updated = update_issue_group_status(config, batch_id, group, status_value)
+            updated = update_issue_group_status(
+                config,
+                batch_id,
+                cast(dict[str, str], group),
+                cast(IssueStatus, status_value),
+            )
         except ValueError as exc:
             return json_response({"error": str(exc)}, status=400)
         return json_response({"status": "updated", "updated_count": updated})

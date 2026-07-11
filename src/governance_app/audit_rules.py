@@ -1,7 +1,7 @@
 """Compatibility facade for the modular audit rule registry."""
 
 import json
-from typing import Any, Iterable, TypeVar
+from typing import Any, Iterable, TypeVar, cast
 
 from governance_app.rule_catalog import RULE_CATALOG, RuleMetadata
 from governance_app.rule_types import (
@@ -73,7 +73,7 @@ _Rule = TypeVar("_Rule", AuditRule, BatchAuditRule)
 
 
 def parse_row(row_json: str) -> dict[str, Any]:
-    return json.loads(row_json)
+    return cast(dict[str, Any], json.loads(row_json))
 
 
 def rule_metadata(rule_id: str) -> RuleMetadata:

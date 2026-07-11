@@ -28,7 +28,10 @@ def json_body(body: str) -> tuple[dict, JsonResponse | None]:
 
 def batch_id_from_payload(payload: dict) -> tuple[int, JsonResponse | None]:
     try:
-        return int(payload.get("batch_id")), None
+        raw_batch_id = payload.get("batch_id")
+        if raw_batch_id is None:
+            raise TypeError
+        return int(raw_batch_id), None
     except (TypeError, ValueError):
         return 0, json_response({"error": "invalid batch_id"}, status=400)
 

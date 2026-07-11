@@ -24,6 +24,8 @@ def number_range(
     def evaluate(row: dict[str, Any]) -> RuleFinding | None:
         value = row.get(field_name)
         try:
+            if value is None:
+                raise TypeError
             number = float(value)
         except (TypeError, ValueError):
             return RuleFinding("", "high", field_name, f"{field_name}不是有效数字", suggestion)
@@ -84,6 +86,8 @@ def greater_than_zero(
     def evaluate(row: dict[str, Any]) -> RuleFinding | None:
         value = row.get(field_name)
         try:
+            if value is None:
+                raise TypeError
             number = float(value)
         except (TypeError, ValueError):
             return RuleFinding("", "high", field_name, f"{field_name}不是有效数字", suggestion)

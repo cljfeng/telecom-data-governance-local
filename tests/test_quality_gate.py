@@ -43,6 +43,7 @@ def test_mypy_policy_targets_stable_boundaries():
     assert mypy["warn_redundant_casts"] is True
     assert mypy["warn_return_any"] is True
     assert mypy["ignore_missing_imports"] is True
+    assert mypy["follow_imports"] == "silent"
     assert "ignore_errors" not in mypy
 
 
