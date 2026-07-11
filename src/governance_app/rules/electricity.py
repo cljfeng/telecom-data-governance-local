@@ -27,7 +27,36 @@ from governance_app.rule_helpers import (
     _positive_or_zero_field,
     _text,
 )
-from governance_app.rule_types import AuditLedgerRow, BatchAuditRule, BatchRuleFinding, RuleThresholds
+from governance_app.rule_types import AuditLedgerRow, AuditRule, BatchAuditRule, BatchRuleFinding, RuleThresholds
+from governance_app.rules.factories import number_above, optional_number_range
+
+
+def electricity_rules(thresholds: RuleThresholds) -> list[AuditRule]:
+    return [
+        AuditRule(
+            "electricity_price_range",
+            "electricity",
+            "high",
+            number_above(
+                "电费单价",
+                thresholds.electricity_price_max,
+                f"电费单价超过 {thresholds.electricity_price_max:g} 元",
+                "核实电费单价、电价依据或转供电合同",
+            ),
+        ),
+        AuditRule(
+            "electricity_share_percent",
+            "electricity",
+            "medium",
+            optional_number_range(
+                "分摊比例(%)",
+                thresholds.share_percent_min,
+                thresholds.share_percent_max,
+                f"分摊比例不在 {thresholds.share_percent_min:g}-{thresholds.share_percent_max:g} 范围",
+                "核实共享情况和分摊比例",
+            ),
+        ),
+    ]
 
 
 def electricity_batch_rules(thresholds: RuleThresholds) -> list[BatchAuditRule]:
