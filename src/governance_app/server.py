@@ -24,6 +24,7 @@ from governance_app.operation_guard import OperationConflict, exclusive_operatio
 from governance_app.recent_files import list_recent_files
 from governance_app.routes.analysis import handle_analysis_route
 from governance_app.routes.batches import handle_batch_route
+from governance_app.routes.imports import handle_import_route, handle_import_upload
 from governance_app.routes.system import handle_system_route
 from governance_app.rule_settings import load_rule_settings, upsert_rule_setting
 from governance_app.audit_rules import all_batch_rules, all_rules, rule_metadata
@@ -74,6 +75,9 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
     batch_response = handle_batch_route(config, method, parsed, body)
     if batch_response is not None:
         return batch_response
+    import_response = handle_import_route(config, method, parsed, body)
+    if import_response is not None:
+        return import_response
     analysis_response = handle_analysis_route(config, method, parsed, body)
     if analysis_response is not None:
         return analysis_response
@@ -120,18 +124,6 @@ def _route(config: AppConfig, method: str, path: str, body: str = "") -> tuple[i
             return _json({"error": "config must be object"}, status=400)
         upsert_rule_setting(config, rule_id, enabled=enabled, config_values=config_values)
         return _json({"status": "updated"})
-    if method == "POST" and parsed.path == "/api/import":
-        payload, error = _json_body(body)
-        if error:
-            return error
-        return _import_from_payload(config, payload)
-    if method == "POST" and parsed.path == "/api/import/preview":
-        payload, error = _json_body(body)
-        if error:
-            return error
-        return _preview_from_payload(config, payload)
-    if method == "GET" and parsed.path == "/api/import/recent":
-        return _json({"files": list_recent_files(config)})
     if method == "POST" and parsed.path == "/api/audit":
         payload, error = _json_body(body)
         if error:
@@ -253,8 +245,11 @@ def _route_upload(
     fields: dict[str, str],
     files: dict[str, tuple[str, bytes]],
 ) -> tuple[int, dict[str, str], str]:
+    import_response = handle_import_upload(config, path, fields, files)
+    if import_response is not None:
+        return import_response
     parsed = urlparse(path)
-    if parsed.path not in {"/api/import/upload", "/api/import/preview/upload", "/api/corrections/upload"}:
+    if parsed.path != "/api/corrections/upload":
         return _json({"error": "not found"}, status=404)
     uploaded = files.get("file")
     if uploaded is None:
@@ -269,8 +264,6 @@ def _route_upload(
 
     payload: dict[str, object] = {"path": str(workbook_path)}
     payload.update(fields)
-    if parsed.path == "/api/import/upload":
-        return _import_from_payload(config, payload)
     if parsed.path == "/api/corrections/upload":
         try:
             result = import_correction_return(config, workbook_path)
@@ -285,7 +278,7 @@ def _route_upload(
             },
             status=200 if not result.errors else 400,
         )
-    return _preview_from_payload(config, payload)
+    return _json({"error": "not found"}, status=404)
 
 
 def _preview_from_payload(config: AppConfig, payload: dict) -> tuple[int, dict[str, str], str]:
