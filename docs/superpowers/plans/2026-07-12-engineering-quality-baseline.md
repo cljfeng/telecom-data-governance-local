@@ -159,7 +159,7 @@ gate = (P // 5) * 5 if P >= 70 else int(P)
 
 - [ ] **Step 2: Lock pytest and Coverage.py configuration**
 
-First add a failing contract test asserting the exact computed gate and the pytest coverage arguments. Run the focused test and confirm it fails because neither setting exists. Then set the configuration below.
+First add a failing contract test asserting the exact computed gate and that pytest has no global coverage `addopts`. This preserves focused test runs; the complete gate passes coverage flags explicitly. Run the focused test and confirm it fails because the gate is absent. Then set the configuration below.
 
 Set:
 
@@ -167,7 +167,6 @@ Set:
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-addopts = "--cov=governance_app --cov-report=term-missing"
 
 [tool.coverage.report]
 show_missing = true
@@ -182,6 +181,7 @@ Replace the loose positive assertion with the computed integer:
 
 ```python
 assert PROJECT["tool"]["coverage"]["report"]["fail_under"] == EXPECTED_BASELINE_GATE
+assert "addopts" not in PROJECT["tool"]["pytest"]["ini_options"]
 ```
 
 Define `EXPECTED_BASELINE_GATE` as the integer calculated and recorded in Step 1.
@@ -315,7 +315,7 @@ Assert the script contains, in order:
 
 ```python
 assert CHECK_SCRIPT.index("-m ruff check src tests") < CHECK_SCRIPT.index("-m mypy")
-assert CHECK_SCRIPT.index("-m mypy") < CHECK_SCRIPT.index("-m pytest -q")
+assert CHECK_SCRIPT.index("-m mypy") < CHECK_SCRIPT.index("-m pytest -q --cov=governance_app")
 assert 'run: scripts/check.sh' in QUALITY_WORKFLOW
 ```
 
@@ -336,7 +336,7 @@ Insert before pytest:
 ```bash
 .venv/bin/python -m ruff check src tests
 .venv/bin/python -m mypy
-.venv/bin/python -m pytest -q
+.venv/bin/python -m pytest -q --cov=governance_app --cov-report=term-missing
 ```
 
 Keep compileall, JavaScript discovery, and Shell syntax checks unchanged.
