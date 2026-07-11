@@ -1,6 +1,5 @@
-from pathlib import Path
 import tomllib
-
+from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROJECT = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())
@@ -29,6 +28,7 @@ def test_ruff_policy_is_high_value_and_non_formatting():
 
     assert ruff["target-version"] == "py312"
     assert ruff["lint"]["select"] == ["E4", "E7", "E9", "F", "I", "B"]
+    assert ruff["lint"]["isort"]["combine-as-imports"] is True
     assert "format" not in ruff
 
 

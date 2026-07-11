@@ -6,8 +6,20 @@ from governance_app.rule_fields import (
     GENERATOR_END_FIELDS,
     GENERATOR_START_FIELDS,
 )
-from governance_app.rule_helpers import _datetime_value, _first_value, _median, _number, _text
-from governance_app.rule_types import AuditLedgerRow, AuditRule, BatchAuditRule, BatchRuleFinding, RuleThresholds
+from governance_app.rule_helpers import (
+    _datetime_value,
+    _first_value,
+    _median,
+    _number,
+    _text,
+)
+from governance_app.rule_types import (
+    AuditLedgerRow,
+    AuditRule,
+    BatchAuditRule,
+    BatchRuleFinding,
+    RuleThresholds,
+)
 from governance_app.rules.factories import number_above
 
 

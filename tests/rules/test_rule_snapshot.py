@@ -1,6 +1,10 @@
 from governance_app.audit_rules import all_batch_rules, all_rules
-from governance_app.rule_types import AuditLedgerRow, BatchRuleFinding, RuleFinding, RuleThresholds
-
+from governance_app.rule_types import (
+    AuditLedgerRow,
+    BatchRuleFinding,
+    RuleFinding,
+    RuleThresholds,
+)
 
 ROW_RULES = [
     ("required_site_code", "site", "high"),

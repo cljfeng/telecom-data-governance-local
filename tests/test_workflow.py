@@ -14,8 +14,8 @@ from governance_app.workflow import (
     list_ledger_rows,
     set_current_batch,
     transition_batch,
-    update_issue_status,
     update_issue_group_status,
+    update_issue_status,
 )
 
 

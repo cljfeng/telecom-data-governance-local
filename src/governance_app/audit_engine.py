@@ -3,6 +3,7 @@ import json
 from dataclasses import dataclass
 from time import perf_counter
 
+from governance_app.audit_quality import result_payload
 from governance_app.audit_rules import (
     AuditLedgerRow,
     BatchRuleFinding,
@@ -13,7 +14,6 @@ from governance_app.audit_rules import (
     parse_row,
     rule_metadata,
 )
-from governance_app.audit_quality import result_payload
 from governance_app.config import AppConfig
 from governance_app.db import connect
 from governance_app.rule_settings import RuleSetting, load_rule_settings

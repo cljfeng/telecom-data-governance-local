@@ -18,7 +18,6 @@ from governance_app.rules.generator import generator_batch_rules, generator_rule
 from governance_app.rules.site import site_batch_rules, site_rules
 from governance_app.rules.tower_rent import tower_rent_batch_rules, tower_rent_rules
 
-
 DEFAULT_THRESHOLDS = RuleThresholds()
 
 _ROW_RULE_ORDER = (

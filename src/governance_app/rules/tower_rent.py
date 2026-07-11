@@ -10,8 +10,20 @@ from governance_app.rule_fields import (
     TOWER_TYPE_FIELDS,
     UNIT_COUNT_FIELDS,
 )
-from governance_app.rule_helpers import _first_value, _month_key, _number, _period_key, _text
-from governance_app.rule_types import AuditLedgerRow, AuditRule, BatchAuditRule, BatchRuleFinding, RuleThresholds
+from governance_app.rule_helpers import (
+    _first_value,
+    _month_key,
+    _number,
+    _period_key,
+    _text,
+)
+from governance_app.rule_types import (
+    AuditLedgerRow,
+    AuditRule,
+    BatchAuditRule,
+    BatchRuleFinding,
+    RuleThresholds,
+)
 from governance_app.rules.factories import duplicate_positive_fee, inconsistent_in_group
 
 

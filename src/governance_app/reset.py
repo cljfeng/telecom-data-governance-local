@@ -6,7 +6,6 @@ from governance_app.backup import create_backup
 from governance_app.config import AppConfig
 from governance_app.db import connect, initialize_database
 
-
 BUSINESS_TABLES = [
     "correction_returns",
     "issues",

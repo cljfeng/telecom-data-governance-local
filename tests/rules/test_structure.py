@@ -13,7 +13,6 @@ from governance_app.audit_rules import (
     all_rules,
 )
 
-
 RULES_DIR = Path(audit_rules.__file__).parent / "rules"
 
 

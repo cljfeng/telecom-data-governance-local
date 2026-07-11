@@ -1,6 +1,10 @@
 from typing import Callable
 
-from governance_app.rule_fields import AMOUNT_FIELD_KEYWORDS, FEE_SPIKE_FIELDS, PERIOD_FIELDS
+from governance_app.rule_fields import (
+    AMOUNT_FIELD_KEYWORDS,
+    FEE_SPIKE_FIELDS,
+    PERIOD_FIELDS,
+)
 from governance_app.rule_helpers import (
     _first_value,
     _is_placeholder,
@@ -9,7 +13,12 @@ from governance_app.rule_helpers import (
     _positive_fee_field,
     _text,
 )
-from governance_app.rule_types import AuditLedgerRow, BatchAuditRule, BatchRuleFinding, RuleThresholds
+from governance_app.rule_types import (
+    AuditLedgerRow,
+    BatchAuditRule,
+    BatchRuleFinding,
+    RuleThresholds,
+)
 
 
 def cross_ledger_batch_rules(thresholds: RuleThresholds) -> list[BatchAuditRule]:
@@ -54,7 +63,9 @@ def _fee_amount_period_spike(change_ratio_threshold: float) -> Callable[[list[Au
         findings: list[BatchRuleFinding] = []
         for (_, _, field_name), values in grouped.items():
             values.sort(key=lambda item: item[0])
-            for (_, previous_row, previous), (_, current_row, current) in zip(values, values[1:], strict=False):
+            for (_, _previous_row, previous), (_, current_row, current) in zip(
+                values, values[1:], strict=False
+            ):
                 if previous <= 0:
                     continue
                 change = (current - previous) / previous

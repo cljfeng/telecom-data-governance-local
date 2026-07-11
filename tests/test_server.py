@@ -5,14 +5,13 @@ from pathlib import Path
 import pytest
 
 import governance_app.server as server_module
-from governance_app.config import AppConfig
-from governance_app.db import connect, initialize_database
-from governance_app.db import SCHEMA_VERSION
 from governance_app.audit_engine import run_audit
+from governance_app.config import AppConfig
+from governance_app.db import SCHEMA_VERSION, connect, initialize_database
 from governance_app.importer import import_workbook
 from governance_app.operation_guard import exclusive_operation
-from governance_app.workflow import list_issues, update_issue_status
 from governance_app.server import create_app
+from governance_app.workflow import list_issues, update_issue_status
 
 
 def _multipart_upload_body(

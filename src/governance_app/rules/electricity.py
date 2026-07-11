@@ -1,4 +1,5 @@
-from typing import Any, Callable
+from datetime import datetime
+from typing import Callable
 
 from governance_app.geo import normalize_city
 from governance_app.rule_fields import (
@@ -27,7 +28,13 @@ from governance_app.rule_helpers import (
     _positive_or_zero_field,
     _text,
 )
-from governance_app.rule_types import AuditLedgerRow, AuditRule, BatchAuditRule, BatchRuleFinding, RuleThresholds
+from governance_app.rule_types import (
+    AuditLedgerRow,
+    AuditRule,
+    BatchAuditRule,
+    BatchRuleFinding,
+    RuleThresholds,
+)
 from governance_app.rules.factories import number_above, optional_number_range
 
 
@@ -198,7 +205,9 @@ def _electricity_usage_spike_drop(change_ratio_threshold: float) -> Callable[[li
         findings: list[BatchRuleFinding] = []
         for values in grouped.values():
             values.sort(key=lambda item: item[0])
-            for (_, previous_row, previous_usage), (_, current_row, current_usage) in zip(values, values[1:], strict=False):
+            for (_, _previous_row, previous_usage), (_, current_row, current_usage) in zip(
+                values, values[1:], strict=False
+            ):
                 if previous_usage == 0:
                     continue
                 change = (current_usage - previous_usage) / previous_usage

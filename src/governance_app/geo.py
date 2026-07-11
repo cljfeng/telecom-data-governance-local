@@ -1,6 +1,5 @@
 from typing import Any
 
-
 CITY_ALIASES = {
     "甘南藏族自治州": "甘南",
     "临夏回族自治州": "临夏",

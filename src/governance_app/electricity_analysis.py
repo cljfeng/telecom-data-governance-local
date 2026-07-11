@@ -9,7 +9,12 @@ from governance_app.audit_rules import parse_row
 from governance_app.config import AppConfig
 from governance_app.db import connect
 from governance_app.geo import normalize_city
-from governance_app.rule_fields import ELECTRICITY_AMOUNT_FIELDS, PERIOD_FIELDS, PRICE_FIELDS, USAGE_FIELDS
+from governance_app.rule_fields import (
+    ELECTRICITY_AMOUNT_FIELDS,
+    PERIOD_FIELDS,
+    PRICE_FIELDS,
+    USAGE_FIELDS,
+)
 from governance_app.rule_helpers import _first_value, _number, _period_key, _text
 
 ELECTRICITY_DOMAIN = "electricity"

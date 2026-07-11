@@ -3,7 +3,11 @@ from contextlib import contextmanager
 from typing import Iterator
 
 from governance_app.config import AppConfig
-from governance_app.migrations import SCHEMA_VERSION, apply_migrations, current_schema_version
+from governance_app.migrations import (
+    SCHEMA_VERSION,
+    apply_migrations,
+    current_schema_version,
+)
 
 
 @contextmanager

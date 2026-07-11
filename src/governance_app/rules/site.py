@@ -1,5 +1,11 @@
 from governance_app.rule_helpers import _is_placeholder, _text
-from governance_app.rule_types import AuditLedgerRow, AuditRule, BatchAuditRule, BatchRuleFinding, RuleThresholds
+from governance_app.rule_types import (
+    AuditLedgerRow,
+    AuditRule,
+    BatchAuditRule,
+    BatchRuleFinding,
+    RuleThresholds,
+)
 from governance_app.rules.factories import required
 
 

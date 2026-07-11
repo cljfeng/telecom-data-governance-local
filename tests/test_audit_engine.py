@@ -1,14 +1,19 @@
 import json
 
 from governance_app.audit_engine import run_audit
-from governance_app.audit_rules import DEFAULT_THRESHOLDS, all_batch_rules, all_rules, rule_metadata
-from governance_app.rule_catalog import RULE_CATALOG
-from governance_app.rule_fields import PRICE_FIELDS, PERIOD_FIELDS
-from governance_app.rule_types import AuditRule, RuleThresholds
-from governance_app.rules.electricity import electricity_batch_rules
+from governance_app.audit_rules import (
+    DEFAULT_THRESHOLDS,
+    all_batch_rules,
+    all_rules,
+    rule_metadata,
+)
 from governance_app.db import connect, initialize_database
 from governance_app.importer import import_workbook
+from governance_app.rule_catalog import RULE_CATALOG
+from governance_app.rule_fields import PERIOD_FIELDS, PRICE_FIELDS
 from governance_app.rule_settings import upsert_rule_setting
+from governance_app.rule_types import AuditRule, RuleThresholds
+from governance_app.rules.electricity import electricity_batch_rules
 from governance_app.workflow import city_progress
 
 

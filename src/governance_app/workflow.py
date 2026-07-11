@@ -5,7 +5,11 @@ import re
 from datetime import datetime
 from typing import Any
 
-from governance_app.audit_quality import confidence_for, confidence_label, parse_result_payload
+from governance_app.audit_quality import (
+    confidence_for,
+    confidence_label,
+    parse_result_payload,
+)
 from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
 from governance_app.db import connect
