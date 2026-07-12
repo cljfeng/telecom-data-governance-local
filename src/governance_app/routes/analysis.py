@@ -1,5 +1,7 @@
+import json
 from urllib.parse import ParseResult, parse_qs
 
+from governance_app.analysis_reviews import save_opportunity_review
 from governance_app.config import AppConfig
 from governance_app.electricity_analysis import (
     export_electricity_opportunities,
@@ -15,7 +17,7 @@ from governance_app.tower_rent_analysis import (
     run_tower_rent_analysis,
 )
 
-_ACTIONS = {"run", "summary", "opportunities", "export"}
+_ACTIONS = {"run", "summary", "opportunities", "export", "review"}
 _DOMAINS = {"electricity-analysis", "tower-rent-analysis"}
 
 
@@ -38,7 +40,6 @@ def handle_analysis_route(
     parsed: ParseResult,
     body: str,
 ) -> JsonResponse | None:
-    del body
     parts = parsed.path.strip("/").split("/")
     owns_path = len(parts) >= 4 and parts[:2] == ["api", "batches"] and parts[3] in _DOMAINS
     try:
@@ -49,6 +50,14 @@ def handle_analysis_route(
         return json_response({"error": "not found"}, status=404) if owns_path else None
     domain, batch_id, action = matched
     try:
+        if method == "POST" and action == "review":
+            try:
+                payload = json.loads(body or "{}")
+            except json.JSONDecodeError as exc:
+                raise ValueError("请求内容不是有效 JSON") from exc
+            if not isinstance(payload, dict):
+                raise ValueError("请求内容必须是 JSON 对象")
+            return json_response(save_opportunity_review(config, batch_id, domain, payload))
         if domain == "electricity-analysis":
             return _electricity_response(config, method, parsed, batch_id, action)
         return _tower_rent_response(config, method, parsed, batch_id, action)

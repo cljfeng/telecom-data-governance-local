@@ -1519,6 +1519,326 @@ tbody tr:last-child td {
   margin-bottom: 4px;
 }
 
+.analysis-review-list {
+  display: grid;
+  gap: 1rem;
+  padding: 0 20px 20px;
+}
+
+.analysis-review-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(18rem, 1fr);
+  gap: 1rem;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 8px 22px rgba(15, 31, 55, 0.045);
+}
+
+.analysis-review-card > * {
+  min-width: 0;
+}
+
+.analysis-review-context,
+.analysis-review-form,
+.analysis-review-legacy {
+  padding: 18px;
+}
+
+.analysis-review-card-head,
+.analysis-review-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.analysis-review-card-head h3 {
+  margin-top: 5px;
+  font-size: 17px;
+  overflow-wrap: anywhere;
+}
+
+.analysis-review-card-head > div,
+.analysis-review-heading > div {
+  min-width: 0;
+}
+
+.analysis-review-kicker {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+}
+
+.analysis-status,
+.analysis-review-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-height: 28px;
+  align-items: center;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--panel-soft);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.analysis-status-pending_export,
+.analysis-status-pending_correction,
+.analysis-status-still_invalid {
+  color: var(--warning);
+  border-color: #eed8aa;
+  background: var(--warning-soft);
+}
+
+.analysis-status-returned,
+.analysis-status-needs_review {
+  color: var(--review);
+  border-color: #d7d7f8;
+  background: var(--review-soft);
+}
+
+.analysis-status-closed,
+.analysis-status-not_required,
+.analysis-status-resolved_by_reaudit {
+  color: var(--success);
+  border-color: #bfe6d4;
+  background: var(--success-soft);
+}
+
+.analysis-review-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 18px;
+  margin: 18px 0;
+}
+
+.analysis-review-meta div {
+  min-width: 0;
+}
+
+.analysis-review-meta dt,
+.analysis-review-meta dd {
+  margin: 0;
+}
+
+.analysis-review-meta dt,
+.analysis-review-amounts span,
+.analysis-review-fields span,
+.analysis-review-note span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.analysis-review-meta dd {
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.analysis-review-amounts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.analysis-review-amounts div {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: var(--panel-soft);
+}
+
+.analysis-review-amounts strong {
+  display: block;
+  margin-top: 5px;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.analysis-review-suggestion {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.analysis-review-suggestion strong {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text);
+}
+
+.analysis-review-form {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  border-left: 1px solid var(--line-soft);
+  background: #f7faff;
+}
+
+.analysis-review-heading strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+}
+
+.analysis-review-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .75rem;
+}
+
+.analysis-review-fields label,
+.analysis-review-note {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.analysis-review-fields input,
+.analysis-review-note textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: #ffffff;
+  font: inherit;
+  outline: none;
+}
+
+.analysis-review-fields input {
+  min-height: 40px;
+}
+
+.analysis-review-note textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.analysis-review-fields input:focus,
+.analysis-review-note textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.analysis-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.review-action {
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: #ffffff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.review-action:hover:not(:disabled),
+.review-action:focus-visible:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  outline: none;
+}
+
+.review-action:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.review-action-close {
+  color: #ffffff;
+  border-color: var(--success);
+  background: var(--success);
+}
+
+.review-action-invalid {
+  color: var(--danger);
+  border-color: #e9bbb7;
+  background: var(--danger-soft);
+}
+
+.analysis-review-error {
+  min-height: 18px;
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.analysis-review-legacy {
+  align-self: stretch;
+  border-left: 1px solid #eed8aa;
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.analysis-review-legacy p {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+@media (max-width: 760px) {
+  .analysis-review-card,
+  .analysis-review-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .analysis-review-list {
+    padding-inline: 14px;
+  }
+
+  .analysis-review-form,
+  .analysis-review-legacy {
+    border-top: 1px solid var(--line-soft);
+    border-left: 0;
+  }
+
+  .analysis-review-meta,
+  .analysis-review-amounts {
+    grid-template-columns: 1fr;
+  }
+
+  .analysis-review-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .review-action {
+    width: 100%;
+  }
+}
+
+@media (min-width: 761px) and (max-width: 980px) {
+  .analysis-review-card {
+    grid-template-columns: 1fr;
+  }
+
+  .analysis-review-form,
+  .analysis-review-legacy {
+    border-top: 1px solid var(--line-soft);
+    border-left: 0;
+  }
+}
+
 @media (max-width: 1120px) {
   .metric-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));

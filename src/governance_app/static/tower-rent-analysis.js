@@ -1,4 +1,5 @@
-import { fetchJson, postJson } from "/api.js?v=20260517-1";
+import { fetchJson, postJson } from "/api.js?v=20260712-1";
+import { bindReviewForms, reviewForm, statusOptions } from "/analysis-review.js?v=20260712-1";
 
 function money(value) {
   const number = Number(value || 0);
@@ -8,6 +9,19 @@ function money(value) {
 function optionRows(rows, field, label) {
   const values = [...new Set(rows.map((row) => row[field]).filter(Boolean))];
   return [`<option value="">全部${label}</option>`, ...values.map((value) => `<option value="${value}">${value}</option>`)].join("");
+}
+
+function statusLabel(status) {
+  return {
+    pending_export: "待导出",
+    pending_correction: "待整改",
+    returned: "待复核",
+    needs_review: "待复核",
+    still_invalid: "仍不合规",
+    closed: "已闭环",
+    not_required: "无需整改",
+    resolved_by_reaudit: "复审已解决",
+  }[status] || "待处理";
 }
 
 export async function renderTowerRentAnalysis(ctx) {
@@ -38,27 +52,10 @@ export async function renderTowerRentAnalysis(ctx) {
       <div class="toolbar">
         <label class="compact-field"><span>异常类型</span><select id="tower-rent-type-filter"><option value="">全部类型</option></select></label>
         <label class="compact-field"><span>置信度</span><select id="tower-rent-confidence-filter"><option value="">全部置信度</option></select></label>
+        <label class="compact-field"><span>闭环状态</span><select id="tower-rent-status-filter">${statusOptions()}</select></label>
         <button id="apply-tower-rent-filters" class="secondary-button" type="button">筛选</button>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>地市</th>
-              <th>站址</th>
-              <th>账期</th>
-              <th>类型</th>
-              <th>当前金额</th>
-              <th>预计可追回</th>
-              <th>优惠落实</th>
-              <th>待核查</th>
-              <th>置信度</th>
-              <th>建议动作</th>
-            </tr>
-          </thead>
-          <tbody id="tower-rent-clue-table"><tr><td colspan="10">正在加载</td></tr></tbody>
-        </table>
-      </div>
+      <div id="tower-rent-clue-list" class="analysis-review-list"><div class="empty-state">正在加载</div></div>
     </section>
   `;
   ctx.bindBatchSelector(() => renderTowerRentAnalysis(ctx));
@@ -98,9 +95,11 @@ export async function renderTowerRentAnalysis(ctx) {
 async function loadTowerRentAnalysisData(ctx) {
   const type = document.querySelector("#tower-rent-type-filter")?.value || "";
   const confidence = document.querySelector("#tower-rent-confidence-filter")?.value || "";
+  const status = document.querySelector("#tower-rent-status-filter")?.value || "";
   const query = new URLSearchParams();
   if (type) query.set("opportunity_type", type);
   if (confidence) query.set("confidence", confidence);
+  if (status) query.set("status", status);
   try {
     const [summary, list] = await Promise.all([
       fetchJson(`/api/batches/${ctx.state.batchId}/tower-rent-analysis/summary`),
@@ -116,8 +115,13 @@ async function loadTowerRentAnalysisData(ctx) {
       ctx.metricCard("预计可追回金额", 0, "等待分析", "danger"),
       ctx.metricCard("优惠落实金额", 0, "等待分析", "success"),
       ctx.metricCard("待核查金额", 0, "等待分析", "review"),
+      ctx.metricCard("待处理", 0, "等待分析", "warning"),
+      ctx.metricCard("待复核", 0, "等待分析", "review"),
+      ctx.metricCard("已闭环", 0, "等待分析", "success"),
+      ctx.metricCard("核实可追回", 0, "等待分析", "danger"),
+      ctx.metricCard("实际落实", 0, "等待分析", "success"),
     ].join("");
-    document.querySelector("#tower-rent-clue-table").innerHTML = `<tr><td colspan="10">${ctx.escapeHtml(error.message)}</td></tr>`;
+    document.querySelector("#tower-rent-clue-list").innerHTML = `<div class="empty-state">${ctx.escapeHtml(error.message)}</div>`;
   }
 }
 
@@ -128,6 +132,11 @@ function renderSummary(ctx, summary) {
     ctx.metricCard("预计可追回金额", summary.recoverable_amount, "相对确定问题", "danger"),
     ctx.metricCard("优惠落实金额", summary.discount_realization_amount, "共享折扣等优惠线索", "success"),
     ctx.metricCard("待核查金额", summary.review_amount, `高风险 ${ctx.formatNumber(summary.high_risk_count)} 条`, "review"),
+    ctx.metricCard("待处理", summary.pending_count, "等待整改或再次核验", "warning"),
+    ctx.metricCard("待复核", summary.review_count, "已返回核查结果", "review"),
+    ctx.metricCard("已闭环", summary.closed_count, "含无需整改与复审解决", "success"),
+    ctx.metricCard("核实可追回", summary.verified_recoverable_amount, "以核查认定为准", "danger"),
+    ctx.metricCard("实际落实", summary.realized_saving_amount, "已退款或已完成优化", "success"),
   ].join("");
 }
 
@@ -147,27 +156,41 @@ function renderRows(ctx, rows) {
   const confidenceFilter = document.querySelector("#tower-rent-confidence-filter");
   if (typeFilter && typeFilter.options.length <= 1) typeFilter.innerHTML = optionRows(rows, "opportunity_type", "类型");
   if (confidenceFilter && confidenceFilter.options.length <= 1) confidenceFilter.innerHTML = optionRows(rows, "confidence", "置信度");
-  const tbody = document.querySelector("#tower-rent-clue-table");
+  const list = document.querySelector("#tower-rent-clue-list");
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="10">暂无租费异常线索。可以先点击“生成分析”。</td></tr>';
+    list.innerHTML = '<div class="empty-state">暂无租费异常线索。可以先点击“生成分析”或调整筛选条件。</div>';
     return;
   }
-  tbody.innerHTML = rows
+  list.innerHTML = rows
     .map(
       (row) => `
-        <tr>
-          <td>${ctx.escapeHtml(row.city || "未填地市")}</td>
-          <td><strong>${ctx.escapeHtml(row.telecom_site_code || "")}</strong><br>${ctx.escapeHtml(row.telecom_site_name || "")}</td>
-          <td>${ctx.escapeHtml(row.period || "")}</td>
-          <td>${ctx.escapeHtml(row.opportunity_type)}</td>
-          <td>${money(row.current_amount)}</td>
-          <td>${money(row.recoverable_amount)}</td>
-          <td>${money(row.discount_realization_amount)}</td>
-          <td>${money(row.review_amount)}</td>
-          <td>${ctx.escapeHtml(row.confidence)}</td>
-          <td>${ctx.escapeHtml(row.suggestion)}</td>
-        </tr>
+        <article class="analysis-review-card">
+          <div class="analysis-review-context">
+            <div class="analysis-review-card-head">
+              <div>
+                <span class="analysis-review-kicker">${ctx.escapeHtml(row.opportunity_type || "租费线索")}</span>
+                <h3>${ctx.escapeHtml(row.telecom_site_name || row.telecom_site_code || "未命名站址")}</h3>
+              </div>
+              <span class="analysis-status analysis-status-${ctx.escapeHtml(row.issue_status || "legacy")}">${ctx.escapeHtml(statusLabel(row.issue_status))}</span>
+            </div>
+            <dl class="analysis-review-meta">
+              <div><dt>问题编号</dt><dd>${ctx.escapeHtml(row.issue_code || "未关联来源问题")}</dd></div>
+              <div><dt>线索编号</dt><dd>${ctx.escapeHtml(row.opportunity_code || "")}</dd></div>
+              <div><dt>地市 / 账期</dt><dd>${ctx.escapeHtml(row.city || "未填地市")} · ${ctx.escapeHtml(row.period || "未填账期")}</dd></div>
+              <div><dt>置信度</dt><dd>${ctx.escapeHtml(row.confidence || "-")}</dd></div>
+            </dl>
+            <div class="analysis-review-amounts">
+              <div><span>当前金额</span><strong>${money(row.current_amount)}</strong></div>
+              <div><span>预计可追回</span><strong>${money(row.recoverable_amount)}</strong></div>
+              <div><span>优惠落实机会</span><strong>${money(row.discount_realization_amount)}</strong></div>
+              <div><span>待核查范围</span><strong>${money(row.review_amount)}</strong></div>
+            </div>
+            <p class="analysis-review-suggestion"><strong>建议动作</strong>${ctx.escapeHtml(row.suggestion || "请结合合同与计费资料进行核查。")}</p>
+          </div>
+          ${reviewForm(ctx, row)}
+        </article>
       `,
     )
     .join("");
+  bindReviewForms(ctx, "tower-rent-analysis", () => loadTowerRentAnalysisData(ctx));
 }
