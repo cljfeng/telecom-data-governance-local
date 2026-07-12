@@ -78,7 +78,20 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
             raise ValueError("batch not found")
         if batch["is_archived"]:
             raise ValueError("batch is archived")
-        if batch["status"] != "returning":
+        reviewed_after_reaudit = batch["status"] == "audited" and bool(
+            conn.execute(
+                """
+                select 1
+                  from analysis_opportunity_reviews r
+                  join issues i on i.issue_code = r.source_issue_code
+                 where r.batch_id = ?
+                   and i.status in ('closed', 'not_required', 'resolved_by_reaudit')
+                 limit 1
+                """,
+                (batch_id,),
+            ).fetchone()
+        )
+        if batch["status"] != "returning" and not reviewed_after_reaudit:
             raise ValueError("batch must be ready for archive")
 
     archive_dir = config.export_dir / f"archive_batch_{batch_id}"
@@ -325,6 +338,11 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
 
     wb.save(path)
     with connect(config) as conn:
+        if reviewed_after_reaudit:
+            conn.execute(
+                "update import_batches set status = 'returning' where id = ? and status = 'audited'",
+                (batch_id,),
+            )
         transition_batch_in_conn(conn, batch_id, "archive")
         conn.execute(
             "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
