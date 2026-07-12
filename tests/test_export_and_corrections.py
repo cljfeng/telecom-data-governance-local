@@ -330,6 +330,113 @@ def test_import_specialist_blank_amount_preserves_value_and_zero_overwrites(
     assert tuple(review) == (1200.5, 0.0, "二次核查")
 
 
+def test_online_review_preserves_correction_value_imported_from_excel(
+    app_config, sample_workbook
+):
+    path, issue_code, opportunity_code = _specialist_return_workbook(
+        app_config, sample_workbook
+    )
+    wb = load_workbook(path)
+    ws = wb["整改问题清单"]
+    headers = {cell.value: cell.column for cell in ws[1]}
+    _set_specialist_cells(
+        ws,
+        2,
+        result="已整改",
+        note="Excel 核查完成",
+        verified=1200.5,
+        realized=800,
+    )
+    ws.cell(row=2, column=headers["整改后值"]).value = "0.8"
+    wb.save(path)
+    assert import_correction_return(app_config, path).errors == []
+
+    saved = save_opportunity_review(
+        app_config,
+        1,
+        "electricity-analysis",
+        {
+            "opportunity_code": opportunity_code,
+            "status": "closed",
+            "verified_recoverable_amount": 1200.5,
+            "realized_saving_amount": 800,
+            "review_note": "在线复核通过",
+        },
+    )
+
+    assert saved["issue_code"] == issue_code
+    assert saved["correction_value"] == "0.8"
+
+
+def test_closed_specialist_export_reimport_without_edits_preserves_status(
+    app_config, sample_workbook
+):
+    _, issue_code, opportunity_code = _specialist_return_workbook(
+        app_config, sample_workbook
+    )
+    save_opportunity_review(
+        app_config,
+        1,
+        "electricity-analysis",
+        {
+            "opportunity_code": opportunity_code,
+            "status": "closed",
+            "verified_recoverable_amount": 1200.5,
+            "realized_saving_amount": 800,
+            "review_note": "省公司复核通过",
+        },
+    )
+    path = export_electricity_opportunities(app_config, 1)
+    ws = load_workbook(path)["整改问题清单"]
+    headers = {cell.value: cell.column for cell in ws[1]}
+    assert ws.cell(row=2, column=headers["整改结果"]).value is None
+    assert ws.cell(row=2, column=headers["整改说明"]).value == "省公司复核通过"
+    assert ws.cell(row=2, column=headers["核实可追回金额"]).value == 1200.5
+
+    result = import_correction_return(app_config, path)
+
+    assert result.errors == []
+    assert result.matched_count == 1
+    with connect(app_config) as conn:
+        status = conn.execute(
+            "select status from issues where issue_code = ?", (issue_code,)
+        ).fetchone()[0]
+    assert status == "closed"
+
+
+def test_explicit_specialist_result_can_reopen_closed_issue(
+    app_config, sample_workbook
+):
+    _, issue_code, opportunity_code = _specialist_return_workbook(
+        app_config, sample_workbook
+    )
+    save_opportunity_review(
+        app_config,
+        1,
+        "electricity-analysis",
+        {
+            "opportunity_code": opportunity_code,
+            "status": "closed",
+            "review_note": "省公司复核通过",
+        },
+    )
+    path = export_electricity_opportunities(app_config, 1)
+    wb = load_workbook(path)
+    ws = wb["整改问题清单"]
+    headers = {cell.value: cell.column for cell in ws[1]}
+    ws.cell(row=2, column=headers["整改结果"]).value = "退回确认"
+    wb.save(path)
+
+    result = import_correction_return(app_config, path)
+
+    assert result.errors == []
+    with connect(app_config) as conn:
+        status = conn.execute(
+            "select status from issues where issue_code = ?", (issue_code,)
+        ).fetchone()[0]
+    assert status == "still_invalid"
+
+
 def test_import_specialist_correction_return_reports_missing_specialist_column(
     app_config, sample_workbook
 ):

@@ -272,7 +272,7 @@ def test_update_issue_status_in_conn_saves_fields_and_event(app_config, sample_w
             source="analysis_review",
             event_note="保存专题核查",
             correction_note="已核对账单",
-            update_correction_fields=True,
+            update_correction_note=True,
         )
         saved = conn.execute(
             "select status, correction_note from issues where issue_code = ?",

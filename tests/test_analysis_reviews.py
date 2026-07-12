@@ -16,6 +16,7 @@ from governance_app.analysis_reviews import (
 from governance_app.audit_engine import run_audit
 from governance_app.db import connect, initialize_database
 from governance_app.electricity_analysis import run_electricity_analysis
+from governance_app.exporter import export_city_issue_packages
 from governance_app.importer import import_workbook
 
 
@@ -168,6 +169,32 @@ def test_blank_amount_preserves_existing_value_while_zero_overwrites(
     assert saved["verified_recoverable_amount"] == 1200.5
     assert saved["realized_saving_amount"] == 0.0
     assert saved["review_note"] == "二次核查"
+
+
+def test_save_opportunity_review_advances_distributed_batch_through_return_flow(
+    app_config, sample_workbook
+):
+    batch_id, opportunity_code, _ = _electricity_opportunity(
+        app_config, sample_workbook
+    )
+    export_city_issue_packages(app_config, batch_id)
+
+    save_opportunity_review(
+        app_config,
+        batch_id,
+        "electricity-analysis",
+        {
+            "opportunity_code": opportunity_code,
+            "status": "closed",
+            "review_note": "在线核查闭环",
+        },
+    )
+
+    with connect(app_config) as conn:
+        batch_status = conn.execute(
+            "select status from import_batches where id = ?", (batch_id,)
+        ).fetchone()[0]
+    assert batch_status == "returning"
 
 
 @pytest.mark.parametrize(

@@ -706,7 +706,8 @@ def update_issue_status_in_conn(
     event_note: str,
     correction_value: str | None = None,
     correction_note: str | None = None,
-    update_correction_fields: bool = False,
+    update_correction_value: bool = False,
+    update_correction_note: bool = False,
 ) -> sqlite3.Row:
     if status not in ISSUE_STATUSES:
         raise ValueError("invalid issue status")
@@ -723,20 +724,20 @@ def update_issue_status_in_conn(
         raise ValueError("issue not found")
     if row["is_archived"]:
         raise ValueError("batch is archived")
-    if update_correction_fields:
-        conn.execute(
-            """
-            update issues
-               set status = ?, correction_value = ?, correction_note = ?, updated_at = current_timestamp
-             where issue_code = ?
-            """,
-            (status, correction_value, correction_note, issue_code),
-        )
-    else:
-        conn.execute(
-            "update issues set status = ?, updated_at = current_timestamp where issue_code = ?",
-            (status, issue_code),
-        )
+    assignments = ["status = ?"]
+    params: list[object] = [status]
+    if update_correction_value:
+        assignments.append("correction_value = ?")
+        params.append(correction_value)
+    if update_correction_note:
+        assignments.append("correction_note = ?")
+        params.append(correction_note)
+    assignments.append("updated_at = current_timestamp")
+    params.append(issue_code)
+    conn.execute(
+        f"update issues set {', '.join(assignments)} where issue_code = ?",
+        params,
+    )
     conn.execute(
         """
         insert into issue_events(issue_id, from_status, to_status, source, note)

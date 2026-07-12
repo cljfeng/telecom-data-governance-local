@@ -48,7 +48,6 @@ def test_specialist_review_closes_through_existing_return_flow_and_archives(
             (imported.batch_id,),
         ).fetchone()
         row = json.loads(raw["row_json"])
-        original_row = dict(row)
         row.update(
             {
                 "电费单价": 1.2,
@@ -131,8 +130,8 @@ def test_specialist_review_closes_through_existing_return_flow_and_archives(
 
     with connect(app_config) as conn:
         conn.execute(
-            "update raw_rows set row_json = ? where id = ?",
-            (json.dumps(original_row, ensure_ascii=False), raw["id"]),
+            "update issues set status = 'closed' where batch_id = ?",
+            (imported.batch_id,),
         )
     run_audit(app_config, imported.batch_id)
     run_electricity_analysis(app_config, imported.batch_id)
@@ -157,7 +156,7 @@ def test_specialist_review_closes_through_existing_return_flow_and_archives(
     archive_path = archive_batch(app_config, imported.batch_id)
 
     assert refreshed["opportunity_code"] == opportunity_code
-    assert refreshed["issue_status"] == "resolved_by_reaudit"
+    assert refreshed["issue_status"] == "closed"
     assert refreshed["verified_recoverable_amount"] == 1200.5
     assert refreshed["realized_saving_amount"] == 800.0
     assert load_workbook(archive_path)["专题核查成果"].max_row == 2

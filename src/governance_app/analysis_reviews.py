@@ -8,7 +8,10 @@ from typing import Any, cast
 from governance_app.config import AppConfig
 from governance_app.db import connect
 from governance_app.models import IssueStatus
-from governance_app.workflow import update_issue_status_in_conn
+from governance_app.workflow import (
+    transition_batch_in_conn,
+    update_issue_status_in_conn,
+)
 
 ROUTE_TO_STORAGE_DOMAIN = {
     "electricity-analysis": "electricity",
@@ -48,6 +51,7 @@ def match_opportunity_in_conn(
                i.status as issue_status,
                i.correction_value,
                i.correction_note,
+               b.status as batch_status,
                b.is_archived
           from analysis_opportunities ao
           join import_batches b on b.id = ao.batch_id
@@ -229,7 +233,9 @@ def save_opportunity_review(
             source="analysis_review",
             event_note=f"保存专题核查：{opportunity_code}",
             correction_note=note,
-            update_correction_fields=True,
+            update_correction_note=True,
         )
         upsert_review_in_conn(conn, opportunity, verified, realized, note)
+        if opportunity["batch_status"] in {"distributed", "returning"}:
+            transition_batch_in_conn(conn, batch_id, "correction_return")
         return load_review_payload_in_conn(conn, opportunity_code)

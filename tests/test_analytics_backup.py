@@ -256,7 +256,7 @@ def test_archive_batch_preserves_reviewed_opportunity_after_derived_row_is_delet
                 batch_id, domain, opportunity_code, opportunity_type, source_issue_code,
                 estimated_recoverable_amount, estimated_saving_amount,
                 verified_recoverable_amount, realized_saving_amount, review_note
-            ) values (?, 'electricity', ?, 'recoverable', ?, 1500, 300, 1200.5, 250, '已核实账单')
+            ) values (?, 'electricity', ?, 'recoverable', ?, 1500, 300, 1200.5, 250, '=HYPERLINK("http://bad")')
             """,
             (imported.batch_id, opportunity_code, issue["issue_code"]),
         )
@@ -275,7 +275,7 @@ def test_archive_batch_preserves_reviewed_opportunity_after_derived_row_is_delet
 
     path = archive_batch(app_config, imported.batch_id)
 
-    wb = load_workbook(path, data_only=True)
+    wb = load_workbook(path, data_only=False)
     assert "专题核查成果" in wb.sheetnames
     ws = wb["专题核查成果"]
     assert [cell.value for cell in ws[1]] == [
@@ -300,6 +300,8 @@ def test_archive_batch_preserves_reviewed_opportunity_after_derived_row_is_delet
     assert ws["C2"].value == opportunity_code
     assert ws["F2"].value == "已关闭"
     assert ws["L2"].value == 1200.5
+    assert ws["N2"].value == "'=HYPERLINK(\"http://bad\")"
+    assert ws["N2"].data_type == "s"
 
 
 def test_archive_batch_always_adds_empty_specialist_review_headers(app_config, sample_workbook):

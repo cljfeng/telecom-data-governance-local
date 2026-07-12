@@ -164,7 +164,8 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
                 event_note=f"导入整改回传：{issue_code_text}",
                 correction_value=correction_value,
                 correction_note=correction_note,
-                update_correction_fields=True,
+                update_correction_value=True,
+                update_correction_note=True,
             )
             review_note = str(note or result or "")
             if is_specialist:
@@ -221,6 +222,12 @@ def _is_blank(value: object) -> bool:
 def _auto_review_status(issue_row, result: object, note: object) -> str:
     result_text = str(result or "").strip()
     has_note = not _is_blank(note)
+    if (
+        not result_text
+        and issue_row is not None
+        and issue_row["status"] in {"closed", "not_required", "resolved_by_reaudit"}
+    ):
+        return str(issue_row["status"])
     if "无需整改" in result_text and has_note:
         return "not_required"
     if "退回" in result_text:

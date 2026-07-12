@@ -8,6 +8,7 @@ from governance_app.analytics import dashboard_summary
 from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
 from governance_app.db import connect
+from governance_app.exporter import excel_safe
 from governance_app.rule_settings import load_rule_settings
 from governance_app.version import version_payload
 from governance_app.workflow import city_progress, transition_batch_in_conn
@@ -21,7 +22,7 @@ class ArchiveEligibility:
     is_archived: bool
     status_counts: dict[str, int]
     open_issue_count: int
-    post_review_reaudit: bool
+    audited_reviewed_closure: bool
     blockers: list[dict[str, str]]
 
 
@@ -48,7 +49,7 @@ def _archive_eligibility_in_conn(
         for status, count in status_counts.items()
         if status not in CLOSED_STATUSES
     )
-    post_review_reaudit = batch["status"] == "audited" and bool(
+    audited_reviewed_closure = batch["status"] == "audited" and bool(
         conn.execute(
             """
             select 1
@@ -56,7 +57,7 @@ def _archive_eligibility_in_conn(
               join issues i on i.issue_code = r.source_issue_code
              where r.batch_id = ?
                and i.batch_id = r.batch_id
-               and i.status = 'resolved_by_reaudit'
+               and i.status in ('closed', 'not_required', 'resolved_by_reaudit')
              limit 1
             """,
             (batch_id,),
@@ -65,7 +66,7 @@ def _archive_eligibility_in_conn(
     blockers = []
     if batch["is_archived"]:
         blockers.append({"type": "archived", "message": "批次已归档，不能重复归档"})
-    if batch["status"] != "returning" and not post_review_reaudit:
+    if batch["status"] != "returning" and not audited_reviewed_closure:
         blockers.append(
             {"type": "workflow_status", "message": "批次需要完成导出和回传后再归档"}
         )
@@ -78,7 +79,7 @@ def _archive_eligibility_in_conn(
         is_archived=bool(batch["is_archived"]),
         status_counts=status_counts,
         open_issue_count=open_issue_count,
-        post_review_reaudit=post_review_reaudit,
+        audited_reviewed_closure=audited_reviewed_closure,
         blockers=blockers,
     )
 
@@ -221,25 +222,24 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
             )
 
         ws = wb.create_sheet("专题核查成果")
-        ws.append(
-            [
-                "批次",
-                "专题领域",
-                "机会编号",
-                "机会类型",
-                "来源问题编号",
-                "最终问题状态",
-                "地市",
-                "站址编码",
-                "站址名称",
-                "测算可追回金额",
-                "测算压降/优惠金额",
-                "核实可追回金额",
-                "实际落实金额",
-                "核查说明",
-                "更新时间",
-            ]
-        )
+        specialist_headers = [
+            "批次",
+            "专题领域",
+            "机会编号",
+            "机会类型",
+            "来源问题编号",
+            "最终问题状态",
+            "地市",
+            "站址编码",
+            "站址名称",
+            "测算可追回金额",
+            "测算压降/优惠金额",
+            "核实可追回金额",
+            "实际落实金额",
+            "核查说明",
+            "更新时间",
+        ]
+        ws.append([excel_safe(value) for value in specialist_headers])
         for review in conn.execute(
             """
             select r.batch_id, r.domain, r.opportunity_code, r.opportunity_type,
@@ -259,22 +259,24 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
             ws.append(
                 [
                     review["batch_id"],
-                    {"electricity": "电费压降", "tower_rent": "铁塔租费"}.get(
-                        review["domain"], review["domain"]
+                    excel_safe(
+                        {"electricity": "电费压降", "tower_rent": "铁塔租费"}.get(
+                            review["domain"], review["domain"]
+                        )
                     ),
-                    review["opportunity_code"],
-                    review["opportunity_type"],
-                    review["source_issue_code"],
-                    _status_label(review["issue_status"]),
-                    review["city"],
-                    review["telecom_site_code"],
-                    review["telecom_site_name"],
+                    excel_safe(review["opportunity_code"]),
+                    excel_safe(review["opportunity_type"]),
+                    excel_safe(review["source_issue_code"]),
+                    excel_safe(_status_label(review["issue_status"])),
+                    excel_safe(review["city"]),
+                    excel_safe(review["telecom_site_code"]),
+                    excel_safe(review["telecom_site_name"]),
                     review["estimated_recoverable_amount"],
                     review["estimated_saving_amount"],
                     review["verified_recoverable_amount"],
                     review["realized_saving_amount"],
-                    review["review_note"],
-                    review["updated_at"],
+                    excel_safe(review["review_note"]),
+                    excel_safe(review["updated_at"]),
                 ]
             )
 
@@ -373,7 +375,7 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
 
     wb.save(path)
     with connect(config) as conn:
-        if eligibility.post_review_reaudit:
+        if eligibility.audited_reviewed_closure:
             conn.execute(
                 "update import_batches set status = 'returning' where id = ? and status = 'audited'",
                 (batch_id,),

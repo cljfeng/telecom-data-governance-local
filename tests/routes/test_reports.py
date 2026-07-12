@@ -87,7 +87,7 @@ def test_report_handlers_return_none_for_other_domain(app_config):
     assert _module().handle_report_upload(app_config, "/api/import/upload", {}, {}) is None
 
 
-def test_archive_api_rejects_initial_audited_batch_with_closed_review(app_config):
+def test_archive_api_accepts_initial_audited_batch_with_closed_review(app_config):
     batch_id = _audited_batch_with_review(app_config, "closed")
     app = create_app(app_config)
 
@@ -99,12 +99,10 @@ def test_archive_api_rejects_initial_audited_batch_with_closed_review(app_config
     )
 
     assert precheck[0] == 200
-    assert json.loads(precheck[2])["ready"] is False
-    assert [item["type"] for item in json.loads(precheck[2])["blockers"]] == [
-        "workflow_status"
-    ]
-    assert archive[0] == 400
-    assert json.loads(archive[2])["error"] == "batch must be ready for archive"
+    assert json.loads(precheck[2])["ready"] is True
+    assert json.loads(precheck[2])["blockers"] == []
+    assert archive[0] == 200
+    assert json.loads(archive[2])["path"].endswith("专项治理归档汇总.xlsx")
 
 
 def test_archive_api_rejects_post_review_reaudit_with_other_open_issue(app_config):
