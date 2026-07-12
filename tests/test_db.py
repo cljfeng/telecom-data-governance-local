@@ -90,6 +90,57 @@ def test_initialize_database_creates_analysis_opportunities(app_config):
     assert "idx_analysis_opportunities_batch_city" in indexes
 
 
+def test_initialize_database_creates_analysis_review_schema(app_config):
+    initialize_database(app_config)
+    with connect(app_config) as conn:
+        opportunity_columns = {row["name"] for row in conn.execute("pragma table_info(analysis_opportunities)")}
+        review_columns = {row["name"] for row in conn.execute("pragma table_info(analysis_opportunity_reviews)")}
+        review_indexes = {row["name"] for row in conn.execute("pragma index_list(analysis_opportunity_reviews)")}
+    assert "source_issue_code" in opportunity_columns
+    assert {
+        "batch_id", "domain", "opportunity_code", "opportunity_type", "source_issue_code",
+        "estimated_recoverable_amount", "estimated_saving_amount",
+        "verified_recoverable_amount", "realized_saving_amount", "review_note",
+        "created_at", "updated_at",
+    }.issubset(review_columns)
+    assert {"idx_analysis_reviews_batch_domain", "idx_analysis_reviews_source_issue"}.issubset(review_indexes)
+
+
+def test_version_two_upgrade_preserves_existing_opportunity(app_config):
+    app_config.data_dir.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(app_config.database_path)
+    conn.row_factory = sqlite3.Row
+    apply_migrations(conn, MIGRATIONS[:2])
+    conn.execute("insert into import_batches(id, source_file, status) values (1, 'legacy.xlsx', 'audited')")
+    conn.execute(
+        """insert into analysis_opportunities(
+               batch_id, domain, opportunity_code, opportunity_type, severity, confidence,
+               source_rule_ids_json, message, suggestion
+           ) values (1, 'electricity', 'legacy-opp', '高电价', 'high', 'high', '[]', 'm', 's')"""
+    )
+    conn.commit()
+    conn.close()
+    initialize_database(app_config)
+    with connect(app_config) as upgraded:
+        row = upgraded.execute(
+            "select opportunity_code, source_issue_code from analysis_opportunities where opportunity_code = 'legacy-opp'"
+        ).fetchone()
+    assert dict(row) == {"opportunity_code": "legacy-opp", "source_issue_code": None}
+
+
+def test_analysis_review_amounts_must_be_nonnegative(app_config):
+    initialize_database(app_config)
+    with connect(app_config) as conn:
+        conn.execute("pragma foreign_keys = off")
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+            conn.execute(
+                """insert into analysis_opportunity_reviews(
+                       batch_id, domain, opportunity_code, opportunity_type, source_issue_code,
+                       verified_recoverable_amount
+                   ) values (1, 'electricity', 'opp', '高电价', 'issue', -1)"""
+            )
+
+
 def test_initialize_database_upgrades_version_one_without_losing_data(app_config):
     app_config.data_dir.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(app_config.database_path)

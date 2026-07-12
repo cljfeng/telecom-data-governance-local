@@ -9,7 +9,7 @@ class Migration:
     apply: Callable[[sqlite3.Connection], None]
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def current_schema_version(conn: sqlite3.Connection) -> int:
@@ -216,6 +216,36 @@ def _upgrade_to_version_2(conn: sqlite3.Connection) -> None:
     )
 
 
+def _upgrade_to_version_3(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "analysis_opportunities", "source_issue_code", "text")
+    _execute_script(
+        conn,
+        """
+        create index if not exists idx_analysis_opportunities_source_issue
+            on analysis_opportunities(source_issue_code);
+        create table if not exists analysis_opportunity_reviews (
+            id integer primary key autoincrement,
+            batch_id integer not null references import_batches(id) on delete cascade,
+            domain text not null,
+            opportunity_code text not null unique,
+            opportunity_type text not null,
+            source_issue_code text not null references issues(issue_code) on delete cascade,
+            estimated_recoverable_amount real not null default 0 check (estimated_recoverable_amount >= 0),
+            estimated_saving_amount real not null default 0 check (estimated_saving_amount >= 0),
+            verified_recoverable_amount real check (verified_recoverable_amount is null or verified_recoverable_amount >= 0),
+            realized_saving_amount real check (realized_saving_amount is null or realized_saving_amount >= 0),
+            review_note text,
+            created_at text not null default current_timestamp,
+            updated_at text not null default current_timestamp
+        );
+        create index if not exists idx_analysis_reviews_batch_domain
+            on analysis_opportunity_reviews(batch_id, domain);
+        create index if not exists idx_analysis_reviews_source_issue
+            on analysis_opportunity_reviews(source_issue_code);
+        """,
+    )
+
+
 def _execute_script(conn: sqlite3.Connection, script: str) -> None:
     statement = ""
     for line in script.splitlines():
@@ -238,4 +268,5 @@ def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, 
 MIGRATIONS = (
     Migration(1, _create_version_1_schema),
     Migration(2, _upgrade_to_version_2),
+    Migration(3, _upgrade_to_version_3),
 )
