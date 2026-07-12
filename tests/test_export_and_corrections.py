@@ -1,10 +1,18 @@
+import json
+import sqlite3
+
 import pytest
 from openpyxl import Workbook, load_workbook
 
+from governance_app.analysis_reviews import save_opportunity_review
 from governance_app.archive import archive_batch
 from governance_app.audit_engine import run_audit
 from governance_app.corrections import import_correction_return
 from governance_app.db import connect, initialize_database
+from governance_app.electricity_analysis import (
+    export_electricity_opportunities,
+    run_electricity_analysis,
+)
 from governance_app.exporter import export_city_issue_packages, export_issue_packages
 from governance_app.importer import import_workbook
 
@@ -233,11 +241,345 @@ def test_import_correction_return_updates_issue_status(app_config, sample_workbo
     assert result.matched_count == 1
     with connect(app_config) as conn:
         status = conn.execute("select status from issues limit 1").fetchone()["status"]
+        review_count = conn.execute(
+            "select count(*) from analysis_opportunity_reviews"
+        ).fetchone()[0]
         correction_event = conn.execute(
             "select source from issue_events where source = 'correction_return' limit 1"
         ).fetchone()
         assert status == "needs_review"
+        assert review_count == 0
         assert correction_event["source"] == "correction_return"
+
+
+def test_import_specialist_correction_return_updates_issue_and_review(
+    app_config, sample_workbook
+):
+    path, issue_code, _ = _specialist_return_workbook(app_config, sample_workbook)
+    wb = load_workbook(path)
+    ws = wb["整改问题清单"]
+    _set_specialist_cells(
+        ws,
+        2,
+        result="已整改",
+        note="已完成核查",
+        verified=1200.5,
+        realized=800,
+    )
+    wb.save(path)
+
+    result = import_correction_return(app_config, path)
+
+    assert result.matched_count == 1
+    assert result.errors == []
+    with connect(app_config) as conn:
+        issue = conn.execute(
+            "select status, correction_note from issues where issue_code = ?",
+            (issue_code,),
+        ).fetchone()
+        review = conn.execute(
+            """
+            select verified_recoverable_amount, realized_saving_amount, review_note
+              from analysis_opportunity_reviews
+            """
+        ).fetchone()
+    assert tuple(issue) == ("needs_review", "已完成核查")
+    assert tuple(review) == (1200.5, 800.0, "已完成核查")
+
+
+def test_import_specialist_blank_amount_preserves_value_and_zero_overwrites(
+    app_config, sample_workbook
+):
+    path, _, _ = _specialist_return_workbook(app_config, sample_workbook)
+    wb = load_workbook(path)
+    ws = wb["整改问题清单"]
+    _set_specialist_cells(
+        ws,
+        2,
+        result="已整改",
+        note="首次核查",
+        verified=1200.5,
+        realized=800,
+    )
+    wb.save(path)
+    assert import_correction_return(app_config, path).errors == []
+
+    wb = load_workbook(path)
+    ws = wb["整改问题清单"]
+    _set_specialist_cells(
+        ws,
+        2,
+        result="已整改",
+        note="二次核查",
+        verified="",
+        realized=0,
+    )
+    wb.save(path)
+
+    result = import_correction_return(app_config, path)
+
+    assert result.matched_count == 1
+    assert result.errors == []
+    with connect(app_config) as conn:
+        review = conn.execute(
+            """
+            select verified_recoverable_amount, realized_saving_amount, review_note
+              from analysis_opportunity_reviews
+            """
+        ).fetchone()
+    assert tuple(review) == (1200.5, 0.0, "二次核查")
+
+
+def test_import_specialist_correction_return_reports_missing_specialist_column(
+    app_config, sample_workbook
+):
+    path, issue_code, _ = _specialist_return_workbook(app_config, sample_workbook)
+    wb = load_workbook(path)
+    ws = wb["整改问题清单"]
+    headers = {cell.value: cell.column for cell in ws[1]}
+    ws.cell(row=1, column=headers["实际落实金额"]).value = "其他金额"
+    _set_specialist_cells(ws, 2, result="已整改", note="已完成核查", verified=1200.5)
+    wb.save(path)
+
+    result = import_correction_return(app_config, path)
+
+    assert result.matched_count == 0
+    assert result.errors == ["缺少专题回填列：实际落实金额"]
+    with connect(app_config) as conn:
+        issue = conn.execute(
+            "select status, correction_note from issues where issue_code = ?",
+            (issue_code,),
+        ).fetchone()
+        review_count = conn.execute(
+            "select count(*) from analysis_opportunity_reviews"
+        ).fetchone()[0]
+    assert tuple(issue) == ("pending_correction", None)
+    assert review_count == 0
+
+
+@pytest.mark.parametrize(
+    ("header", "value"),
+    [("核实可追回金额", -1), ("实际落实金额", "NaN")],
+)
+def test_import_specialist_correction_return_reports_invalid_amount(
+    app_config, sample_workbook, header, value
+):
+    path, issue_code, _ = _specialist_return_workbook(app_config, sample_workbook)
+    wb = load_workbook(path)
+    ws = wb["整改问题清单"]
+    _set_specialist_cells(ws, 2, result="已整改", note="已完成核查")
+    headers = {cell.value: cell.column for cell in ws[1]}
+    ws.cell(row=2, column=headers[header]).value = value
+    wb.save(path)
+
+    result = import_correction_return(app_config, path)
+
+    assert result.matched_count == 0
+    assert result.errors == [f"第2行{header}必须是非负数字"]
+    with connect(app_config) as conn:
+        status = conn.execute(
+            "select status from issues where issue_code = ?", (issue_code,)
+        ).fetchone()[0]
+        review_count = conn.execute(
+            "select count(*) from analysis_opportunity_reviews"
+        ).fetchone()[0]
+    assert status == "pending_correction"
+    assert review_count == 0
+
+
+def test_import_specialist_correction_return_requires_result_or_note_for_amount(
+    app_config, sample_workbook
+):
+    path, _, _ = _specialist_return_workbook(app_config, sample_workbook)
+    wb = load_workbook(path)
+    ws = wb["整改问题清单"]
+    headers = {cell.value: cell.column for cell in ws[1]}
+    ws.cell(row=2, column=headers["核实可追回金额"]).value = 100
+    wb.save(path)
+
+    result = import_correction_return(app_config, path)
+
+    assert result.matched_count == 0
+    assert result.errors == ["第2行填写专题金额后必须填写整改结果或整改说明"]
+
+
+def test_import_specialist_correction_return_reports_opportunity_issue_mismatch(
+    app_config, sample_workbook
+):
+    path, issue_code, _ = _specialist_return_workbook(app_config, sample_workbook)
+    wb = load_workbook(path)
+    ws = wb["整改问题清单"]
+    _set_specialist_cells(
+        ws,
+        2,
+        result="已整改",
+        note="已完成核查",
+        verified=100,
+    )
+    headers = {cell.value: cell.column for cell in ws[1]}
+    ws.cell(row=2, column=headers["问题编号"]).value = "OTHER-ISSUE"
+    wb.save(path)
+
+    result = import_correction_return(app_config, path)
+
+    assert result.matched_count == 0
+    assert result.errors == ["第2行专题机会与问题编号不匹配"]
+    with connect(app_config) as conn:
+        status = conn.execute(
+            "select status from issues where issue_code = ?", (issue_code,)
+        ).fetchone()[0]
+    assert status == "pending_correction"
+
+
+def test_import_specialist_correction_return_reports_duplicate_issue_codes(
+    app_config, sample_workbook
+):
+    path, issue_code, _ = _specialist_return_workbook(app_config, sample_workbook)
+    wb = load_workbook(path)
+    ws = wb["整改问题清单"]
+    _set_specialist_cells(ws, 2, result="已整改", note="已完成核查", verified=100)
+    duplicate = [cell.value for cell in ws[2]]
+    ws.append(duplicate)
+    duplicate_row = ws.max_row
+    wb.save(path)
+
+    result = import_correction_return(app_config, path)
+
+    assert result.matched_count == 1
+    assert result.errors == [f"第{duplicate_row}行问题编号重复：{issue_code}"]
+
+
+def test_import_specialist_correction_return_keeps_valid_rows_when_another_row_is_invalid(
+    app_config, sample_workbook
+):
+    path, first_issue_code, _ = _specialist_return_workbook(app_config, sample_workbook)
+    wb = load_workbook(path)
+    ws = wb["整改问题清单"]
+    assert ws.max_row >= 3
+    _set_specialist_cells(
+        ws,
+        2,
+        result="已整改",
+        note="有效核查",
+        verified=1200.5,
+        realized=800,
+    )
+    _set_specialist_cells(ws, 3, result="已整改", note="无效核查", verified=-1)
+    second_issue_code = ws.cell(row=3, column=1).value
+    assert second_issue_code != first_issue_code
+    wb.save(path)
+
+    result = import_correction_return(app_config, path)
+
+    assert result.matched_count == 1
+    assert result.errors == ["第3行核实可追回金额必须是非负数字"]
+    with connect(app_config) as conn:
+        issues = conn.execute(
+            "select issue_code, status from issues where issue_code in (?, ?)",
+            (first_issue_code, second_issue_code),
+        ).fetchall()
+        review_count = conn.execute(
+            "select count(*) from analysis_opportunity_reviews"
+        ).fetchone()[0]
+    assert {row["issue_code"]: row["status"] for row in issues} == {
+        first_issue_code: "needs_review",
+        second_issue_code: "pending_correction",
+    }
+    assert review_count == 1
+
+
+def test_import_normal_correction_return_syncs_existing_review_note(
+    app_config, sample_workbook, tmp_path
+):
+    _, issue_code, opportunity_code = _specialist_return_workbook(
+        app_config, sample_workbook
+    )
+    with connect(app_config) as conn:
+        batch_id = conn.execute(
+            "select batch_id from issues where issue_code = ?", (issue_code,)
+        ).fetchone()[0]
+    save_opportunity_review(
+        app_config,
+        batch_id,
+        "electricity-analysis",
+        {
+            "opportunity_code": opportunity_code,
+            "status": "needs_review",
+            "verified_recoverable_amount": 10,
+            "realized_saving_amount": 5,
+            "review_note": "旧说明",
+        },
+    )
+    path = tmp_path / "normal-correction-return.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "整改问题清单"
+    ws.append(["问题编号", "整改结果", "整改说明", "整改后值"])
+    ws.append([issue_code, "已整改", "普通回传说明", ""])
+    wb.save(path)
+
+    result = import_correction_return(app_config, path)
+
+    assert result.matched_count == 1
+    assert result.errors == []
+    with connect(app_config) as conn:
+        review = conn.execute(
+            """
+            select verified_recoverable_amount, realized_saving_amount, review_note
+              from analysis_opportunity_reviews
+             where opportunity_code = ?
+            """,
+            (opportunity_code,),
+        ).fetchone()
+    assert tuple(review) == (10.0, 5.0, "普通回传说明")
+
+
+def test_import_specialist_database_error_rolls_back_whole_import(
+    app_config, sample_workbook
+):
+    path, issue_code, _ = _specialist_return_workbook(app_config, sample_workbook)
+    wb = load_workbook(path)
+    ws = wb["整改问题清单"]
+    _set_specialist_cells(
+        ws,
+        2,
+        result="已整改",
+        note="已完成核查",
+        verified=1200.5,
+    )
+    wb.save(path)
+    with connect(app_config) as conn:
+        conn.execute(
+            """
+            create trigger fail_correction_review_insert
+            before insert on analysis_opportunity_reviews
+            begin
+                select raise(abort, 'review insert failed');
+            end
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="review insert failed"):
+        import_correction_return(app_config, path)
+
+    with connect(app_config) as conn:
+        issue = conn.execute(
+            "select status, correction_note from issues where issue_code = ?",
+            (issue_code,),
+        ).fetchone()
+        correction_events = conn.execute(
+            "select count(*) from issue_events where source = 'correction_return'"
+        ).fetchone()[0]
+        review_count = conn.execute(
+            "select count(*) from analysis_opportunity_reviews"
+        ).fetchone()[0]
+        return_count = conn.execute(
+            "select count(*) from correction_returns"
+        ).fetchone()[0]
+    assert tuple(issue) == ("pending_correction", None)
+    assert correction_events == 0
+    assert review_count == 0
+    assert return_count == 0
 
 
 def test_import_correction_return_warns_when_high_risk_lacks_note(app_config, sample_workbook):
@@ -398,9 +740,68 @@ def test_import_correction_return_rejects_archived_batch(app_config, sample_work
         import_correction_return(app_config, paths[0])
 
 
+def _specialist_return_workbook(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        raw = conn.execute(
+            """
+            select id, row_json
+              from raw_rows
+             where batch_id = ? and ledger_type = 'electricity'
+            """,
+            (imported.batch_id,),
+        ).fetchone()
+        row = json.loads(raw["row_json"])
+        row.update(
+            {
+                "电费单价": 1.2,
+                "用电量": 100,
+                "电费金额": 300,
+                "供电方式": "转供电",
+                "转供电合同情况": "无",
+            }
+        )
+        conn.execute(
+            "update raw_rows set row_json = ? where id = ?",
+            (json.dumps(row, ensure_ascii=False), raw["id"]),
+        )
+    run_audit(app_config, imported.batch_id)
+    run_electricity_analysis(app_config, imported.batch_id)
+    path = export_electricity_opportunities(app_config, imported.batch_id)
+    export_city_issue_packages(app_config, imported.batch_id)
+    wb = load_workbook(path)
+    ws = wb["整改问题清单"]
+    assert ws.max_row >= 2
+    headers = {cell.value: cell.column for cell in ws[1]}
+    issue_code = ws.cell(row=2, column=headers["问题编号"]).value
+    opportunity_code = ws.cell(row=2, column=headers["机会编号"]).value
+    return path, issue_code, opportunity_code
+
+
 def _set_correction_cells(ws, row_number: int, result: str = "", note: str = "") -> None:
     headers = {cell.value: cell.column for cell in ws[1]}
     if result:
         ws.cell(row=row_number, column=headers["整改结果"]).value = result
     if note:
         ws.cell(row=row_number, column=headers["整改说明"]).value = note
+
+
+def _set_specialist_cells(
+    ws,
+    row_number: int,
+    *,
+    result: object = None,
+    note: object = None,
+    verified: object = None,
+    realized: object = None,
+) -> None:
+    headers = {cell.value: cell.column for cell in ws[1]}
+    if result is not None:
+        ws.cell(row=row_number, column=headers["整改结果"]).value = result
+    if note is not None:
+        ws.cell(row=row_number, column=headers["整改说明"]).value = note
+    if verified is not None:
+        ws.cell(row=row_number, column=headers["核实可追回金额"]).value = verified
+    if realized is not None:
+        ws.cell(row=row_number, column=headers["实际落实金额"]).value = realized
