@@ -172,6 +172,64 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
                 ]
             )
 
+        ws = wb.create_sheet("专题核查成果")
+        ws.append(
+            [
+                "批次",
+                "专题领域",
+                "机会编号",
+                "机会类型",
+                "来源问题编号",
+                "最终问题状态",
+                "地市",
+                "站址编码",
+                "站址名称",
+                "测算可追回金额",
+                "测算压降/优惠金额",
+                "核实可追回金额",
+                "实际落实金额",
+                "核查说明",
+                "更新时间",
+            ]
+        )
+        for review in conn.execute(
+            """
+            select r.batch_id, r.domain, r.opportunity_code, r.opportunity_type,
+                   r.source_issue_code, i.status as issue_status,
+                   coalesce(i.city, '未填地市') as city,
+                   i.telecom_site_code, i.telecom_site_name,
+                   r.estimated_recoverable_amount, r.estimated_saving_amount,
+                   r.verified_recoverable_amount, r.realized_saving_amount,
+                   r.review_note, r.updated_at
+              from analysis_opportunity_reviews r
+              join issues i on i.issue_code = r.source_issue_code
+             where r.batch_id = ?
+             order by r.domain, r.opportunity_code
+            """,
+            (batch_id,),
+        ):
+            ws.append(
+                [
+                    review["batch_id"],
+                    {"electricity": "电费压降", "tower_rent": "铁塔租费"}.get(
+                        review["domain"], review["domain"]
+                    ),
+                    review["opportunity_code"],
+                    review["opportunity_type"],
+                    review["source_issue_code"],
+                    _status_label(review["issue_status"]),
+                    review["city"],
+                    review["telecom_site_code"],
+                    review["telecom_site_name"],
+                    review["estimated_recoverable_amount"],
+                    review["estimated_saving_amount"],
+                    review["verified_recoverable_amount"],
+                    review["realized_saving_amount"],
+                    review["review_note"],
+                    review["updated_at"],
+                ]
+            )
+
         ws = wb.create_sheet("操作日志")
         ws.append(["操作", "说明", "时间"])
         for log in conn.execute(

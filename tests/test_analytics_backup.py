@@ -220,6 +220,110 @@ def test_archive_batch_writes_operation_log_sheet_and_locks_batch(app_config, sa
         assert batch["is_archived"] == 1
 
 
+def test_archive_batch_preserves_reviewed_opportunity_after_derived_row_is_deleted(
+    app_config, sample_workbook
+):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'"
+        )
+    run_audit(app_config, imported.batch_id)
+    opportunity_code = "ELEC-ARCHIVE-001"
+    with connect(app_config) as conn:
+        issue = conn.execute(
+            "select issue_code from issues where batch_id = ? order by id limit 1",
+            (imported.batch_id,),
+        ).fetchone()
+        assert issue is not None
+        conn.execute(
+            """
+            insert into analysis_opportunities(
+                batch_id, domain, opportunity_code, opportunity_type, severity,
+                city, telecom_site_code, telecom_site_name, current_amount,
+                reference_amount, recoverable_amount, saving_opportunity_amount,
+                confidence, source_rule_ids_json, message, suggestion, source_issue_code
+            ) values (?, 'electricity', ?, 'recoverable', 'high', '杭州',
+                      'SITE001', '测试站址', 2000, 800, 1500, 300,
+                      'high', '[]', '历史机会', '核查处理', ?)
+            """,
+            (imported.batch_id, opportunity_code, issue["issue_code"]),
+        )
+        conn.execute(
+            """
+            insert into analysis_opportunity_reviews(
+                batch_id, domain, opportunity_code, opportunity_type, source_issue_code,
+                estimated_recoverable_amount, estimated_saving_amount,
+                verified_recoverable_amount, realized_saving_amount, review_note
+            ) values (?, 'electricity', ?, 'recoverable', ?, 1500, 300, 1200.5, 250, '已核实账单')
+            """,
+            (imported.batch_id, opportunity_code, issue["issue_code"]),
+        )
+        conn.execute(
+            "delete from analysis_opportunities where opportunity_code = ?",
+            (opportunity_code,),
+        )
+        conn.execute(
+            "update issues set status = 'closed' where batch_id = ?",
+            (imported.batch_id,),
+        )
+        conn.execute(
+            "update import_batches set status = 'returning' where id = ?",
+            (imported.batch_id,),
+        )
+
+    path = archive_batch(app_config, imported.batch_id)
+
+    wb = load_workbook(path, data_only=True)
+    assert "专题核查成果" in wb.sheetnames
+    ws = wb["专题核查成果"]
+    assert [cell.value for cell in ws[1]] == [
+        "批次",
+        "专题领域",
+        "机会编号",
+        "机会类型",
+        "来源问题编号",
+        "最终问题状态",
+        "地市",
+        "站址编码",
+        "站址名称",
+        "测算可追回金额",
+        "测算压降/优惠金额",
+        "核实可追回金额",
+        "实际落实金额",
+        "核查说明",
+        "更新时间",
+    ]
+    assert ws["A2"].value == imported.batch_id
+    assert ws["B2"].value == "电费压降"
+    assert ws["C2"].value == opportunity_code
+    assert ws["F2"].value == "已关闭"
+    assert ws["L2"].value == 1200.5
+
+
+def test_archive_batch_always_adds_empty_specialist_review_headers(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    run_audit(app_config, imported.batch_id)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update issues set status = 'closed' where batch_id = ?",
+            (imported.batch_id,),
+        )
+        conn.execute(
+            "update import_batches set status = 'returning' where id = ?",
+            (imported.batch_id,),
+        )
+
+    path = archive_batch(app_config, imported.batch_id)
+
+    ws = load_workbook(path, data_only=True)["专题核查成果"]
+    assert ws.max_row == 1
+    assert ws["A1"].value == "批次"
+    assert ws["O1"].value == "更新时间"
+
+
 def test_archive_precheck_reports_open_issues_before_archive(app_config, sample_workbook):
     initialize_database(app_config)
     imported = import_workbook(app_config, sample_workbook)
