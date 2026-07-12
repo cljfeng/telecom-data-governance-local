@@ -431,6 +431,75 @@ def test_import_specialist_correction_return_reports_opportunity_issue_mismatch(
     assert status == "pending_correction"
 
 
+def test_import_specialist_correction_return_rejects_cross_batch_opportunity_issue(
+    app_config, sample_workbook
+):
+    path, _, opportunity_code = _specialist_return_workbook(
+        app_config, sample_workbook
+    )
+    second = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') where batch_id = ? and ledger_type = 'electricity'",
+            (second.batch_id,),
+        )
+    run_audit(app_config, second.batch_id)
+    export_city_issue_packages(app_config, second.batch_id)
+    with connect(app_config) as conn:
+        second_issue_code = conn.execute(
+            """
+            select issue_code
+              from issues
+             where batch_id = ? and ledger_type = 'electricity'
+             order by id
+             limit 1
+            """,
+            (second.batch_id,),
+        ).fetchone()[0]
+        conn.execute(
+            "update analysis_opportunities set source_issue_code = ? where opportunity_code = ?",
+            (second_issue_code, opportunity_code),
+        )
+    wb = load_workbook(path)
+    ws = wb["整改问题清单"]
+    headers = {cell.value: cell.column for cell in ws[1]}
+    ws.cell(row=2, column=headers["问题编号"]).value = second_issue_code
+    _set_specialist_cells(
+        ws,
+        2,
+        result="已整改",
+        note="跨批次核查",
+        verified=100,
+    )
+    wb.save(path)
+
+    result = import_correction_return(app_config, path)
+
+    assert result.matched_count == 0
+    assert result.errors == ["第2行机会不存在或不属于当前批次专题"]
+    with connect(app_config) as conn:
+        issue = conn.execute(
+            "select status, correction_note from issues where issue_code = ?",
+            (second_issue_code,),
+        ).fetchone()
+        review_count = conn.execute(
+            "select count(*) from analysis_opportunity_reviews where opportunity_code = ?",
+            (opportunity_code,),
+        ).fetchone()[0]
+        event_count = conn.execute(
+            """
+            select count(*)
+              from issue_events e
+              join issues i on i.id = e.issue_id
+             where i.issue_code = ? and e.source = 'correction_return'
+            """,
+            (second_issue_code,),
+        ).fetchone()[0]
+    assert tuple(issue) == ("pending_correction", None)
+    assert review_count == 0
+    assert event_count == 0
+
+
 def test_import_specialist_correction_return_reports_duplicate_issue_codes(
     app_config, sample_workbook
 ):

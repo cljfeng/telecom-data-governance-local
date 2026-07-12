@@ -111,19 +111,6 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
                     )
                     row_has_error = True
 
-            opportunity = None
-            if is_specialist:
-                opportunity_code = str(values[index["机会编号"]] or "").strip()
-                try:
-                    opportunity = match_opportunity_in_conn(
-                        conn,
-                        opportunity_code,
-                        expected_issue_code=issue_code_text,
-                    )
-                except ValueError as exc:
-                    errors.append(f"第{row_number}行{exc}")
-                    row_has_error = True
-
             batch_row = conn.execute(
                 """
                 select i.id, i.batch_id, i.severity, i.status, b.is_archived
@@ -138,6 +125,23 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
             if batch_row is None and not is_specialist:
                 errors.append(f"第{row_number}行问题编号无法匹配：{issue_code}")
                 continue
+
+            opportunity = None
+            if is_specialist:
+                opportunity_code = str(values[index["机会编号"]] or "").strip()
+                try:
+                    opportunity = match_opportunity_in_conn(
+                        conn,
+                        opportunity_code,
+                        batch_id=(
+                            batch_row["batch_id"] if batch_row is not None else None
+                        ),
+                        expected_issue_code=issue_code_text,
+                    )
+                except ValueError as exc:
+                    errors.append(f"第{row_number}行{exc}")
+                    row_has_error = True
+
             if row_has_error:
                 continue
             target_status = _auto_review_status(batch_row, result, note)
