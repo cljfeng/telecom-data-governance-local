@@ -5,9 +5,14 @@ from typing import Any
 
 from openpyxl import Workbook
 
+from governance_app.analysis_reviews import (
+    review_payload_fields,
+    review_summary_in_conn,
+)
 from governance_app.audit_rules import parse_row
 from governance_app.config import AppConfig
 from governance_app.db import connect
+from governance_app.exporter import append_analysis_correction_sheet, excel_safe
 from governance_app.geo import normalize_city
 from governance_app.rule_fields import (
     AMOUNT_FIELD_KEYWORDS,
@@ -73,17 +78,18 @@ def run_tower_rent_analysis(config: AppConfig, batch_id: int) -> dict[str, int]:
             conn.execute(
                 """
                 insert into analysis_opportunities(
-                    batch_id, ledger_row_id, domain, opportunity_code, opportunity_type, severity,
+                    batch_id, ledger_row_id, domain, opportunity_code, source_issue_code, opportunity_type, severity,
                     city, district, telecom_site_code, telecom_site_name, period, meter_no,
                     current_amount, reference_amount, recoverable_amount, saving_opportunity_amount,
                     confidence, source_rule_ids_json, message, suggestion
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     batch_id,
                     issue["ledger_row_id"],
                     TOWER_RENT_DOMAIN,
                     payload["opportunity_code"],
+                    issue["issue_code"],
                     payload["opportunity_type"],
                     issue["severity"],
                     normalize_city(issue["city"]),
@@ -152,7 +158,7 @@ def get_tower_rent_summary(config: AppConfig, batch_id: int) -> dict[str, Any]:
         recoverable = float(amount_row["recoverable_amount"] or 0)
         discount = float(amount_row["saving_opportunity_amount"] or 0)
         current = float(amount_row["current_amount"] or 0)
-        return {
+        summary = {
             "batch_id": batch_id,
             "ledger_row_count": int(ledger["row_count"] or 0),
             "site_count": int(ledger["site_count"] or 0),
@@ -166,25 +172,35 @@ def get_tower_rent_summary(config: AppConfig, batch_id: int) -> dict[str, Any]:
             "city_rankings": _city_rankings(conn, batch_id),
             "type_breakdown": _type_breakdown(conn, batch_id),
         }
+        return {**summary, **review_summary_in_conn(conn, batch_id, TOWER_RENT_DOMAIN)}
 
 
 def get_tower_rent_clues(config: AppConfig, batch_id: int, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
     filters = filters or {}
-    where = ["batch_id = ?", "domain = ?"]
+    where = ["ao.batch_id = ?", "ao.domain = ?"]
     params: list[Any] = [batch_id, TOWER_RENT_DOMAIN]
     for key in ("city", "opportunity_type", "severity", "confidence"):
         value = filters.get(key)
         if value:
-            where.append(f"{key} = ?")
+            where.append(f"ao.{key} = ?")
             params.append(value)
+    status = filters.get("status")
+    if status:
+        where.append("i.status = ?")
+        params.append(status)
     with connect(config) as conn:
         _require_batch(conn, batch_id)
         rows = conn.execute(
             f"""
-            select *
-              from analysis_opportunities
+            select ao.*,
+                   i.issue_code, i.status as issue_status, i.correction_value, i.correction_note,
+                   r.verified_recoverable_amount, r.realized_saving_amount,
+                   r.review_note, r.updated_at as reviewed_at
+              from analysis_opportunities ao
+              left join issues i on i.issue_code = ao.source_issue_code
+              left join analysis_opportunity_reviews r on r.opportunity_code = ao.opportunity_code
              where {" and ".join(where)}
-             order by recoverable_amount desc, saving_opportunity_amount desc, current_amount desc, id
+             order by ao.recoverable_amount desc, ao.saving_opportunity_amount desc, ao.current_amount desc, ao.id
             """,
             params,
         ).fetchall()
@@ -201,6 +217,8 @@ def export_tower_rent_clues(config: AppConfig, batch_id: int) -> Path:
     guide.title = "填写说明"
     guide.append(["租费异常线索清单"])
     guide.append(["预计可追回金额用于相对确定的问题；优惠落实金额用于折扣优惠类线索；待核查金额代表核查范围，不等同于确定损失。"])
+    guide.append(["测算金额仅供核查参考，只有核实可追回金额和实际落实金额计入成果。"])
+    guide.append(["旧版专题机会请先重新运行专题分析，再进行整改闭环。"])
     ws = wb.create_sheet("异常线索清单")
     ws.append(
         [
@@ -226,33 +244,34 @@ def export_tower_rent_clues(config: AppConfig, batch_id: int) -> Path:
     for item in clues:
         ws.append(
             [
-                item["opportunity_code"],
-                item["city"],
-                item["district"],
-                item["telecom_site_code"],
-                item["telecom_site_name"],
-                item["period"],
-                item["opportunity_type"],
-                item["severity"],
+                excel_safe(item["opportunity_code"]),
+                excel_safe(item["city"]),
+                excel_safe(item["district"]),
+                excel_safe(item["telecom_site_code"]),
+                excel_safe(item["telecom_site_name"]),
+                excel_safe(item["period"]),
+                excel_safe(item["opportunity_type"]),
+                excel_safe(item["severity"]),
                 item["current_amount"],
                 item["reference_amount"],
                 item["recoverable_amount"],
                 item["discount_realization_amount"],
                 item["review_amount"],
-                item["confidence"],
-                ",".join(item["source_rule_ids"]),
-                item["message"],
-                item["suggestion"],
+                excel_safe(item["confidence"]),
+                excel_safe(",".join(item["source_rule_ids"])),
+                excel_safe(item["message"]),
+                excel_safe(item["suggestion"]),
             ]
         )
     city = wb.create_sheet("地市汇总")
     city.append(["地市", "线索数量", "预计可追回金额", "优惠落实金额", "待核查金额"])
     for item in summary["city_rankings"]:
-        city.append([item["city"], item["clue_count"], item["recoverable_amount"], item["discount_realization_amount"], item["review_amount"]])
+        city.append([excel_safe(item["city"]), item["clue_count"], item["recoverable_amount"], item["discount_realization_amount"], item["review_amount"]])
     type_ws = wb.create_sheet("异常分类汇总")
     type_ws.append(["异常类型", "线索数量", "预计可追回金额", "优惠落实金额", "待核查金额"])
     for item in summary["type_breakdown"]:
-        type_ws.append([item["opportunity_type"], item["clue_count"], item["recoverable_amount"], item["discount_realization_amount"], item["review_amount"]])
+        type_ws.append([excel_safe(item["opportunity_type"]), item["clue_count"], item["recoverable_amount"], item["discount_realization_amount"], item["review_amount"]])
+    append_analysis_correction_sheet(wb, clues)
     wb.save(path)
     return path
 
@@ -260,7 +279,7 @@ def export_tower_rent_clues(config: AppConfig, batch_id: int) -> Path:
 def _issue_rows(conn, batch_id: int):
     return conn.execute(
         """
-        select i.id, i.rule_id, i.severity, i.city, i.district, i.telecom_site_code, i.telecom_site_name,
+        select i.id, i.issue_code, i.rule_id, i.severity, i.city, i.district, i.telecom_site_code, i.telecom_site_name,
                i.message, i.suggestion, ar.ledger_row_id,
                case
                    when lr.row_json is not null and lr.row_json <> '{}' then lr.row_json
@@ -353,6 +372,7 @@ def _clue_payload(row) -> dict[str, Any]:
         payload[field] = round(float(payload[field] or 0), 2)
     payload["discount_realization_amount"] = payload["saving_opportunity_amount"]
     payload["review_amount"] = round(max(payload["current_amount"] - payload["recoverable_amount"] - payload["discount_realization_amount"], 0), 2)
+    payload.update(review_payload_fields(row))
     return payload
 
 

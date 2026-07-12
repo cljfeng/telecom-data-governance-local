@@ -34,6 +34,16 @@ ISSUE_HEADERS = [
     "附件说明",
 ]
 
+ANALYSIS_CORRECTION_HEADERS = [
+    "问题编号",
+    "整改结果",
+    "整改说明",
+    "整改后值",
+    "机会编号",
+    "核实可追回金额",
+    "实际落实金额",
+]
+
 
 def export_issue_packages(config: AppConfig, batch_id: int, mode: str = "city") -> list[Path]:
     if mode not in {"city", "province"}:
@@ -219,26 +229,53 @@ def _finish_issue_sheet(ws) -> None:
     validation.add(f"Q2:Q{ws.max_row}")
 
 
+def append_analysis_correction_sheet(wb: Workbook, opportunities: list[dict]) -> None:
+    ws = wb.create_sheet("整改问题清单")
+    ws.append(ANALYSIS_CORRECTION_HEADERS)
+    for opportunity in opportunities:
+        if not opportunity["issue_code"]:
+            continue
+        ws.append(
+            [
+                excel_safe(opportunity["issue_code"]),
+                "",
+                excel_safe(opportunity["correction_note"] or opportunity["review_note"]),
+                "",
+                excel_safe(opportunity["opportunity_code"]),
+                opportunity["verified_recoverable_amount"],
+                opportunity["realized_saving_amount"],
+            ]
+        )
+    validation = DataValidation(
+        type="list",
+        formula1='"已整改,无需整改,情况说明,退回确认"',
+        allow_blank=True,
+    )
+    ws.add_data_validation(validation)
+    if ws.max_row >= 2:
+        validation.add(f"B2:B{ws.max_row}")
+
+
 def _append_issue_row(ws, issue) -> None:
     metadata = rule_metadata(issue["rule_id"])
     ws.append(
         [
-            _excel_safe(issue["issue_code"]),
-            _excel_safe(normalize_city(issue["city"])),
-            _excel_safe(issue["district"]),
-            _excel_safe(issue["telecom_site_code"]),
-            _excel_safe(issue["telecom_site_name"]),
-            _excel_safe(_ledger_label(issue["ledger_type"])),
-            _excel_safe(_rule_category_label(metadata.category)),
-            _excel_safe(issue["rule_id"]),
-            _excel_safe(metadata.name),
-            _excel_safe(_severity_label(issue["severity"])),
-            _excel_safe(issue["sheet_name"]),
+            excel_safe(issue["issue_code"]),
+            excel_safe(normalize_city(issue["city"])),
+            excel_safe(issue["district"]),
+            excel_safe(issue["telecom_site_code"]),
+            excel_safe(issue["telecom_site_name"]),
+            excel_safe(_ledger_label(issue["ledger_type"])),
+            excel_safe(_rule_category_label(metadata.category)),
+            excel_safe(issue["rule_id"]),
+            excel_safe(metadata.name),
+            excel_safe(_severity_label(issue["severity"])),
+            excel_safe(issue["sheet_name"]),
             issue["row_number"] or "",
-            _excel_safe(issue["field_name"]),
-            _excel_safe(_matched_field_value(issue)),
-            _excel_safe(_detailed_issue_message(issue)),
-            _excel_safe(issue["suggestion"]),
+            excel_safe(issue["field_name"]),
+            excel_safe(_matched_field_value(issue)),
+            excel_safe(_detailed_issue_message(issue)),
+            excel_safe(issue["suggestion"]),
             "",
             "",
             "",
@@ -376,7 +413,7 @@ def _rule_category_label(value: str | None) -> str:
     return labels.get(str(value or ""), str(value or "未知"))
 
 
-def _excel_safe(value: object) -> object:
+def excel_safe(value: object) -> object:
     if not isinstance(value, str):
         return value
     if value.startswith(("=", "+", "-", "@")):

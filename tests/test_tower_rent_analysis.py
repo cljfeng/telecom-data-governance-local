@@ -2,6 +2,7 @@ import json
 
 from openpyxl import load_workbook
 
+from governance_app.analysis_reviews import save_opportunity_review
 from governance_app.audit_engine import run_audit
 from governance_app.db import connect, initialize_database
 from governance_app.tower_rent_analysis import (
@@ -125,6 +126,10 @@ def test_run_tower_rent_analysis_creates_clues(app_config):
     assert all(item["domain"] == "tower_rent" for item in clues)
     assert any(item["recoverable_amount"] > 0 for item in clues)
     assert any(item["review_amount"] > 0 for item in clues)
+    assert clues[0]["issue_code"]
+    assert clues[0]["issue_status"] == "pending_export"
+    assert clues[0]["verified_recoverable_amount"] is None
+    assert get_tower_rent_clues(app_config, batch_id, {"status": "closed"}) == []
 
 
 def test_run_tower_rent_analysis_refreshes_existing_rows(app_config):
@@ -140,6 +145,32 @@ def test_run_tower_rent_analysis_refreshes_existing_rows(app_config):
         ).fetchone()["c"]
     assert count == second["clue_count"]
     assert first["clue_count"] == second["clue_count"]
+
+
+def test_run_tower_rent_analysis_preserves_saved_review(app_config):
+    batch_id = _audited_tower_batch(app_config)
+    run_tower_rent_analysis(app_config, batch_id)
+    before = get_tower_rent_clues(app_config, batch_id)[0]
+    save_opportunity_review(
+        app_config,
+        batch_id,
+        "tower-rent-analysis",
+        {
+            "opportunity_code": before["opportunity_code"],
+            "status": "closed",
+            "verified_recoverable_amount": 188.5,
+            "realized_saving_amount": 32.25,
+            "review_note": "已完成租费核查",
+        },
+    )
+
+    run_tower_rent_analysis(app_config, batch_id)
+
+    after = get_tower_rent_clues(app_config, batch_id, {"status": "closed"})[0]
+    assert after["opportunity_code"] == before["opportunity_code"]
+    assert after["verified_recoverable_amount"] == 188.5
+    assert after["realized_saving_amount"] == 32.25
+    assert get_tower_rent_summary(app_config, batch_id)["verified_recoverable_amount"] == 188.5
 
 
 def test_reaudit_invalidates_stale_tower_rent_analysis(app_config):
@@ -210,3 +241,26 @@ def test_export_tower_rent_clues_writes_workbook(app_config):
     assert "预计可追回金额" in headers
     assert "优惠落实金额" in headers
     assert "待核查金额" in headers
+    assert "整改问题清单" in wb.sheetnames
+    correction_headers = [cell.value for cell in wb["整改问题清单"][1]]
+    assert correction_headers == ["问题编号", "整改结果", "整改说明", "整改后值", "机会编号", "核实可追回金额", "实际落实金额"]
+
+
+def test_tower_rent_legacy_clue_remains_visible_but_is_not_exported_for_correction(app_config):
+    batch_id = _audited_tower_batch(app_config)
+    run_tower_rent_analysis(app_config, batch_id)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update analysis_opportunities set source_issue_code = null where batch_id = ? and domain = 'tower_rent'",
+            (batch_id,),
+        )
+
+    clues = get_tower_rent_clues(app_config, batch_id)
+    path = export_tower_rent_clues(app_config, batch_id)
+    wb = load_workbook(path)
+
+    assert clues
+    assert all(item["issue_code"] is None for item in clues)
+    assert wb["整改问题清单"].max_row == 1
+    guide_text = "\n".join(str(cell.value or "") for row in wb["填写说明"] for cell in row)
+    assert "重新运行专题分析" in guide_text

@@ -73,6 +73,9 @@ def _electricity_opportunity(app_config, sample_workbook):
         assert selected is not None
         opportunity_code, issue_code = selected
         conn.execute(
+            "update analysis_opportunities set source_issue_code = null where batch_id = ?", (imported.batch_id,)
+        )
+        conn.execute(
             "update analysis_opportunities set source_issue_code = ? where opportunity_code = ?",
             (issue_code, opportunity_code),
         )
