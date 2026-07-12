@@ -797,6 +797,10 @@ def test_import_correction_return_rejects_archived_batch(app_config, sample_work
     run_audit(app_config, imported.batch_id)
     paths = export_city_issue_packages(app_config, imported.batch_id)
     with connect(app_config) as conn:
+        conn.execute(
+            "update issues set status = 'closed' where batch_id = ?",
+            (imported.batch_id,),
+        )
         conn.execute("update import_batches set status = 'returning' where id = ?", (imported.batch_id,))
     archive_batch(app_config, imported.batch_id)
 

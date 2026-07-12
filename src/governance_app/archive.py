@@ -1,3 +1,5 @@
+import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -13,22 +15,77 @@ from governance_app.workflow import city_progress, transition_batch_in_conn
 CLOSED_STATUSES = {"closed", "not_required", "resolved_by_reaudit"}
 
 
-def archive_precheck(config: AppConfig, batch_id: int) -> dict:
-    with connect(config) as conn:
-        batch = conn.execute("select status, is_archived from import_batches where id = ?", (batch_id,)).fetchone()
-        if batch is None:
-            raise ValueError("batch not found")
-        status_rows = conn.execute(
+@dataclass(frozen=True)
+class ArchiveEligibility:
+    batch_status: str
+    is_archived: bool
+    status_counts: dict[str, int]
+    open_issue_count: int
+    post_review_reaudit: bool
+    blockers: list[dict[str, str]]
+
+
+def _archive_eligibility_in_conn(
+    conn: sqlite3.Connection, batch_id: int
+) -> ArchiveEligibility:
+    batch = conn.execute(
+        "select status, is_archived from import_batches where id = ?", (batch_id,)
+    ).fetchone()
+    if batch is None:
+        raise ValueError("batch not found")
+    status_rows = conn.execute(
+        """
+        select status, count(*) as count
+          from issues
+         where batch_id = ?
+         group by status
+        """,
+        (batch_id,),
+    ).fetchall()
+    status_counts = {row["status"]: row["count"] for row in status_rows}
+    open_issue_count = sum(
+        count
+        for status, count in status_counts.items()
+        if status not in CLOSED_STATUSES
+    )
+    post_review_reaudit = batch["status"] == "audited" and bool(
+        conn.execute(
             """
-            select status, count(*) as count
-              from issues
-             where batch_id = ?
-             group by status
+            select 1
+             from analysis_opportunity_reviews r
+              join issues i on i.issue_code = r.source_issue_code
+             where r.batch_id = ?
+               and i.batch_id = r.batch_id
+               and i.status = 'resolved_by_reaudit'
+             limit 1
             """,
             (batch_id,),
-        ).fetchall()
-        status_counts = {row["status"]: row["count"] for row in status_rows}
-        open_issue_count = sum(count for status, count in status_counts.items() if status not in CLOSED_STATUSES)
+        ).fetchone()
+    )
+    blockers = []
+    if batch["is_archived"]:
+        blockers.append({"type": "archived", "message": "批次已归档，不能重复归档"})
+    if batch["status"] != "returning" and not post_review_reaudit:
+        blockers.append(
+            {"type": "workflow_status", "message": "批次需要完成导出和回传后再归档"}
+        )
+    if open_issue_count:
+        blockers.append(
+            {"type": "open_issues", "message": f"仍有 {open_issue_count} 条问题未闭环"}
+        )
+    return ArchiveEligibility(
+        batch_status=str(batch["status"]),
+        is_archived=bool(batch["is_archived"]),
+        status_counts=status_counts,
+        open_issue_count=open_issue_count,
+        post_review_reaudit=post_review_reaudit,
+        blockers=blockers,
+    )
+
+
+def archive_precheck(config: AppConfig, batch_id: int) -> dict:
+    with connect(config) as conn:
+        eligibility = _archive_eligibility_in_conn(conn, batch_id)
         high_risk_open = conn.execute(
             """
             select count(*) as count
@@ -48,50 +105,28 @@ def archive_precheck(config: AppConfig, batch_id: int) -> dict:
             """,
             (batch_id,),
         ).fetchone()["count"]
-    blockers = []
     risk_items = []
-    if batch["is_archived"]:
-        blockers.append({"type": "archived", "message": "批次已归档，不能重复归档"})
-    if batch["status"] != "returning":
-        blockers.append({"type": "workflow_status", "message": "批次需要完成导出和回传后再归档"})
-    if open_issue_count:
-        blockers.append({"type": "open_issues", "message": f"仍有 {open_issue_count} 条问题未闭环"})
     if high_risk_open:
         risk_items.append({"type": "high_risk_open", "message": f"仍有 {high_risk_open} 条高风险问题未闭环"})
     if review_count:
         risk_items.append({"type": "needs_review", "message": f"仍有 {review_count} 条问题等待省公司复核"})
     return {
-        "ready": not blockers,
-        "batch_status": batch["status"],
-        "is_archived": bool(batch["is_archived"]),
-        "open_issue_count": open_issue_count,
-        "status_counts": status_counts,
+        "ready": not eligibility.blockers,
+        "batch_status": eligibility.batch_status,
+        "is_archived": eligibility.is_archived,
+        "open_issue_count": eligibility.open_issue_count,
+        "status_counts": eligibility.status_counts,
         "risk_items": risk_items,
-        "blockers": blockers,
+        "blockers": eligibility.blockers,
     }
 
 
 def archive_batch(config: AppConfig, batch_id: int) -> Path:
     with connect(config) as conn:
-        batch = conn.execute("select status, is_archived from import_batches where id = ?", (batch_id,)).fetchone()
-        if batch is None:
-            raise ValueError("batch not found")
-        if batch["is_archived"]:
+        eligibility = _archive_eligibility_in_conn(conn, batch_id)
+        if eligibility.is_archived:
             raise ValueError("batch is archived")
-        reviewed_after_reaudit = batch["status"] == "audited" and bool(
-            conn.execute(
-                """
-                select 1
-                  from analysis_opportunity_reviews r
-                  join issues i on i.issue_code = r.source_issue_code
-                 where r.batch_id = ?
-                   and i.status in ('closed', 'not_required', 'resolved_by_reaudit')
-                 limit 1
-                """,
-                (batch_id,),
-            ).fetchone()
-        )
-        if batch["status"] != "returning" and not reviewed_after_reaudit:
+        if eligibility.blockers:
             raise ValueError("batch must be ready for archive")
 
     archive_dir = config.export_dir / f"archive_batch_{batch_id}"
@@ -338,7 +373,7 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
 
     wb.save(path)
     with connect(config) as conn:
-        if reviewed_after_reaudit:
+        if eligibility.post_review_reaudit:
             conn.execute(
                 "update import_batches set status = 'returning' where id = ? and status = 'audited'",
                 (batch_id,),

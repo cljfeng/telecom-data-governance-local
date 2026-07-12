@@ -8,7 +8,6 @@ from governance_app.corrections import import_correction_return
 from governance_app.db import connect, initialize_database
 from governance_app.electricity_analysis import (
     export_electricity_opportunities,
-    get_electricity_opportunities,
     run_electricity_analysis,
 )
 from governance_app.exporter import export_city_issue_packages
@@ -49,6 +48,7 @@ def test_specialist_review_closes_through_existing_return_flow_and_archives(
             (imported.batch_id,),
         ).fetchone()
         row = json.loads(raw["row_json"])
+        original_row = dict(row)
         row.update(
             {
                 "电费单价": 1.2,
@@ -129,19 +129,35 @@ def test_specialist_review_closes_through_existing_return_flow_and_archives(
     assert response[0] == 200
     assert json.loads(response[2])["issue_status"] == "closed"
 
+    with connect(app_config) as conn:
+        conn.execute(
+            "update raw_rows set row_json = ? where id = ?",
+            (json.dumps(original_row, ensure_ascii=False), raw["id"]),
+        )
     run_audit(app_config, imported.batch_id)
     run_electricity_analysis(app_config, imported.batch_id)
-    refreshed = next(
-        item
-        for item in get_electricity_opportunities(
-            app_config, imported.batch_id, {"status": "closed"}
+    with connect(app_config) as conn:
+        refreshed = dict(
+            conn.execute(
+                """
+                select r.opportunity_code, i.status as issue_status,
+                       r.verified_recoverable_amount, r.realized_saving_amount
+                  from analysis_opportunity_reviews r
+                  join issues i on i.issue_code = r.source_issue_code
+                 where r.opportunity_code = ?
+                """,
+                (opportunity_code,),
+            ).fetchone()
         )
-        if item["opportunity_code"] == opportunity_code
+    precheck = create_app(app_config).handle_test_request(
+        "GET", f"/api/archive/precheck?batch_id={imported.batch_id}"
     )
+    assert precheck[0] == 200
+    assert json.loads(precheck[2])["ready"] is True
     archive_path = archive_batch(app_config, imported.batch_id)
 
     assert refreshed["opportunity_code"] == opportunity_code
-    assert refreshed["issue_status"] == "closed"
+    assert refreshed["issue_status"] == "resolved_by_reaudit"
     assert refreshed["verified_recoverable_amount"] == 1200.5
     assert refreshed["realized_saving_amount"] == 800.0
     assert load_workbook(archive_path)["专题核查成果"].max_row == 2

@@ -593,6 +593,17 @@ def test_issue_city_progress_status_and_archive_endpoints(app_config, sample_wor
 
     assert status == 200
 
+    status, headers, body = app.handle_test_request("GET", f"/api/issues?batch_id={batch_id}")
+    for current_issue in json.loads(body)["issues"]:
+        status, headers, body = app.handle_test_request(
+            "POST",
+            "/api/issues/status",
+            json.dumps(
+                {"issue_code": current_issue["issue_code"], "status": "closed"}
+            ),
+        )
+        assert status == 200
+
     status, headers, body = app.handle_test_request("POST", "/api/archive", json.dumps({"batch_id": batch_id}))
 
     assert status == 200
@@ -668,6 +679,13 @@ def test_archive_precheck_endpoint_reports_blockers(app_config, sample_workbook)
     payload = json.loads(body)
     assert payload["ready"] is False
     assert payload["open_issue_count"] == 2
+
+    status, headers, body = app.handle_test_request(
+        "POST", "/api/archive", json.dumps({"batch_id": batch_id})
+    )
+
+    assert status == 400
+    assert json.loads(body)["error"] == "batch must be ready for archive"
 
 
 def test_rules_api_lists_settings_and_updates_rule_config(app_config):
