@@ -16,6 +16,7 @@ from governance_app.workflow import (
     transition_batch,
     update_issue_group_status,
     update_issue_status,
+    update_issue_status_in_conn,
 )
 
 
@@ -253,6 +254,61 @@ def test_update_issue_status_records_manual_event(app_config, sample_workbook):
             (issue["issue_code"],),
         ).fetchone()
     assert dict(event) == {"from_status": "pending_export", "to_status": "closed", "source": "manual"}
+
+
+def test_update_issue_status_in_conn_saves_fields_and_event(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute("update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
+    run_audit(app_config, imported.batch_id)
+    issue = list_issues(app_config, imported.batch_id, {})[0]
+
+    with connect(app_config) as conn:
+        row = update_issue_status_in_conn(
+            conn,
+            issue["issue_code"],
+            "needs_review",
+            source="analysis_review",
+            event_note="保存专题核查",
+            correction_note="已核对账单",
+            update_correction_fields=True,
+        )
+        saved = conn.execute(
+            "select status, correction_note from issues where issue_code = ?",
+            (issue["issue_code"],),
+        ).fetchone()
+        event = conn.execute(
+            "select source, to_status from issue_events where issue_id = ? order by id desc",
+            (row["id"],),
+        ).fetchone()
+
+    assert row["batch_id"] == imported.batch_id
+    assert tuple(saved) == ("needs_review", "已核对账单")
+    assert tuple(event) == ("analysis_review", "needs_review")
+
+
+def test_update_issue_status_in_conn_rejects_archived_batch(app_config, sample_workbook):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute("update raw_rows set row_json = replace(row_json, '0.8', '9.9') where ledger_type = 'electricity'")
+    run_audit(app_config, imported.batch_id)
+    issue = list_issues(app_config, imported.batch_id, {})[0]
+
+    with connect(app_config) as conn:
+        conn.execute(
+            "update import_batches set status = 'archived', is_archived = 1 where id = ?",
+            (imported.batch_id,),
+        )
+        with pytest.raises(ValueError, match="batch is archived"):
+            update_issue_status_in_conn(
+                conn,
+                issue["issue_code"],
+                "closed",
+                source="analysis_review",
+                event_note="保存专题核查",
+            )
 
 
 def test_update_issue_status_rejects_archived_batch(app_config, sample_workbook):

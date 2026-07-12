@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from datetime import datetime
 from typing import Any
 
@@ -696,33 +697,64 @@ def _severity_label(value: str) -> str:
     return {"high": "高", "medium": "中", "low": "低"}.get(value, value)
 
 
-def update_issue_status(config: AppConfig, issue_code: str, status: IssueStatus) -> None:
+def update_issue_status_in_conn(
+    conn: sqlite3.Connection,
+    issue_code: str,
+    status: IssueStatus,
+    *,
+    source: str,
+    event_note: str,
+    correction_value: str | None = None,
+    correction_note: str | None = None,
+    update_correction_fields: bool = False,
+) -> sqlite3.Row:
     if status not in ISSUE_STATUSES:
         raise ValueError("invalid issue status")
-    with connect(config) as conn:
-        row = conn.execute(
+    row = conn.execute(
+        """
+        select i.id, i.batch_id, i.status, b.is_archived
+          from issues i
+          join import_batches b on b.id = i.batch_id
+         where i.issue_code = ?
+        """,
+        (issue_code,),
+    ).fetchone()
+    if row is None:
+        raise ValueError("issue not found")
+    if row["is_archived"]:
+        raise ValueError("batch is archived")
+    if update_correction_fields:
+        conn.execute(
             """
-            select i.id, i.batch_id, i.status, b.is_archived
-              from issues i
-              join import_batches b on b.id = i.batch_id
-             where i.issue_code = ?
+            update issues
+               set status = ?, correction_value = ?, correction_note = ?, updated_at = current_timestamp
+             where issue_code = ?
             """,
-            (issue_code,),
-        ).fetchone()
-        if row is None:
-            raise ValueError("issue not found")
-        if row["is_archived"]:
-            raise ValueError("batch is archived")
+            (status, correction_value, correction_note, issue_code),
+        )
+    else:
         conn.execute(
             "update issues set status = ?, updated_at = current_timestamp where issue_code = ?",
             (status, issue_code),
         )
-        conn.execute(
-            """
-            insert into issue_events(issue_id, from_status, to_status, source, note)
-            values (?, ?, ?, 'manual', ?)
-            """,
-            (row["id"], row["status"], status, f"人工更新问题状态：{issue_code}"),
+    conn.execute(
+        """
+        insert into issue_events(issue_id, from_status, to_status, source, note)
+        values (?, ?, ?, ?, ?)
+        """,
+        (row["id"], row["status"], status, source, event_note),
+    )
+    return row
+
+
+def update_issue_status(config: AppConfig, issue_code: str, status: IssueStatus) -> None:
+    with connect(config) as conn:
+        row = update_issue_status_in_conn(
+            conn,
+            issue_code,
+            status,
+            source="manual",
+            event_note=f"人工更新问题状态：{issue_code}",
         )
         conn.execute(
             "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
