@@ -8,9 +8,11 @@ from governance_app.routes.common import (
     batch_id_from_query,
     json_body,
     json_response,
+    pagination_from_query,
 )
 from governance_app.workflow import (
     city_progress,
+    count_ledger_rows,
     create_batch,
     get_batch_workflow,
     list_batches,
@@ -72,9 +74,20 @@ def handle_batch_route(
         filters = {
             key: values[0]
             for key, values in query.items()
-            if key != "batch_id" and values and values[0]
+            if key not in {"batch_id", "limit", "offset"} and values and values[0]
         }
-        return json_response({"rows": list_ledger_rows(config, batch_id, filters)})
+        limit, offset = pagination_from_query(query)
+        page_limit = limit or 50
+        return json_response(
+            {
+                "rows": list_ledger_rows(
+                    config, batch_id, filters, limit=page_limit, offset=offset
+                ),
+                "total": count_ledger_rows(config, batch_id, filters),
+                "limit": page_limit,
+                "offset": offset,
+            }
+        )
     if method == "GET" and parsed.path == "/api/city-progress":
         batch_id, error = batch_id_from_query(parsed.query)
         if error:

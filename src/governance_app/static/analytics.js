@@ -8,6 +8,17 @@ const LEDGER_SECTIONS = [
   { type: "generator", label: "发电费风险", ledgerType: "generator", tone: "danger" },
 ];
 
+function batchStatusLabel(status) {
+  return {
+    created: "待导入",
+    imported: "待稽核",
+    audited: "已稽核",
+    distributed: "整改中",
+    returning: "回传复核中",
+    archived: "已归档",
+  }[status] || status || "未知状态";
+}
+
 export async function renderAnalytics({
   mainContent,
   state,
@@ -141,7 +152,7 @@ export async function renderAnalytics({
       const riskItems = data.risk_items || [];
       const details = [
         data.ready ? "当前批次满足归档条件。" : "当前批次暂不满足归档条件。",
-        `未闭环 ${formatNumber(data.open_issue_count)}，批次状态 ${data.batch_status}`,
+        `未闭环 ${formatNumber(data.open_issue_count)}，批次状态 ${batchStatusLabel(data.batch_status)}`,
       ]
         .concat(blockers.map((item) => `阻断：${item.message}`))
         .concat(riskItems.map((item) => `风险：${item.message}`));

@@ -18,7 +18,7 @@ export function specialistFilterControls(prefix, initialView = "actionable") {
   `;
 }
 
-export function specialistFilterQuery(prefix) {
+export function specialistFilterQuery(prefix, pagination = {}) {
   const query = new URLSearchParams();
   const type = document.querySelector(`#${prefix}-type-filter`)?.value || "";
   const confidence = document.querySelector(`#${prefix}-confidence-filter`)?.value || "";
@@ -31,7 +31,31 @@ export function specialistFilterQuery(prefix) {
   else if (view === "needs_review") query.set("status", "needs_review");
   else if (view === "verified") query.set("review", "verified");
   else if (view === "realized") query.set("review", "realized");
+  if (pagination.limit) query.set("limit", String(pagination.limit));
+  if (pagination.offset) query.set("offset", String(pagination.offset));
   return query;
+}
+
+export function specialistPagination(prefix, total, limit, offset, onPage) {
+  const host = document.querySelector(`#${prefix}-pagination`);
+  if (!host) return;
+  const safeLimit = Math.max(Number(limit || 24), 1);
+  const safeTotal = Math.max(Number(total || 0), 0);
+  if (!safeTotal) {
+    host.innerHTML = "";
+    return;
+  }
+  const currentPage = Math.floor(Number(offset || 0) / safeLimit) + 1;
+  const totalPages = Math.max(Math.ceil(safeTotal / safeLimit), 1);
+  host.innerHTML = `
+    <span>共 ${safeTotal.toLocaleString("zh-CN")} 条 · 第 ${currentPage}/${totalPages} 页</span>
+    <div class="button-row">
+      <button class="secondary-button" type="button" data-page="prev" ${currentPage <= 1 ? "disabled" : ""}>上一页</button>
+      <button class="secondary-button" type="button" data-page="next" ${currentPage >= totalPages ? "disabled" : ""}>下一页</button>
+    </div>
+  `;
+  host.querySelector('[data-page="prev"]')?.addEventListener("click", () => onPage(Math.max(Number(offset || 0) - safeLimit, 0)));
+  host.querySelector('[data-page="next"]')?.addEventListener("click", () => onPage(Number(offset || 0) + safeLimit));
 }
 
 export function specialistSummary(primary, secondary) {
@@ -73,10 +97,13 @@ export function bindSpecialistMetricFilters(prefix, reload) {
 
 export function initialSpecialistView(ctx, key) {
   ctx.state.specialistViews ||= {};
-  return ctx.state.specialistViews[key] || "actionable";
+  const stored = window.sessionStorage.getItem(`specialist-view:${key}`);
+  return ctx.state.specialistViews[key] || stored || "actionable";
 }
 
 export function rememberSpecialistView(ctx, key, prefix) {
   ctx.state.specialistViews ||= {};
-  ctx.state.specialistViews[key] = document.querySelector(`#${prefix}-view-filter`)?.value || "actionable";
+  const view = document.querySelector(`#${prefix}-view-filter`)?.value || "actionable";
+  ctx.state.specialistViews[key] = view;
+  window.sessionStorage.setItem(`specialist-view:${key}`, view);
 }

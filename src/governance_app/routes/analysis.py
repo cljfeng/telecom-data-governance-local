@@ -13,7 +13,11 @@ from governance_app.electricity_analysis import (
     get_electricity_summary,
     run_electricity_analysis,
 )
-from governance_app.routes.common import JsonResponse, json_response
+from governance_app.routes.common import (
+    JsonResponse,
+    json_response,
+    pagination_from_query,
+)
 from governance_app.tower_rent_analysis import (
     export_tower_rent_clues,
     get_tower_rent_clues,
@@ -100,11 +104,22 @@ def _electricity_response(config, method, parsed, batch_id, action) -> JsonRespo
         return json_response(get_electricity_summary(config, batch_id))
     if method == "GET" and action == "opportunities":
         filters = _filters(parsed)
+        query = parse_qs(parsed.query)
+        limit, offset = pagination_from_query(query)
+        summary = get_electricity_summary(config, batch_id)
+        if summary.get("analysis_stale"):
+            return json_response(
+                {"opportunities": [], "total": 0, "limit": limit or 0, "offset": 0}
+            )
+        opportunities = get_electricity_opportunities(config, batch_id, filters=filters)
+        total = len(opportunities)
+        page = opportunities[offset : offset + limit] if limit is not None else opportunities
         return json_response(
             {
-                "opportunities": get_electricity_opportunities(
-                    config, batch_id, filters=filters
-                )
+                "opportunities": page,
+                "total": total,
+                "limit": limit or total,
+                "offset": offset,
             }
         )
     if method == "POST" and action == "export":
@@ -121,8 +136,23 @@ def _tower_rent_response(config, method, parsed, batch_id, action) -> JsonRespon
         return json_response(get_tower_rent_summary(config, batch_id))
     if method == "GET" and action == "opportunities":
         filters = _filters(parsed)
+        query = parse_qs(parsed.query)
+        limit, offset = pagination_from_query(query)
+        summary = get_tower_rent_summary(config, batch_id)
+        if summary.get("analysis_stale"):
+            return json_response(
+                {"opportunities": [], "total": 0, "limit": limit or 0, "offset": 0}
+            )
+        opportunities = get_tower_rent_clues(config, batch_id, filters=filters)
+        total = len(opportunities)
+        page = opportunities[offset : offset + limit] if limit is not None else opportunities
         return json_response(
-            {"opportunities": get_tower_rent_clues(config, batch_id, filters=filters)}
+            {
+                "opportunities": page,
+                "total": total,
+                "limit": limit or total,
+                "offset": offset,
+            }
         )
     if method == "POST" and action == "export":
         return json_response({"path": str(export_tower_rent_clues(config, batch_id))})

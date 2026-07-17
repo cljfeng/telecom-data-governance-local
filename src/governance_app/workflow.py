@@ -612,7 +612,14 @@ def _top_rules_by_city(conn, batch_id: int) -> dict[str, list[dict[str, Any]]]:
     return {city: rules[:5] for city, rules in grouped.items()}
 
 
-def list_ledger_rows(config: AppConfig, batch_id: int, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
+def list_ledger_rows(
+    config: AppConfig,
+    batch_id: int,
+    filters: dict[str, str] | None = None,
+    *,
+    limit: int = 500,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
     filters = filters or {}
     where = ["lr.batch_id = ?"]
     params: list[Any] = [batch_id]
@@ -637,8 +644,9 @@ def list_ledger_rows(config: AppConfig, batch_id: int, filters: dict[str, str] |
           left join raw_rows rr on rr.id = lr.raw_row_id
          where {" and ".join(where)}
          order by lr.ledger_type, lr.city, lr.telecom_site_code, lr.id
-         limit 500
+         limit ? offset ?
     """
+    params.extend([max(1, min(limit, 500)), max(offset, 0)])
     with connect(config) as conn:
         rows = conn.execute(sql, params).fetchall()
     result: list[dict[str, Any]] = []
@@ -660,6 +668,28 @@ def list_ledger_rows(config: AppConfig, batch_id: int, filters: dict[str, str] |
             }
         )
     return result
+
+
+def count_ledger_rows(config: AppConfig, batch_id: int, filters: dict[str, str] | None = None) -> int:
+    filters = filters or {}
+    where = ["batch_id = ?"]
+    params: list[Any] = [batch_id]
+    for key, column in {
+        "ledger_type": "ledger_type",
+        "city": "coalesce(city, '未填地市')",
+        "district": "coalesce(district, '')",
+        "site_code": "coalesce(telecom_site_code, '')",
+    }.items():
+        value = filters.get(key)
+        if value:
+            where.append(f"{column} = ?")
+            params.append(value)
+    with connect(config) as conn:
+        row = conn.execute(
+            f"select count(*) as count from ledger_rows where {' and '.join(where)}",
+            params,
+        ).fetchone()
+    return int(row["count"] or 0)
 
 
 def _issue_explanation(issue: dict[str, Any], metadata) -> dict[str, str]:

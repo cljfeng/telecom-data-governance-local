@@ -143,9 +143,16 @@ def get_electricity_summary(config: AppConfig, batch_id: int) -> dict[str, Any]:
             """,
             (batch_id, ELECTRICITY_DOMAIN),
         ).fetchone()
+        generation_exists = bool(
+            conn.execute(
+                "select 1 from operation_logs where batch_id = ? and operation = 'electricity_analysis' limit 1",
+                (batch_id,),
+            ).fetchone()
+        )
+        ledger_row_count = int(ledger["row_count"] or 0)
         summary = {
             "batch_id": batch_id,
-            "ledger_row_count": int(ledger["row_count"] or 0),
+            "ledger_row_count": ledger_row_count,
             "site_count": int(ledger["site_count"] or 0),
             "total_electricity_amount": round(total_amount, 2),
             "abnormal_site_count": int(amount_row["abnormal_site_count"] or 0),
@@ -153,12 +160,8 @@ def get_electricity_summary(config: AppConfig, batch_id: int) -> dict[str, Any]:
             "recoverable_amount": round(float(amount_row["recoverable_amount"] or 0), 2),
             "saving_opportunity_amount": round(float(amount_row["saving_opportunity_amount"] or 0), 2),
             "high_risk_count": int(amount_row["high_risk_count"] or 0),
-            "analysis_generated": bool(
-                conn.execute(
-                    "select 1 from operation_logs where batch_id = ? and operation = 'electricity_analysis' limit 1",
-                    (batch_id,),
-                ).fetchone()
-            ),
+            "analysis_generated": generation_exists and ledger_row_count > 0,
+            "analysis_stale": generation_exists and ledger_row_count == 0,
             "city_rankings": _city_rankings(conn, batch_id),
             "type_breakdown": _type_breakdown(conn, batch_id),
         }

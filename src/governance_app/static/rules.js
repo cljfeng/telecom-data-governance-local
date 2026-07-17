@@ -21,10 +21,17 @@ export async function renderRules({ mainContent, shellHeader, state, refreshBatc
     <section class="card">
       ${shellHeader("规则设置", "稽核规则")}
       <div id="rules-result" class="result-box">正在加载规则</div>
-      <div class="rule-filter-bar">
-        <button class="segmented-button is-active" type="button" data-rule-filter="all">全部规则</button>
-        <button class="segmented-button" type="button" data-rule-filter="data_quality">基础数据质量</button>
-        <button class="segmented-button" type="button" data-rule-filter="problem_audit">问题稽核</button>
+      <div class="rule-filter-bar" aria-label="规则筛选">
+        <div class="rule-filter-search">
+          <label class="compact-field"><span>搜索</span><input id="rule-search" type="search" placeholder="规则名称、编号或说明"></label>
+          <label class="compact-field"><span>台账</span><select id="rule-ledger-filter"><option value="">全部台账</option>${Object.entries(ledgerLabels).filter(([key]) => key !== "all").map(([key, label]) => `<option value="${key}">${label}</option>`).join("")}</select></label>
+          <label class="compact-field"><span>风险</span><select id="rule-severity-filter"><option value="">全部风险</option><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></label>
+        </div>
+        <div class="segmented-control" role="group" aria-label="规则分类">
+          <button class="segmented-button is-active" type="button" data-rule-filter="all" aria-pressed="true">全部规则</button>
+          <button class="segmented-button" type="button" data-rule-filter="data_quality" aria-pressed="false">基础数据质量</button>
+          <button class="segmented-button" type="button" data-rule-filter="problem_audit" aria-pressed="false">问题稽核</button>
+        </div>
       </div>
       <div class="table-wrap">
         <table>
@@ -44,12 +51,17 @@ export async function renderRules({ mainContent, shellHeader, state, refreshBatc
       </div>
     </section>
   `;
+  filtersBound = false;
   await loadRules(state?.batchId);
 }
 
 let allRuleRows = [];
 let activeRuleFilter = "all";
 let currentRuleBatchId = null;
+let ruleSearch = "";
+let ruleLedger = "";
+let ruleSeverity = "";
+let filtersBound = false;
 
 async function loadRules(batchId) {
   if (batchId !== undefined) currentRuleBatchId = batchId || null;
@@ -58,23 +70,50 @@ async function loadRules(batchId) {
   const data = await fetchJson(`/api/rules${suffix}`);
   allRuleRows = data.rules || [];
   bindRuleFilters();
-  renderRuleRows(filteredRules());
-  setRulesResult("success", `已加载 ${formatNumber(allRuleRows.length)} 条规则${activeBatchId ? "，已结合当前批次生成效果建议" : ""}`);
+  renderFilteredRules(activeBatchId);
 }
 
 function bindRuleFilters() {
+  if (filtersBound) return;
+  filtersBound = true;
   document.querySelectorAll("[data-rule-filter]").forEach((button) => {
     button.addEventListener("click", () => {
       activeRuleFilter = button.dataset.ruleFilter;
-      document.querySelectorAll("[data-rule-filter]").forEach((item) => item.classList.toggle("is-active", item === button));
-      renderRuleRows(filteredRules());
+      document.querySelectorAll("[data-rule-filter]").forEach((item) => {
+        item.classList.toggle("is-active", item === button);
+        item.setAttribute("aria-pressed", String(item === button));
+      });
+      renderFilteredRules(currentRuleBatchId);
     });
+  });
+  document.querySelector("#rule-search")?.addEventListener("input", (event) => {
+    ruleSearch = event.currentTarget.value.trim().toLowerCase();
+    renderFilteredRules(currentRuleBatchId);
+  });
+  document.querySelector("#rule-ledger-filter")?.addEventListener("change", (event) => {
+    ruleLedger = event.currentTarget.value;
+    renderFilteredRules(currentRuleBatchId);
+  });
+  document.querySelector("#rule-severity-filter")?.addEventListener("change", (event) => {
+    ruleSeverity = event.currentTarget.value;
+    renderFilteredRules(currentRuleBatchId);
   });
 }
 
 function filteredRules() {
-  if (activeRuleFilter === "all") return allRuleRows;
-  return allRuleRows.filter((rule) => rule.category === activeRuleFilter);
+  return allRuleRows.filter((rule) => {
+    if (activeRuleFilter !== "all" && rule.category !== activeRuleFilter) return false;
+    if (ruleLedger && rule.ledger_type !== ruleLedger) return false;
+    if (ruleSeverity && rule.severity !== ruleSeverity) return false;
+    if (ruleSearch && !`${rule.rule_id} ${rule.name} ${rule.description}`.toLowerCase().includes(ruleSearch)) return false;
+    return true;
+  });
+}
+
+function renderFilteredRules(activeBatchId) {
+  const rows = filteredRules();
+  renderRuleRows(rows);
+  setRulesResult("success", `显示 ${formatNumber(rows.length)} / ${formatNumber(allRuleRows.length)} 条规则${activeBatchId ? "，已结合当前批次生成效果建议" : ""}`);
 }
 
 function renderRuleRows(rules) {
@@ -87,7 +126,7 @@ function renderRuleRows(rules) {
     .map((rule) => {
       return `
         <tr>
-          <td><input type="checkbox" data-rule-enabled="${escapeHtml(rule.rule_id)}" ${rule.enabled ? "checked" : ""}></td>
+          <td><input type="checkbox" data-rule-enabled="${escapeHtml(rule.rule_id)}" aria-label="启用规则：${escapeHtml(rule.name)}" ${rule.enabled ? "checked" : ""}></td>
           <td>
             <strong>${escapeHtml(rule.name)}</strong>
             <p class="table-note">${escapeHtml(rule.description)}</p>

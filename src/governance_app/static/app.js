@@ -1,12 +1,12 @@
 import { fetchJson, postJson, postFormData } from "/api.js?v=20260517-1";
 import { state } from "/state.js?v=20260517-1";
 import { escapeHtml, formatNumber, withBusy } from "/ui.js?v=20260517-1";
-import { renderLedgerData } from "/ledger-data.js?v=20260517-1";
-import { renderRules } from "/rules.js?v=20260517-1";
-import { renderSettings } from "/settings.js?v=20260517-1";
-import { renderAnalytics } from "/analytics.js?v=20260517-1";
-import { renderElectricityAnalysis } from "/electricity-analysis.js?v=20260717-3";
-import { renderTowerRentAnalysis } from "/tower-rent-analysis.js?v=20260717-3";
+import { renderLedgerData } from "/ledger-data.js?v=20260718-1";
+import { renderRules } from "/rules.js?v=20260718-1";
+import { renderSettings } from "/settings.js?v=20260718-1";
+import { renderAnalytics } from "/analytics.js?v=20260718-1";
+import { renderElectricityAnalysis } from "/electricity-analysis.js?v=20260718-1";
+import { renderTowerRentAnalysis } from "/tower-rent-analysis.js?v=20260718-1";
 import { issueStatusLabel, issueStatusOptions } from "/issue-status.js?v=20260717-1";
 
 const views = {
@@ -30,6 +30,41 @@ const statusPill = document.querySelector("#service-status");
 const headerBatch = document.querySelector("#header-batch");
 const lastSync = document.querySelector("#last-sync");
 const navButtons = Array.from(document.querySelectorAll(".nav-button"));
+const mobileNavToggle = document.querySelector("#mobile-nav-toggle");
+const navScrim = document.querySelector("#nav-scrim");
+const globalStatus = document.querySelector("#global-status");
+let activeView = "dashboard";
+
+function announce(message) {
+  if (!globalStatus) return;
+  globalStatus.textContent = "";
+  window.setTimeout(() => {
+    globalStatus.textContent = message;
+  }, 20);
+}
+
+function showGlobalError(message) {
+  document.querySelector("#global-error-toast")?.remove();
+  const toast = document.createElement("div");
+  toast.id = "global-error-toast";
+  toast.className = "global-error-toast";
+  toast.setAttribute("role", "alert");
+  toast.innerHTML = `<strong>操作未完成</strong><span>${escapeHtml(message || "请稍后重试。")}</span><button type="button" aria-label="关闭错误提示">×</button>`;
+  document.body.appendChild(toast);
+  toast.querySelector("button").addEventListener("click", () => toast.remove());
+  announce(`操作未完成：${message || "请稍后重试"}`);
+}
+
+function closeMobileNav() {
+  document.body.classList.remove("nav-open");
+  mobileNavToggle?.setAttribute("aria-expanded", "false");
+}
+
+function toggleMobileNav() {
+  const open = document.body.classList.toggle("nav-open");
+  mobileNavToggle?.setAttribute("aria-expanded", String(open));
+  if (open) document.querySelector(".nav-button.is-active")?.focus();
+}
 
 function setStatus(stateName, text) {
   statusPill.textContent = text;
@@ -38,6 +73,7 @@ function setStatus(stateName, text) {
     const now = new Date();
     lastSync.textContent = `最近同步 ${now.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
   }
+  announce(text);
 }
 
 async function refreshBatches() {
@@ -80,10 +116,11 @@ function shellHeader(title, eyebrow, actionHtml = "") {
 }
 
 function metricCard(label, value, note, tone = "neutral") {
+  const displayValue = typeof value === "string" && /[^\d.,+-]/.test(value) ? value : formatNumber(value);
   return `
     <article class="metric-card metric-${escapeHtml(tone)}">
       <p class="metric-label">${escapeHtml(label)}</p>
-      <p class="metric-value">${formatNumber(value)}</p>
+      <p class="metric-value">${escapeHtml(displayValue)}</p>
       <p class="metric-note">${escapeHtml(note)}</p>
       <span class="metric-spark" aria-hidden="true"></span>
     </article>
@@ -136,10 +173,28 @@ function cityProgressTone(row) {
   const rate = percentValue(row.completion_rate);
   const review = Number(row.review_count || 0);
   const pending = Number(row.pending_count || 0);
+  const returned = Number(row.returned_count || 0);
+  const stillInvalid = Number(row.still_invalid_count || 0);
+  const closed = Number(row.closed_count || 0) + Number(row.not_required_count || 0) + Number(row.resolved_count || 0);
+  const open = Math.max(Number(row.total_count || 0) - closed, 0);
   if (review > 0) return { text: "需复核", tone: "warning" };
-  if (rate >= 90) return { text: "完成", tone: "success" };
+  if (stillInvalid > 0) return { text: "仍异常", tone: "danger" };
+  if (open === 0 && rate >= 100) return { text: "已完成", tone: "success" };
   if (rate < 35 && pending > 0) return { text: "滞后", tone: "danger" };
+  if (pending > 0 || returned > 0 || open > 0) return { text: "整改中", tone: "info" };
   return { text: "正常", tone: "info" };
+}
+
+function batchStatusLabel(status, archived = false) {
+  if (archived) return "已归档";
+  return {
+    created: "待导入",
+    imported: "待稽核",
+    audited: "已稽核",
+    distributed: "整改中",
+    returning: "回传复核中",
+    archived: "已归档",
+  }[status] || status || "未知状态";
 }
 
 function actionForWorkflow(workflow) {
@@ -445,7 +500,7 @@ function renderBatchRows() {
         <tr>
           <td>${escapeHtml(batch.batch_code || `#${batch.id}`)}</td>
           <td>${escapeHtml(batch.name)}</td>
-          <td>${escapeHtml(batch.status)}${batch.is_archived ? " / 已归档" : ""}</td>
+          <td><span class="chip chip-${batch.is_archived ? "success" : "info"}">${escapeHtml(batchStatusLabel(batch.status, batch.is_archived))}</span></td>
           <td>${escapeHtml(batch.created_at)}</td>
           <td>${escapeHtml(batch.source_file || "手动创建")}</td>
           <td>${batch.is_current ? '<span class="progress-pill">当前</span>' : ""}</td>
@@ -469,11 +524,9 @@ function renderWorkflow(workflow, specialist = {}) {
   const specialistPriority = [
     { summary: specialist.electricity, view: "electricityAnalysis", key: "electricity", label: "电费压降" },
     { summary: specialist.towerRent, view: "towerRentAnalysis", key: "tower_rent", label: "租费异常" },
-  ].find((item) => Number(item.summary?.needs_review_count || 0) > 0);
-  const primaryTitle = specialistPriority ? `下一步：处理${specialistPriority.label}待复核` : guidance.title || workflow.next_action;
-  const primaryReason = specialistPriority
-    ? `当前有 ${formatNumber(specialistPriority.summary.needs_review_count)} 条专题结果待人工复核，建议优先完成后再归档。`
-    : guidance.reason || "系统会按当前批次状态引导完成导入、稽核、导出、回传和归档。";
+  ].find((item) => item.summary?.analysis_generated && !item.summary?.analysis_stale && Number(item.summary?.needs_review_count || 0) > 0);
+  const primaryTitle = guidance.title || workflow.next_action;
+  const primaryReason = guidance.reason || "系统会按当前批次状态引导完成导入、稽核、导出、回传和归档。";
   document.querySelector("#workflow-area").innerHTML = `
     <div class="workflow-layout">
       <div class="workflow-steps">
@@ -499,8 +552,14 @@ function renderWorkflow(workflow, specialist = {}) {
           <span>待复核 ${formatNumber(todo.review_count || 0)}</span>
           <span>仍异常 ${formatNumber(todo.still_invalid_count || 0)}</span>
         </div>
+        ${specialistPriority ? `
+          <div class="parallel-task">
+            <div><span>并行待办</span><strong>${escapeHtml(specialistPriority.label)}有 ${formatNumber(specialistPriority.summary.needs_review_count)} 条待人工复核</strong></div>
+            <button class="text-button" type="button" data-next-view="${escapeHtml(specialistPriority.view)}" data-specialist-key="${specialistPriority.key}" data-specialist-view="needs_review">去处理</button>
+          </div>
+        ` : ""}
         <div class="button-row">
-          <button class="primary-button" type="button" data-next-view="${escapeHtml(specialistPriority?.view || guidance.primary_view || workflow.steps.find((step) => step.can_operate)?.primary_action?.view || action.view)}" ${specialistPriority ? `data-specialist-key="${specialistPriority.key}" data-specialist-view="needs_review"` : ""}>${escapeHtml(specialistPriority ? "处理待人工复核" : guidance.primary_label || workflow.steps.find((step) => step.can_operate)?.primary_action?.label || action.label)}</button>
+          <button class="primary-button" type="button" data-next-view="${escapeHtml(guidance.primary_view || workflow.steps.find((step) => step.can_operate)?.primary_action?.view || action.view)}">${escapeHtml(guidance.primary_label || workflow.steps.find((step) => step.can_operate)?.primary_action?.label || action.label)}</button>
           <button class="secondary-button" type="button" data-next-view="${escapeHtml(action.secondaryView)}">${escapeHtml(action.secondary)}</button>
         </div>
       </div>
@@ -531,20 +590,23 @@ function renderSpecialistTodos(electricity, towerRent) {
   container.innerHTML = cards
     .map((item) => {
       const generated = Boolean(item.summary.analysis_generated);
+      const stale = Boolean(item.summary.analysis_stale);
       const targetView = !generated ? "actionable" : Number(item.summary.needs_review_count || 0) > 0 ? "needs_review" : "actionable";
-      const actionLabel = !generated ? "进入并生成分析" : Number(item.summary.needs_review_count || 0) > 0 ? "处理待人工复核" : "查看待处理队列";
+      const actionLabel = stale ? "重新导入后生成" : !generated ? "进入并生成分析" : Number(item.summary.needs_review_count || 0) > 0 ? "处理待人工复核" : "查看待处理队列";
       return `
         <article class="specialist-todo-card">
           <div>
             <p class="eyebrow">${escapeHtml(item.label)}</p>
-            <h3>${generated ? `${formatNumber(item.count)} 条${item.itemLabel}` : "尚未生成分析"}</h3>
+            <h3>${stale ? "历史分析已失效" : generated ? `${formatNumber(item.count)} 条${item.itemLabel}` : "尚未生成分析"}</h3>
           </div>
-          <div class="specialist-todo-stats">
-            <span><strong>${formatNumber(item.summary.pending_count || 0)}</strong>待处理</span>
-            <span><strong>${formatNumber(item.summary.returned_count || 0)}</strong>已回传待确认</span>
-            <span><strong>${formatNumber(item.summary.needs_review_count || 0)}</strong>待人工复核</span>
-            <span><strong>${formatNumber(item.summary.closed_count || 0)}</strong>已确认闭环</span>
-          </div>
+          ${stale ? '<div class="specialist-stale-note">历史结果已隔离，不再计入当前待办和成果。</div>' : `
+            <div class="specialist-todo-stats">
+              <span><strong>${formatNumber(item.summary.pending_count || 0)}</strong>待处理</span>
+              <span><strong>${formatNumber(item.summary.returned_count || 0)}</strong>已回传待确认</span>
+              <span><strong>${formatNumber(item.summary.needs_review_count || 0)}</strong>待人工复核</span>
+              <span><strong>${formatNumber(item.summary.closed_count || 0)}</strong>已确认闭环</span>
+            </div>
+          `}
           <button class="secondary-button" type="button" data-specialist-target="${item.view}" data-specialist-key="${item.key}" data-specialist-view="${targetView}">${actionLabel}</button>
         </article>
       `;
@@ -565,16 +627,16 @@ function renderMetrics(data, progressRows = []) {
   const ruleRows = data.issues_by_rule || [];
   const totalLedgers = Object.values(ledgerCounts).reduce((sum, value) => sum + Number(value || 0), 0);
   const totalIssues = cityRows.reduce((sum, row) => sum + Number(row.count || 0), 0);
-  const pending = progressRows.reduce((sum, row) => sum + Number(row.pending_count || 0), 0) || totalIssues;
   const review = progressRows.reduce((sum, row) => sum + Number(row.review_count || 0), 0);
-  const closed = progressRows.reduce((sum, row) => sum + Number(row.closed_count || 0) + Number(row.not_required_count || 0), 0);
+  const closed = progressRows.reduce((sum, row) => sum + Number(row.closed_count || 0) + Number(row.not_required_count || 0) + Number(row.resolved_count || 0), 0);
+  const open = Math.max(totalIssues - closed, 0);
   const completionRate = totalIssues ? ((closed / totalIssues) * 100).toFixed(1) : "0.0";
   document.querySelector("#metric-grid").innerHTML = [
     metricCard("台账记录", totalLedgers, "当前批次导入记录总量", "info"),
     metricCard("问题总数", totalIssues, `涉及地市 ${cityRows.length} 个`, "danger"),
-    metricCard("待整改", pending, `问题最多：${cityRows[0]?.city || "暂无"}`, "warning"),
+    metricCard("未闭环", open, `问题最多：${cityRows[0]?.city || "暂无"}`, "warning"),
     metricCard("待复核", review, "等待省公司人工确认", "review"),
-    metricCard("完成率", completionRate, `命中规则 ${ruleRows.length} 条`, "success"),
+    metricCard("完成率", `${completionRate}%`, `命中规则 ${ruleRows.length} 条`, "success"),
   ].join("");
 }
 
@@ -872,21 +934,20 @@ async function renderAudit() {
     return;
   }
   state.issueLimit = state.issueLimit || 50;
-  state.issueOffset = 0;
+  state.issueOffset = Number(state.issueOffset || 0);
+  state.issueView ||= "list";
+  state.issueQuickFilter ||= "all";
+  state.issueFilters ||= { city: "", ledger: "", rule: "", status: "" };
   mainContent.innerHTML = `
     <section class="card">
       ${shellHeader("稽核结果", "问题清单", renderBatchSelector())}
       <div id="issue-summary" class="issue-summary-panel">正在加载问题摘要</div>
       <div class="quick-filter-bar">
-        <button class="segmented-button is-active" type="button" data-issue-view="list">明细视图</button>
-        <button class="segmented-button" type="button" data-issue-view="groups">聚合视图</button>
+        <button class="segmented-button ${state.issueView === "list" ? "is-active" : ""}" type="button" data-issue-view="list" aria-pressed="${state.issueView === "list"}">明细视图</button>
+        <button class="segmented-button ${state.issueView === "groups" ? "is-active" : ""}" type="button" data-issue-view="groups" aria-pressed="${state.issueView === "groups"}">聚合视图</button>
       </div>
       <div class="quick-filter-bar">
-        <button class="segmented-button is-active" type="button" data-quick-filter="all">全部问题</button>
-        <button class="segmented-button" type="button" data-quick-filter="high">高风险优先</button>
-        <button class="segmented-button" type="button" data-quick-filter="needs_review">待复核</button>
-        <button class="segmented-button" type="button" data-quick-filter="open">未闭环</button>
-        <button class="segmented-button" type="button" data-quick-filter="closed">已闭环</button>
+        ${[["all", "全部问题"], ["high", "高风险优先"], ["needs_review", "待复核"], ["open", "未闭环"], ["closed", "已闭环"]].map(([key, label]) => `<button class="segmented-button ${state.issueQuickFilter === key ? "is-active" : ""}" type="button" data-quick-filter="${key}" aria-pressed="${state.issueQuickFilter === key}">${label}</button>`).join("")}
       </div>
       <div class="filter-grid audit-filter-grid">
         <input id="filter-city" placeholder="地市">
@@ -906,7 +967,10 @@ async function renderAudit() {
     </section>
   `;
   bindBatchSelector(renderAudit);
-  state.issueView = state.issueView || "list";
+  document.querySelector("#filter-city").value = state.issueFilters.city || "";
+  document.querySelector("#filter-ledger").value = state.issueFilters.ledger || "";
+  document.querySelector("#filter-status").value = state.issueFilters.status || "";
+  if (state.issueQuickFilter !== "all") applyQuickIssueFilter(state.issueQuickFilter);
   renderIssueTableShell();
   document.querySelector("#run-audit").addEventListener("click", async (event) => {
     await withBusy(event.currentTarget, "稽核中...", async () => {
@@ -921,7 +985,10 @@ async function renderAudit() {
   document.querySelectorAll("[data-quick-filter]").forEach((button) => {
     button.addEventListener("click", async () => {
       state.issueQuickFilter = button.dataset.quickFilter;
-      document.querySelectorAll("[data-quick-filter]").forEach((item) => item.classList.toggle("is-active", item === button));
+      document.querySelectorAll("[data-quick-filter]").forEach((item) => {
+        item.classList.toggle("is-active", item === button);
+        item.setAttribute("aria-pressed", String(item === button));
+      });
       applyQuickIssueFilter(state.issueQuickFilter);
       state.issueOffset = 0;
       await loadIssues();
@@ -930,7 +997,10 @@ async function renderAudit() {
   document.querySelectorAll("[data-issue-view]").forEach((button) => {
     button.addEventListener("click", async () => {
       state.issueView = button.dataset.issueView;
-      document.querySelectorAll("[data-issue-view]").forEach((item) => item.classList.toggle("is-active", item === button));
+      document.querySelectorAll("[data-issue-view]").forEach((item) => {
+        item.classList.toggle("is-active", item === button);
+        item.setAttribute("aria-pressed", String(item === button));
+      });
       renderIssueTableShell();
       state.issueOffset = 0;
       await loadIssues();
@@ -941,6 +1011,12 @@ async function renderAudit() {
     if (!control) return;
     const eventName = selector === "#filter-city" ? "change" : "change";
     control.addEventListener(eventName, async () => {
+      state.issueFilters = {
+        city: fieldValue("filter-city"),
+        ledger: document.querySelector("#filter-ledger").value,
+        rule: document.querySelector("#filter-rule").value,
+        status: document.querySelector("#filter-status").value,
+      };
       state.issueOffset = 0;
       await loadIssues();
     });
@@ -966,7 +1042,7 @@ async function loadIssues() {
   const params = new URLSearchParams({ batch_id: state.batchId, limit, offset });
   const city = fieldValue("filter-city");
   const ledger = document.querySelector("#filter-ledger").value;
-  const rule = document.querySelector("#filter-rule").value;
+  const rule = document.querySelector("#filter-rule").value || state.issueFilters?.rule || "";
   const status = document.querySelector("#filter-status").value;
   const severity = state.issueQuickFilter === "high" ? "high" : "";
   const closure = ["open", "closed"].includes(state.issueQuickFilter) ? state.issueQuickFilter : "";
@@ -985,6 +1061,7 @@ async function loadIssues() {
   }
   const data = await fetchJson(`/api/issues?${params.toString()}`);
   renderIssueRuleOptions(data.rules || [], rule);
+  if (state.issueFilters?.rule) document.querySelector("#filter-rule").value = state.issueFilters.rule;
   renderIssueSummary(data.issues || [], data.total || 0);
   renderIssueRows(data.issues || []);
   renderIssuePagination(data.total || 0, data.limit || limit, data.offset || offset);
@@ -1312,9 +1389,19 @@ async function checkHealth() {
   }
 }
 
-function activateView(view) {
-  pageTitle.textContent = views[view];
-  navButtons.forEach((button) => button.classList.toggle("is-active", button.dataset.view === view));
+function viewFromLocation() {
+  const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const view = params.get("view");
+  return views[view] ? view : "dashboard";
+}
+
+function updateViewLocation(view, replace = false) {
+  const url = new URL(window.location.href);
+  url.hash = new URLSearchParams({ view }).toString();
+  window.history[replace ? "replaceState" : "pushState"]({ view }, "", url);
+}
+
+async function renderView(view) {
   if (view === "dashboard") return loadDashboard();
   if (view === "batches") return renderBatches();
   if (view === "import") return renderImport();
@@ -1368,9 +1455,57 @@ function activateView(view) {
   if (view === "settings") return renderSettings({ mainContent, shellHeader });
 }
 
+async function activateView(view, options = {}) {
+  const targetView = views[view] ? view : "dashboard";
+  const isSameView = activeView === targetView;
+  activeView = targetView;
+  if (options.updateHistory !== false) updateViewLocation(targetView, options.replaceHistory || isSameView);
+  pageTitle.textContent = views[targetView];
+  navButtons.forEach((button) => {
+    const current = button.dataset.view === targetView;
+    button.classList.toggle("is-active", current);
+    if (current) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  });
+  closeMobileNav();
+  mainContent.setAttribute("aria-busy", "true");
+  try {
+    await renderView(targetView);
+    announce(`已打开${views[targetView]}`);
+  } catch (error) {
+    mainContent.innerHTML = `
+      <section class="card error-recovery" role="alert">
+        ${shellHeader("页面加载失败", views[targetView])}
+        <div class="operation-panel">
+          <p>${escapeHtml(error.message || "加载失败，请稍后重试。")}</p>
+          <button id="retry-current-view" class="primary-button" type="button">重新加载</button>
+        </div>
+      </section>
+    `;
+    document.querySelector("#retry-current-view")?.addEventListener("click", () => activateView(targetView, { updateHistory: false }));
+    announce(`${views[targetView]}加载失败`);
+  } finally {
+    mainContent.removeAttribute("aria-busy");
+    if (options.focus !== false) mainContent.focus({ preventScroll: true });
+  }
+}
+
 navButtons.forEach((button) => {
   button.addEventListener("click", () => activateView(button.dataset.view));
 });
 
+mobileNavToggle?.addEventListener("click", toggleMobileNav);
+navScrim?.addEventListener("click", closeMobileNav);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeMobileNav();
+});
+window.addEventListener("popstate", () => activateView(viewFromLocation(), { updateHistory: false }));
+window.addEventListener("unhandledrejection", (event) => {
+  event.preventDefault();
+  showGlobalError(event.reason?.message || String(event.reason || "未知错误"));
+});
+window.addEventListener("error", (event) => showGlobalError(event.message));
+
 checkHealth();
-activateView("dashboard");
+window.setInterval(checkHealth, 60_000);
+activateView(viewFromLocation(), { updateHistory: false, replaceHistory: true, focus: false });

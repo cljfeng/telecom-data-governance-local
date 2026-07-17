@@ -24,7 +24,7 @@ export async function renderSettings({ mainContent, shellHeader }) {
             <input id="restore-confirmation" placeholder="输入：确认恢复">
           </label>
         </div>
-        <button id="restore-backup" class="primary-button" type="button">恢复备份</button>
+        <button id="restore-backup" class="danger-button" type="button">恢复备份</button>
       </div>
       <div id="settings-result" class="result-box">等待操作</div>
     </section>

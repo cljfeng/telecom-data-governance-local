@@ -124,3 +124,56 @@ def test_review_cards_collapse_to_one_column_on_mobile():
     assert ".analysis-review-fields" in styles
     assert "@media (max-width: 760px)" in styles
     assert "grid-template-columns: 1fr" in styles
+
+
+def test_visual_polish_keeps_accessibility_and_motion_preferences():
+    index = _read("index.html")
+    styles = _read("styles.css")
+
+    assert 'class="skip-link" href="#main-content"' in index
+    assert 'id="main-content" class="main-content" tabindex="-1"' in index
+    assert 'id="global-status" class="sr-only" role="status" aria-live="polite"' in index
+    assert "@media (prefers-reduced-motion: reduce)" in styles
+    assert "@media (prefers-contrast: more)" in styles
+    assert "--focus-ring:" in styles
+    assert "min-height: 44px" in styles
+    assert "font-variant-numeric: tabular-nums" in styles
+
+
+def test_visual_polish_uses_consistent_navigation_icons_and_layering():
+    index = _read("index.html")
+    styles = _read("styles.css")
+
+    assert index.count('class="nav-icon"') == 12
+    assert index.count('aria-hidden="true" focusable="false"') >= 12
+    assert ".nav-icon" in styles
+    assert ".next-action .todo-strip span" in styles
+    assert "@keyframes surface-enter" in styles
+    assert ".specialist-todo-card::before" in styles
+
+
+def test_three_stage_polish_adds_responsive_navigation_and_stateful_routes():
+    index = _read("index.html")
+    app = _read("app.js")
+    styles = _read("styles.css")
+
+    assert 'id="mobile-nav-toggle"' in index
+    assert 'id="nav-scrim"' in index
+    assert "updateViewLocation" in app
+    assert 'setAttribute("aria-current", "page")' in app
+    assert 'window.addEventListener("popstate"' in app
+    assert "body.nav-open .sidebar" in styles
+    assert ".global-error-toast" in styles
+
+
+def test_three_stage_polish_adds_rule_search_and_specialist_pagination():
+    rules = _read("rules.js")
+    specialist = _read("specialist-analysis-ui.js")
+    ledger = _read("ledger-data.js")
+
+    assert 'id="rule-search"' in rules
+    assert 'id="rule-ledger-filter"' in rules
+    assert 'aria-pressed="true"' in rules
+    assert "specialistPagination" in specialist
+    assert 'query.set("limit"' in specialist
+    assert 'id="ledger-data-pagination"' in ledger

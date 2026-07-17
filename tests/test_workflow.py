@@ -6,6 +6,7 @@ from governance_app.exporter import export_city_issue_packages
 from governance_app.importer import import_workbook
 from governance_app.workflow import (
     city_progress,
+    count_ledger_rows,
     create_batch,
     get_batch_workflow,
     list_batches,
@@ -178,6 +179,16 @@ def test_list_ledger_rows_filters_and_exposes_grouped_fields(app_config, sample_
     assert rows[0]["telecom_site_code"] == "HZ001"
     assert rows[0]["field_groups"]["电表报账"]["电表户号"] == "M001"
     assert rows[0]["field_groups"]["供电分摊"]["电费单价"] == 0.8
+
+    total = count_ledger_rows(app_config, imported.batch_id, {"ledger_type": "electricity"})
+    page = list_ledger_rows(
+        app_config,
+        imported.batch_id,
+        {"ledger_type": "electricity"},
+        limit=1,
+        offset=0,
+    )
+    assert total >= len(page) == 1
 
 
 def test_workflow_returns_recent_operations(app_config):

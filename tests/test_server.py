@@ -348,9 +348,13 @@ def test_electricity_analysis_endpoints(app_config, sample_workbook):
     assert status == 200
     assert json.loads(body)["batch_id"] == 1
 
-    status, _headers, body = app.handle_test_request("GET", "/api/batches/1/electricity-analysis/opportunities")
+    status, _headers, body = app.handle_test_request("GET", "/api/batches/1/electricity-analysis/opportunities?limit=2&offset=0")
     assert status == 200
-    assert "opportunities" in json.loads(body)
+    page = json.loads(body)
+    assert len(page["opportunities"]) == 2
+    assert page["total"] >= 3
+    assert page["limit"] == 2
+    assert page["offset"] == 0
 
     status, _headers, body = app.handle_test_request("POST", "/api/batches/1/electricity-analysis/export")
     assert status == 200
@@ -806,7 +810,8 @@ def test_workbench_static_assets_use_lightweight_modules():
     ledger_data_js = (static_dir / "ledger-data.js").read_text(encoding="utf-8")
 
     assert '<script type="module" src="/app.js' in index_html
-    assert 'data-view="ledgerData">数据整理' in index_html
+    assert 'data-view="ledgerData"' in index_html
+    assert "<span>数据整理</span>" in index_html
     assert 'from "/api.js' in app_js
     assert 'from "/state.js' in app_js
     assert 'from "/ui.js' in app_js
@@ -815,8 +820,10 @@ def test_workbench_static_assets_use_lightweight_modules():
     assert 'from "/settings.js' in app_js
     assert 'from "/analytics.js' in app_js
     assert "/api/ledger-rows?" in ledger_data_js
-    assert 'data-view="rules">规则设置' in index_html
-    assert 'data-view="settings">本地设置' in index_html
+    assert 'data-view="rules"' in index_html
+    assert "<span>规则设置</span>" in index_html
+    assert 'data-view="settings"' in index_html
+    assert "<span>本地设置</span>" in index_html
     assert (static_dir / "api.js").exists()
     assert (static_dir / "state.js").exists()
     assert (static_dir / "ui.js").exists()

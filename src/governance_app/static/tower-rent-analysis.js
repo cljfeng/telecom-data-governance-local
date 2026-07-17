@@ -7,17 +7,25 @@ import {
   rememberSpecialistView,
   specialistFilterControls,
   specialistFilterQuery,
+  specialistPagination,
   specialistSummary,
-} from "/specialist-analysis-ui.js?v=20260717-1";
+} from "/specialist-analysis-ui.js?v=20260718-1";
+
+const PAGE_SIZE = 24;
+let towerRentOffset = 0;
 
 function money(value) {
   const number = Number(value || 0);
   return number.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function confidenceLabel(value) {
+  return { high: "高", medium: "中", low: "低" }[value] || value || "未知";
+}
+
 function optionRows(rows, field, label) {
   const values = [...new Set(rows.map((row) => row[field]).filter(Boolean))];
-  return [`<option value="">全部${label}</option>`, ...values.map((value) => `<option value="${value}">${value}</option>`)].join("");
+  return [`<option value="">全部${label}</option>`, ...values.map((value) => `<option value="${value}">${field === "confidence" ? confidenceLabel(value) : value}</option>`)].join("");
 }
 
 export async function renderTowerRentAnalysis(ctx) {
@@ -46,6 +54,7 @@ export async function renderTowerRentAnalysis(ctx) {
       ${specialistFilterControls("tower-rent", initialView)}
       ${batchReviewToolbar("tower-rent")}
       <div id="tower-rent-clue-list" class="analysis-review-list"><div class="empty-state">正在加载</div></div>
+      <div id="tower-rent-pagination" class="pagination-bar" aria-label="租费线索分页"></div>
     </section>
     <div class="dashboard-grid specialist-breakdowns">
       <section class="card">${ctx.shellHeader("异常分类", "分类")}<div id="tower-rent-type-breakdown" class="risk-summary"></div></section>
@@ -82,22 +91,35 @@ export async function renderTowerRentAnalysis(ctx) {
       }
     });
   });
-  document.querySelector("#apply-tower-rent-filters").addEventListener("click", () => loadTowerRentAnalysisData(ctx));
+  document.querySelector("#apply-tower-rent-filters").addEventListener("click", () => {
+    towerRentOffset = 0;
+    loadTowerRentAnalysisData(ctx);
+  });
   await loadTowerRentAnalysisData(ctx);
 }
 
 async function loadTowerRentAnalysisData(ctx) {
   rememberSpecialistView(ctx, "tower_rent", "tower-rent");
-  const query = specialistFilterQuery("tower-rent");
+  const query = specialistFilterQuery("tower-rent", { limit: PAGE_SIZE, offset: towerRentOffset });
   try {
     const [summary, list] = await Promise.all([
       fetchJson(`/api/batches/${ctx.state.batchId}/tower-rent-analysis/summary`),
       fetchJson(`/api/batches/${ctx.state.batchId}/tower-rent-analysis/opportunities${query.toString() ? `?${query}` : ""}`),
     ]);
-    renderSummary(ctx, summary);
-    renderBreakdown(ctx, summary);
-    renderRows(ctx, list.opportunities || []);
-    bindSpecialistMetricFilters("tower-rent", () => loadTowerRentAnalysisData(ctx));
+    const visibleSummary = summary.analysis_stale
+      ? { ...summary, clue_count: 0, abnormal_site_count: 0, recoverable_amount: 0, discount_realization_amount: 0, review_amount: 0, high_risk_count: 0, pending_count: 0, returned_count: 0, needs_review_count: 0, closed_count: 0, verified_recoverable_amount: 0, realized_saving_amount: 0, type_breakdown: [], city_rankings: [] }
+      : summary;
+    renderSummary(ctx, visibleSummary);
+    renderBreakdown(ctx, visibleSummary);
+    renderRows(ctx, summary.analysis_stale ? [] : list.opportunities || []);
+    bindSpecialistMetricFilters("tower-rent", () => {
+      towerRentOffset = 0;
+      return loadTowerRentAnalysisData(ctx);
+    });
+    specialistPagination("tower-rent", list.total, list.limit, list.offset, (nextOffset) => {
+      towerRentOffset = nextOffset;
+      loadTowerRentAnalysisData(ctx).then(() => document.querySelector("#tower-rent-queue-heading")?.scrollIntoView({ block: "start" }));
+    });
     updateTowerRentActions(ctx, summary);
   } catch (error) {
     document.querySelector("#tower-rent-summary").innerHTML = [
@@ -126,7 +148,8 @@ function updateTowerRentActions(ctx, summary) {
   const canRun = Boolean(batch && !batch.is_archived && allowedStatus && Number(summary.ledger_row_count || 0) > 0);
   runButton.disabled = !canRun;
   exportButton.disabled = !canRun || !summary.analysis_generated;
-  if (batch?.is_archived) hint.textContent = "当前批次已归档，不能重新生成或导出专题分析。";
+  if (summary.analysis_stale) hint.textContent = "历史分析与当前台账不一致，已停止展示；请重新导入台账后生成分析。";
+  else if (batch?.is_archived) hint.textContent = "当前批次已归档，不能重新生成或导出专题分析。";
   else if (!allowedStatus) hint.textContent = "请先完成台账导入和稽核，再生成租费异常分析。";
   else if (!Number(summary.ledger_row_count || 0)) hint.textContent = "当前批次没有铁塔租费台账，请先导入铁塔租费台账。";
   else if (!summary.analysis_generated) hint.textContent = "可以生成分析；生成完成后才能导出 Excel。";
@@ -198,7 +221,7 @@ function renderRows(ctx, rows) {
               <div><dt>问题编号</dt><dd>${ctx.escapeHtml(row.issue_code || "未关联来源问题")}</dd></div>
               <div><dt>线索编号</dt><dd>${ctx.escapeHtml(row.opportunity_code || "")}</dd></div>
               <div><dt>地市 / 账期</dt><dd>${ctx.escapeHtml(row.city || "未填地市")} · ${ctx.escapeHtml(row.period || "未填账期")}</dd></div>
-              <div><dt>置信度</dt><dd>${ctx.escapeHtml(row.confidence || "-")}</dd></div>
+              <div><dt>置信度</dt><dd>${ctx.escapeHtml(confidenceLabel(row.confidence))}</dd></div>
             </dl>
             <div class="analysis-review-amounts">
               <div><span>当前金额</span><strong>${money(row.current_amount)}</strong></div>

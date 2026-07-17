@@ -74,6 +74,18 @@ def test_run_electricity_analysis_refreshes_existing_rows(app_config, sample_wor
     assert first["opportunity_count"] == second["opportunity_count"]
 
 
+def test_summary_marks_generated_analysis_stale_without_source_rows(app_config, sample_workbook):
+    batch_id = _import_and_audit(app_config, sample_workbook)
+    run_electricity_analysis(app_config, batch_id)
+    with connect(app_config) as conn:
+        conn.execute("delete from ledger_rows where batch_id = ? and ledger_type = 'electricity'", (batch_id,))
+
+    summary = get_electricity_summary(app_config, batch_id)
+
+    assert summary["analysis_generated"] is False
+    assert summary["analysis_stale"] is True
+
+
 def test_run_electricity_analysis_preserves_saved_review(app_config, sample_workbook):
     batch_id = _import_and_audit(app_config, sample_workbook)
     run_electricity_analysis(app_config, batch_id)
