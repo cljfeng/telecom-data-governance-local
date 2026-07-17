@@ -177,3 +177,27 @@ def test_three_stage_polish_adds_rule_search_and_specialist_pagination():
     assert "specialistPagination" in specialist
     assert 'query.set("limit"' in specialist
     assert 'id="ledger-data-pagination"' in ledger
+
+
+def test_next_batch_replaces_zero_dashboards_with_guided_empty_states():
+    app = _read("app.js")
+    specialist = _read("specialist-analysis-ui.js")
+    electricity = _read("electricity-analysis.js")
+    tower_rent = _read("tower-rent-analysis.js")
+    styles = _read("styles.css")
+
+    assert 'class="card onboarding-card"' in app
+    assert "从一份台账，到一条可追踪的闭环链路" in app
+    assert "renderDashboardWaitingForData" in app
+    assert 'class="process-rail"' in app
+    assert "renderIssueEmptyState" in app
+    assert "本批次暂未发现问题" in app
+    assert "operationLabel" in app
+    assert "export function specialistPrerequisite" in specialist
+    assert "export function showSpecialistResults" in specialist
+    for page in (electricity, tower_rent):
+        assert "specialistPrerequisite" in page
+        assert "showSpecialistResults" in page
+        assert "analysis_generated || summary.analysis_stale" in page
+    for selector in (".onboarding-card", ".rich-empty", ".process-rail", ".compact-empty"):
+        assert selector in styles

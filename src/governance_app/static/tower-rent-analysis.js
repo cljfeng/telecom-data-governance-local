@@ -8,8 +8,10 @@ import {
   specialistFilterControls,
   specialistFilterQuery,
   specialistPagination,
+  specialistPrerequisite,
   specialistSummary,
-} from "/specialist-analysis-ui.js?v=20260718-1";
+  showSpecialistResults,
+} from "/specialist-analysis-ui.js?v=20260718-2";
 
 const PAGE_SIZE = 24;
 let towerRentOffset = 0;
@@ -49,14 +51,14 @@ export async function renderTowerRentAnalysis(ctx) {
     <section class="card metric-section">
       <div id="tower-rent-summary" class="metric-grid"></div>
     </section>
-    <section class="card">
+    <section id="tower-rent-queue-card" class="card">
       <div id="tower-rent-queue-heading">${ctx.shellHeader("待处理清单", "租费线索")}</div>
       ${specialistFilterControls("tower-rent", initialView)}
       ${batchReviewToolbar("tower-rent")}
       <div id="tower-rent-clue-list" class="analysis-review-list"><div class="empty-state">正在加载</div></div>
       <div id="tower-rent-pagination" class="pagination-bar" aria-label="租费线索分页"></div>
     </section>
-    <div class="dashboard-grid specialist-breakdowns">
+    <div id="tower-rent-breakdowns" class="dashboard-grid specialist-breakdowns">
       <section class="card">${ctx.shellHeader("异常分类", "分类")}<div id="tower-rent-type-breakdown" class="risk-summary"></div></section>
       <section class="card">${ctx.shellHeader("地市排行", "地市")}<div id="tower-rent-city-ranking" class="risk-summary"></div></section>
     </div>
@@ -109,17 +111,23 @@ async function loadTowerRentAnalysisData(ctx) {
     const visibleSummary = summary.analysis_stale
       ? { ...summary, clue_count: 0, abnormal_site_count: 0, recoverable_amount: 0, discount_realization_amount: 0, review_amount: 0, high_risk_count: 0, pending_count: 0, returned_count: 0, needs_review_count: 0, closed_count: 0, verified_recoverable_amount: 0, realized_saving_amount: 0, type_breakdown: [], city_rankings: [] }
       : summary;
-    renderSummary(ctx, visibleSummary);
-    renderBreakdown(ctx, visibleSummary);
-    renderRows(ctx, summary.analysis_stale ? [] : list.opportunities || []);
-    bindSpecialistMetricFilters("tower-rent", () => {
-      towerRentOffset = 0;
-      return loadTowerRentAnalysisData(ctx);
-    });
-    specialistPagination("tower-rent", list.total, list.limit, list.offset, (nextOffset) => {
-      towerRentOffset = nextOffset;
-      loadTowerRentAnalysisData(ctx).then(() => document.querySelector("#tower-rent-queue-heading")?.scrollIntoView({ block: "start" }));
-    });
+    if (!summary.analysis_generated || summary.analysis_stale) {
+      specialistPrerequisite(ctx, { prefix: "tower-rent", title: "租费异常分析", ledgerName: "铁塔租费台账", summary });
+      specialistPagination("tower-rent", 0, PAGE_SIZE, 0, () => {});
+    } else {
+      showSpecialistResults("tower-rent");
+      renderSummary(ctx, visibleSummary);
+      renderBreakdown(ctx, visibleSummary);
+      renderRows(ctx, list.opportunities || []);
+      bindSpecialistMetricFilters("tower-rent", () => {
+        towerRentOffset = 0;
+        return loadTowerRentAnalysisData(ctx);
+      });
+      specialistPagination("tower-rent", list.total, list.limit, list.offset, (nextOffset) => {
+        towerRentOffset = nextOffset;
+        loadTowerRentAnalysisData(ctx).then(() => document.querySelector("#tower-rent-queue-heading")?.scrollIntoView({ block: "start" }));
+      });
+    }
     updateTowerRentActions(ctx, summary);
   } catch (error) {
     document.querySelector("#tower-rent-summary").innerHTML = [

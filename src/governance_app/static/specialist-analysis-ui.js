@@ -81,6 +81,82 @@ export function specialistSummary(primary, secondary) {
   `;
 }
 
+export function specialistPrerequisite(ctx, { prefix, title, ledgerName, summary }) {
+  const batch = ctx.currentBatch();
+  const noLedger = Number(summary.ledger_row_count || 0) <= 0;
+  const stale = Boolean(summary.analysis_stale);
+  const archived = Boolean(batch?.is_archived);
+  const allowedStatus = ["audited", "distributed", "returning"].includes(batch?.status);
+  let eyebrow = "前置条件";
+  let heading = `准备${title}`;
+  let description = `完成前置步骤后，系统会生成${title}的机会清单、金额测算和地市排行。`;
+  let actionLabel = "执行稽核";
+  let action = "audit";
+  if (stale) {
+    eyebrow = "结果已失效";
+    heading = "当前台账已变化，需要重新生成分析";
+    description = "历史结果已安全隔离，不会继续计入当前待办和成果。请确认台账后重新生成。";
+    actionLabel = allowedStatus ? "重新生成分析" : "检查台账与稽核";
+    action = allowedStatus ? "run" : "audit";
+  } else if (noLedger) {
+    heading = `先导入${ledgerName}`;
+    description = `当前批次没有可用于${title}的${ledgerName}。导入前会先完成模板预检。`;
+    actionLabel = "去导入台账";
+    action = "import";
+  } else if (allowedStatus) {
+    eyebrow = "可以开始";
+    heading = `前置条件已完成，生成${title}`;
+    description = "生成后可按异常类型、置信度和处理状态筛选，并逐条完成复核。";
+    actionLabel = "生成分析";
+    action = "run";
+  } else if (archived) {
+    eyebrow = "批次已归档";
+    heading = "归档批次不能重新生成分析";
+    description = "可以切换到其他进行中的批次，或从分析报表查看已沉淀成果。";
+    actionLabel = "";
+  }
+  const summaryHost = document.querySelector(`#${prefix}-summary`);
+  const queueCard = document.querySelector(`#${prefix}-queue-card`);
+  const breakdowns = document.querySelector(`#${prefix}-breakdowns`);
+  const runButton = document.querySelector(`#run-${prefix}-analysis`);
+  const exportButton = document.querySelector(`#export-${prefix}-analysis`);
+  const resultBox = document.querySelector(`#${prefix}-analysis-result`);
+  const gateHint = document.querySelector(`#${prefix}-analysis-gate`);
+  if (summaryHost) {
+    summaryHost.className = "specialist-prerequisite";
+    summaryHost.innerHTML = `<div class="rich-empty rich-empty-horizontal">
+      <span class="rich-empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5"></path><path d="M4 17v3h16v-3"></path></svg></span>
+      <div><p class="eyebrow">${eyebrow}</p><h3>${heading}</h3><p>${description}</p></div>
+      ${actionLabel ? `<button class="primary-button" type="button" data-prerequisite-action="${action}">${actionLabel}</button>` : ""}
+    </div>`;
+  }
+  if (queueCard) queueCard.hidden = true;
+  if (breakdowns) breakdowns.hidden = true;
+  if (runButton) runButton.hidden = true;
+  if (exportButton) exportButton.hidden = true;
+  if (resultBox) resultBox.hidden = true;
+  if (gateHint) gateHint.hidden = true;
+  document.querySelector("[data-prerequisite-action]")?.addEventListener("click", () => {
+    if (action === "run") document.querySelector(`#run-${prefix}-analysis`)?.click();
+    else ctx.activateView(action);
+  });
+}
+
+export function showSpecialistResults(prefix) {
+  const queueCard = document.querySelector(`#${prefix}-queue-card`);
+  const breakdowns = document.querySelector(`#${prefix}-breakdowns`);
+  const runButton = document.querySelector(`#run-${prefix}-analysis`);
+  const exportButton = document.querySelector(`#export-${prefix}-analysis`);
+  const resultBox = document.querySelector(`#${prefix}-analysis-result`);
+  const gateHint = document.querySelector(`#${prefix}-analysis-gate`);
+  if (queueCard) queueCard.hidden = false;
+  if (breakdowns) breakdowns.hidden = false;
+  if (runButton) runButton.hidden = false;
+  if (exportButton) exportButton.hidden = false;
+  if (resultBox) resultBox.hidden = false;
+  if (gateHint) gateHint.hidden = false;
+}
+
 export function bindSpecialistMetricFilters(prefix, reload) {
   document.querySelectorAll("[data-specialist-view]").forEach((button) => {
     button.addEventListener("click", async () => {

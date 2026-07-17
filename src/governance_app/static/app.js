@@ -5,8 +5,8 @@ import { renderLedgerData } from "/ledger-data.js?v=20260718-1";
 import { renderRules } from "/rules.js?v=20260718-1";
 import { renderSettings } from "/settings.js?v=20260718-1";
 import { renderAnalytics } from "/analytics.js?v=20260718-1";
-import { renderElectricityAnalysis } from "/electricity-analysis.js?v=20260718-1";
-import { renderTowerRentAnalysis } from "/tower-rent-analysis.js?v=20260718-1";
+import { renderElectricityAnalysis } from "/electricity-analysis.js?v=20260718-2";
+import { renderTowerRentAnalysis } from "/tower-rent-analysis.js?v=20260718-2";
 import { issueStatusLabel, issueStatusOptions } from "/issue-status.js?v=20260717-1";
 
 const views = {
@@ -380,10 +380,15 @@ async function loadDashboard() {
       fetchJson(`/api/batches/${state.batchId}/tower-rent-analysis/summary`),
     ]);
     renderWorkflow(workflow, { electricity, towerRent });
-    renderMetrics(summary, progress.cities || []);
-    renderSpecialistTodos(electricity, towerRent);
-    renderCityProgress(progress.cities || []);
-    renderRiskSummary(summary.issues_by_rule || []);
+    const ledgerCount = Number(workflow.todo_summary?.ledger_count || 0);
+    if (ledgerCount) {
+      renderMetrics(summary, progress.cities || []);
+      renderSpecialistTodos(electricity, towerRent);
+      renderCityProgress(progress.cities || []);
+      renderRiskSummary(summary.issues_by_rule || []);
+    } else {
+      renderDashboardWaitingForData();
+    }
     renderOperationLog(workflow.operations || []);
   } catch (error) {
     if (error.message === "batch not found") {
@@ -408,39 +413,51 @@ async function loadDashboard() {
 
 function renderEmptyDashboard() {
   mainContent.innerHTML = `
-    <section class="card command-card">
-      ${shellHeader("专项治理闭环", "批次")}
-      <div class="operation-panel">
-        <p>当前还没有专项批次。可以先新建一个批次，再导入全省台账；也可以直接到“数据导入”页面导入模板，系统会自动生成批次。</p>
-        <div class="form-grid">
-          <label class="form-field">
-            <span>批次名称</span>
-            <input id="new-batch-name" value="2026年基站电费租费基础数据核查" placeholder="请输入专项批次名称">
-          </label>
+    <section class="card onboarding-card">
+      <div class="onboarding-copy">
+        <p class="eyebrow">开始一轮专项治理</p>
+        <h2>从一份台账，到一条可追踪的闭环链路</h2>
+        <p>创建批次后，系统会按顺序引导完成数据导入、规则稽核、整改回传和成果归档。整个过程保留批次与操作记录。</p>
+        <div class="onboarding-steps" aria-label="专项治理流程">
+          <div><span>1</span><strong>准备批次</strong><small>确定本轮专项范围</small></div>
+          <div><span>2</span><strong>导入并稽核</strong><small>先预检，再识别问题</small></div>
+          <div><span>3</span><strong>整改闭环</strong><small>回传、复核并沉淀成果</small></div>
         </div>
-        <button id="create-batch" class="primary-button" type="button">新建批次</button>
       </div>
-    </section>
-    <section class="card metric-section">
-      <div class="metric-grid">
-        ${metricCard("台账记录", 0, "等待导入台账")}
-        ${metricCard("问题总数", 0, "等待执行稽核")}
-        ${metricCard("待整改", 0, "等待导出问题包")}
-        ${metricCard("待复核", 0, "等待地市回传")}
-        ${metricCard("完成率", 0, "等待闭环")}
-      </div>
-    </section>
-    <section class="card">
-      ${shellHeader("地市整改进度", "地市进度")}
-      <div class="empty-state">暂无批次数据</div>
+      <form id="create-batch-form" class="onboarding-form">
+        <p class="eyebrow">第一步</p>
+        <h3>创建专项批次</h3>
+        <label class="form-field">
+          <span>批次名称</span>
+          <input id="new-batch-name" value="2026年基站电费租费基础数据核查" placeholder="请输入专项批次名称" required>
+          <small class="field-hint">建议包含年份和专项范围，便于后续查找。</small>
+        </label>
+        <button id="create-batch" class="primary-button" type="submit">创建并进入工作台</button>
+        <button id="go-import" class="text-button" type="button">已有台账，直接导入并自动建批次</button>
+      </form>
     </section>
   `;
-  document.querySelector("#create-batch").addEventListener("click", async () => {
+  document.querySelector("#create-batch-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
     const name = fieldValue("new-batch-name");
     if (!name) return;
     await postJson("/api/batches", { name });
     await loadDashboard();
   });
+  document.querySelector("#go-import").addEventListener("click", () => activateView("import"));
+}
+
+function renderDashboardWaitingForData() {
+  document.querySelector("#metric-grid").innerHTML = `
+    <div class="rich-empty rich-empty-horizontal">
+      <span class="rich-empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5"></path><path d="M4 17v3h16v-3"></path></svg></span>
+      <div><p class="eyebrow">批次已就绪</p><h3>下一步：导入本轮专项台账</h3><p>导入前会先检查模板结构和必填字段，不会直接写入错误数据。</p></div>
+      <button class="primary-button" type="button" data-empty-action="import">去导入台账</button>
+    </div>`;
+  document.querySelector("#specialist-todos").innerHTML = '<div class="compact-empty"><strong>专题分析将在稽核后开放</strong><span>完成台账导入与规则稽核后，可分别生成电费压降和租费异常分析。</span></div>';
+  document.querySelector("#city-progress-table").closest(".table-wrap").innerHTML = '<div class="compact-empty"><strong>暂无整改任务</strong><span>识别出问题并导出整改包后，这里会展示各地市闭环进度。</span></div>';
+  document.querySelector("#risk-summary").innerHTML = '<div class="compact-empty"><strong>等待稽核结果</strong><span>风险规则排行会在执行稽核后生成。</span></div>';
+  document.querySelector('[data-empty-action="import"]').addEventListener("click", () => activateView("import"));
 }
 
 async function renderBatches() {
@@ -705,8 +722,34 @@ function renderOperationLog(items) {
   }
   container.innerHTML = items
     .slice(0, 4)
-    .map((item) => `<p><strong>${escapeHtml(item.operation)}</strong><span>${escapeHtml(item.created_at)}</span>${escapeHtml(item.message)}</p>`)
+    .map((item) => `<p><strong>${escapeHtml(operationLabel(item.operation))}</strong><span>${escapeHtml(item.created_at)}</span>${escapeHtml(item.message)}</p>`)
     .join("");
+}
+
+function operationLabel(operation) {
+  return {
+    import: "导入台账",
+    import_append: "追加台账",
+    import_replace: "覆盖台账",
+    export: "导出整改包",
+    archive: "归档批次",
+    correction_return: "导入整改回传",
+    electricity_analysis: "生成电费分析",
+    tower_rent_analysis: "生成租费分析",
+    batch_analysis_review: "批量复核专题问题",
+    select_batch: "切换当前批次",
+    update_issue_group_status: "批量更新问题状态",
+    update_issue_status: "更新问题状态",
+    notice_report: "导出问题通报",
+    create_batch: "创建批次",
+    import_ledger: "导入台账",
+    audit: "执行稽核",
+    export_issues: "导出问题包",
+    import_corrections: "导入整改回传",
+    archive_batch: "归档批次",
+    generate_electricity_analysis: "生成电费分析",
+    generate_tower_rent_analysis: "生成租费分析",
+  }[operation] || operation;
 }
 
 async function renderImport() {
@@ -718,6 +761,9 @@ async function renderImport() {
       ${shellHeader("数据导入", "台账导入")}
       <div class="operation-panel">
         <p>选择本机 Excel 台账文件，先进行模板预检。预检通过后再正式入库，系统会自动生成并选中当前批次。</p>
+        <div class="process-rail" aria-label="导入步骤">
+          <span class="is-current" data-import-step="file"><strong>1</strong>选择文件</span><span data-import-step="preview"><strong>2</strong>模板预检</span><span data-import-step="import"><strong>3</strong>正式导入</span>
+        </div>
         <div class="form-grid">
           <label class="form-field">
             <span>台账文件</span>
@@ -743,7 +789,7 @@ async function renderImport() {
     </section>
     <section class="card">
       ${shellHeader("预检与导入结果", "处理结果")}
-      <div id="operation-result" class="result-box">请先选择文件并执行预检</div>
+      <div id="operation-result" class="result-box result-placeholder"><strong>预检结果会显示在这里</strong><span>选择文件并完成预检后，可查看记录数量、阻断错误和修复建议。</span></div>
     </section>
     <section class="card">
       ${shellHeader("最近文件", "文件记录")}
@@ -764,6 +810,16 @@ async function renderImport() {
     const hint = document.querySelector("#import-gate-hint");
     previewButton.disabled = !signature;
     importButton.disabled = !signature || approvedPreviewSignature !== signature;
+    const fileStep = document.querySelector('[data-import-step="file"]');
+    const previewStep = document.querySelector('[data-import-step="preview"]');
+    const importStep = document.querySelector('[data-import-step="import"]');
+    [fileStep, previewStep, importStep].forEach((step) => step?.classList.remove("is-current", "is-complete"));
+    if (!signature) fileStep?.classList.add("is-current");
+    else {
+      fileStep?.classList.add("is-complete");
+      (approvedPreviewSignature === signature ? importStep : previewStep)?.classList.add("is-current");
+      if (approvedPreviewSignature === signature) previewStep?.classList.add("is-complete");
+    }
     if (!signature) hint.textContent = "请先选择台账文件。";
     else if (approvedPreviewSignature !== signature) hint.textContent = "请先完成模板预检；预检通过后才能正式导入。";
     else hint.textContent = "模板预检已通过，可以正式导入。";
@@ -1055,7 +1111,12 @@ async function loadIssues() {
   if (state.issueView === "groups") {
     const groupData = await fetchJson(`/api/issue-groups?${params.toString()}`);
     renderIssueGroupSummary(groupData.groups || []);
-    renderIssueGroupRows(groupData.groups || []);
+    if ((groupData.groups || []).length) {
+      if (!document.querySelector("#issue-table")) renderIssueTableShell();
+      renderIssueGroupRows(groupData.groups || []);
+    } else {
+      renderIssueEmptyState({ filtered: hasIssueFilters(), grouped: true });
+    }
     renderIssuePagination(0, limit, 0);
     return;
   }
@@ -1063,8 +1124,49 @@ async function loadIssues() {
   renderIssueRuleOptions(data.rules || [], rule);
   if (state.issueFilters?.rule) document.querySelector("#filter-rule").value = state.issueFilters.rule;
   renderIssueSummary(data.issues || [], data.total || 0);
-  renderIssueRows(data.issues || []);
+  if (Number(data.total || 0)) {
+    if (!document.querySelector("#issue-table")) renderIssueTableShell();
+    renderIssueRows(data.issues || []);
+  } else {
+    renderIssueEmptyState({ filtered: hasIssueFilters() });
+  }
   renderIssuePagination(data.total || 0, data.limit || limit, data.offset || offset);
+}
+
+function hasIssueFilters() {
+  return Boolean(fieldValue("filter-city") || document.querySelector("#filter-ledger")?.value || document.querySelector("#filter-rule")?.value || document.querySelector("#filter-status")?.value || state.issueQuickFilter !== "all");
+}
+
+function renderIssueEmptyState({ filtered = false, grouped = false } = {}) {
+  const wrap = document.querySelector("#issue-table-wrap");
+  const batch = currentBatch();
+  if (!wrap) return;
+  const neverAudited = batch?.status === "imported";
+  const title = filtered ? "当前筛选条件下没有结果" : neverAudited ? "台账已导入，等待执行稽核" : "本批次暂未发现问题";
+  const description = filtered ? "可以清空筛选条件查看全部问题，或切换明细与聚合视图。" : neverAudited ? "点击“执行稽核”，系统将按当前启用规则生成问题清单。" : "当前规则范围内没有命中异常；如台账发生变化，可重新执行稽核。";
+  const icon = neverAudited
+    ? '<path d="M12 3 20 6v5c0 5-3.4 8.2-8 10-4.6-1.8-8-5-8-10V6l8-3Z"></path><path d="M12 8v5M12 17h.01"></path>'
+    : '<path d="M12 3 20 6v5c0 5-3.4 8.2-8 10-4.6-1.8-8-5-8-10V6l8-3Z"></path><path d="m8.5 12 2.2 2.2 4.8-5"></path>';
+  wrap.innerHTML = `<div class="rich-empty issue-empty">
+    <span class="rich-empty-icon ${neverAudited ? "" : "is-success"}" aria-hidden="true"><svg viewBox="0 0 24 24">${icon}</svg></span>
+    <p class="eyebrow">${grouped ? "聚合视图" : "稽核结果"}</p><h3>${title}</h3><p>${description}</p>
+    ${filtered ? '<button id="clear-issue-filters" class="secondary-button" type="button">清空筛选</button>' : neverAudited ? '<button id="empty-run-audit" class="primary-button" type="button">执行稽核</button>' : ""}
+  </div>`;
+  document.querySelector("#clear-issue-filters")?.addEventListener("click", async () => {
+    state.issueQuickFilter = "all";
+    state.issueFilters = { city: "", ledger: "", rule: "", status: "" };
+    ["filter-city", "filter-ledger", "filter-rule", "filter-status"].forEach((id) => {
+      const control = document.querySelector(`#${id}`);
+      if (control) control.value = "";
+    });
+    document.querySelectorAll("[data-quick-filter]").forEach((button) => {
+      const active = button.dataset.quickFilter === "all";
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+    await loadIssues();
+  });
+  document.querySelector("#empty-run-audit")?.addEventListener("click", () => document.querySelector("#run-audit")?.click());
 }
 
 function renderIssueTableShell() {
@@ -1177,6 +1279,8 @@ function renderIssuePagination(total, limit, offset) {
   const prev = document.querySelector("#issue-prev-page");
   const next = document.querySelector("#issue-next-page");
   if (!info || !prev || !next) return;
+  const bar = info.closest(".pagination-bar");
+  if (bar) bar.hidden = total <= 0;
   const currentPage = Math.floor(offset / limit) + 1;
   const totalPages = Math.max(1, Math.ceil(total / limit));
   info.textContent = `第 ${currentPage} / ${totalPages} 页，共 ${formatNumber(total)} 条`;
@@ -1435,6 +1539,7 @@ async function renderView(view) {
       escapeHtml,
       formatNumber,
       withBusy,
+      activateView,
     });
   if (view === "towerRentAnalysis")
     return renderTowerRentAnalysis({
@@ -1450,6 +1555,7 @@ async function renderView(view) {
       escapeHtml,
       formatNumber,
       withBusy,
+      activateView,
     });
   if (view === "reports") return renderReports();
   if (view === "settings") return renderSettings({ mainContent, shellHeader });

@@ -8,8 +8,10 @@ import {
   specialistFilterControls,
   specialistFilterQuery,
   specialistPagination,
+  specialistPrerequisite,
   specialistSummary,
-} from "/specialist-analysis-ui.js?v=20260718-1";
+  showSpecialistResults,
+} from "/specialist-analysis-ui.js?v=20260718-2";
 
 const PAGE_SIZE = 24;
 let electricityOffset = 0;
@@ -49,14 +51,14 @@ export async function renderElectricityAnalysis(ctx) {
     <section class="card metric-section">
       <div id="electricity-summary" class="metric-grid"></div>
     </section>
-    <section class="card">
+    <section id="electricity-queue-card" class="card">
       <div id="electricity-queue-heading">${ctx.shellHeader("待处理清单", "电费机会")}</div>
       ${specialistFilterControls("electricity", initialView)}
       ${batchReviewToolbar("electricity")}
       <div id="electricity-opportunity-list" class="analysis-review-list"><div class="empty-state">正在加载</div></div>
       <div id="electricity-pagination" class="pagination-bar" aria-label="电费机会分页"></div>
     </section>
-    <div class="dashboard-grid specialist-breakdowns">
+    <div id="electricity-breakdowns" class="dashboard-grid specialist-breakdowns">
       <section class="card">${ctx.shellHeader("异常分类", "分类")}<div id="electricity-type-breakdown" class="risk-summary"></div></section>
       <section class="card">${ctx.shellHeader("地市排行", "地市")}<div id="electricity-city-ranking" class="risk-summary"></div></section>
     </div>
@@ -109,17 +111,23 @@ async function loadElectricityAnalysisData(ctx) {
     const visibleSummary = summary.analysis_stale
       ? { ...summary, opportunity_count: 0, abnormal_site_count: 0, recoverable_amount: 0, saving_opportunity_amount: 0, high_risk_count: 0, pending_count: 0, returned_count: 0, needs_review_count: 0, closed_count: 0, verified_recoverable_amount: 0, realized_saving_amount: 0, type_breakdown: [], city_rankings: [] }
       : summary;
-    renderSummary(ctx, visibleSummary);
-    renderBreakdown(ctx, visibleSummary);
-    renderRows(ctx, summary.analysis_stale ? [] : list.opportunities || []);
-    bindSpecialistMetricFilters("electricity", () => {
-      electricityOffset = 0;
-      return loadElectricityAnalysisData(ctx);
-    });
-    specialistPagination("electricity", list.total, list.limit, list.offset, (nextOffset) => {
-      electricityOffset = nextOffset;
-      loadElectricityAnalysisData(ctx).then(() => document.querySelector("#electricity-queue-heading")?.scrollIntoView({ block: "start" }));
-    });
+    if (!summary.analysis_generated || summary.analysis_stale) {
+      specialistPrerequisite(ctx, { prefix: "electricity", title: "电费压降分析", ledgerName: "电费台账", summary });
+      specialistPagination("electricity", 0, PAGE_SIZE, 0, () => {});
+    } else {
+      showSpecialistResults("electricity");
+      renderSummary(ctx, visibleSummary);
+      renderBreakdown(ctx, visibleSummary);
+      renderRows(ctx, list.opportunities || []);
+      bindSpecialistMetricFilters("electricity", () => {
+        electricityOffset = 0;
+        return loadElectricityAnalysisData(ctx);
+      });
+      specialistPagination("electricity", list.total, list.limit, list.offset, (nextOffset) => {
+        electricityOffset = nextOffset;
+        loadElectricityAnalysisData(ctx).then(() => document.querySelector("#electricity-queue-heading")?.scrollIntoView({ block: "start" }));
+      });
+    }
     updateElectricityActions(ctx, summary);
   } catch (error) {
     document.querySelector("#electricity-summary").innerHTML = [
