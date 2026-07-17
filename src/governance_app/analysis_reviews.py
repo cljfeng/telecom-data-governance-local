@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import sqlite3
 from collections.abc import Mapping
@@ -19,6 +21,7 @@ ROUTE_TO_STORAGE_DOMAIN = {
 }
 
 ONLINE_REVIEW_STATUSES = {"needs_review", "still_invalid", "closed", "not_required"}
+MAX_BATCH_REVIEW_ITEMS = 200
 
 
 def optional_nonnegative_amount(value: object, label: str) -> float | None:
@@ -60,7 +63,9 @@ def match_opportunity_in_conn(
         """,
         (opportunity_code,),
     ).fetchone()
-    storage_domain = ROUTE_TO_STORAGE_DOMAIN.get(route_domain) if route_domain is not None else None
+    storage_domain = (
+        ROUTE_TO_STORAGE_DOMAIN.get(route_domain) if route_domain is not None else None
+    )
     if (
         row is None
         or (batch_id is not None and row["batch_id"] != batch_id)
@@ -69,7 +74,10 @@ def match_opportunity_in_conn(
         raise ValueError("机会不存在或不属于当前批次专题")
     if not row["source_issue_code"] or row["issue_code"] is None:
         raise ValueError("旧版专题机会缺少来源问题，请先重新运行专题分析")
-    if expected_issue_code is not None and row["source_issue_code"] != expected_issue_code:
+    if (
+        expected_issue_code is not None
+        and row["source_issue_code"] != expected_issue_code
+    ):
         raise ValueError("专题机会与问题编号不匹配")
     if row["domain"] != row["issue_ledger_type"]:
         raise ValueError("专题机会领域与来源问题不匹配")
@@ -203,7 +211,9 @@ def review_summary_in_conn(
         "needs_review_count": int(row["needs_review_count"] or 0),
         "review_count": int(row["review_count"] or 0),
         "closed_count": int(row["closed_count"] or 0),
-        "verified_recoverable_amount": round(float(row["verified_recoverable_amount"] or 0), 2),
+        "verified_recoverable_amount": round(
+            float(row["verified_recoverable_amount"] or 0), 2
+        ),
         "realized_saving_amount": round(float(row["realized_saving_amount"] or 0), 2),
     }
 
@@ -223,25 +233,210 @@ def save_opportunity_review(
     verified = optional_nonnegative_amount(
         payload.get("verified_recoverable_amount"), "核实可追回金额"
     )
-    realized = optional_nonnegative_amount(payload.get("realized_saving_amount"), "实际落实金额")
+    realized = optional_nonnegative_amount(
+        payload.get("realized_saving_amount"), "实际落实金额"
+    )
     note = str(payload.get("review_note") or "").strip()
     with connect(config) as conn:
-        opportunity = match_opportunity_in_conn(
+        saved = _save_opportunity_review_in_conn(
             conn,
+            batch_id,
+            route_domain,
             opportunity_code,
-            batch_id=batch_id,
-            route_domain=route_domain,
-        )
-        update_issue_status_in_conn(
-            conn,
-            opportunity["source_issue_code"],
             cast(IssueStatus, status),
-            source="analysis_review",
-            event_note=f"保存专题核查：{opportunity_code}",
-            correction_note=note,
-            update_correction_note=True,
+            verified,
+            realized,
+            note,
         )
-        upsert_review_in_conn(conn, opportunity, verified, realized, note)
+        opportunity = saved["opportunity"]
         if opportunity["batch_status"] in {"distributed", "returning"}:
             transition_batch_in_conn(conn, batch_id, "correction_return")
-        return load_review_payload_in_conn(conn, opportunity_code)
+        return saved["review"]
+
+
+def _save_opportunity_review_in_conn(
+    conn: sqlite3.Connection,
+    batch_id: int,
+    route_domain: str,
+    opportunity_code: str,
+    status: IssueStatus,
+    verified: float | None,
+    realized: float | None,
+    note: str,
+) -> dict[str, Any]:
+    opportunity = match_opportunity_in_conn(
+        conn,
+        opportunity_code,
+        batch_id=batch_id,
+        route_domain=route_domain,
+    )
+    update_issue_status_in_conn(
+        conn,
+        opportunity["source_issue_code"],
+        status,
+        source="analysis_review",
+        event_note=f"保存专题核查：{opportunity_code}",
+        correction_note=note,
+        update_correction_note=True,
+    )
+    upsert_review_in_conn(conn, opportunity, verified, realized, note)
+    return {
+        "opportunity": opportunity,
+        "review": load_review_payload_in_conn(conn, opportunity_code),
+    }
+
+
+def preview_batch_opportunity_reviews(
+    config: AppConfig,
+    batch_id: int,
+    route_domain: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    with connect(config) as conn:
+        return _batch_review_preview_in_conn(conn, batch_id, route_domain, payload)
+
+
+def _batch_review_preview_in_conn(
+    conn: sqlite3.Connection,
+    batch_id: int,
+    route_domain: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    status = payload.get("status")
+    if status not in ONLINE_REVIEW_STATUSES:
+        raise ValueError("批量核查状态无效")
+    note = str(payload.get("review_note") or "").strip()
+    if not note:
+        raise ValueError("批量核查说明不能为空")
+    if len(note) > 500:
+        raise ValueError("批量核查说明不能超过 500 字")
+    raw_codes = payload.get("opportunity_codes")
+    if not isinstance(raw_codes, list):
+        raise ValueError("请选择需要批量处理的专题记录")
+    codes = list(
+        dict.fromkeys(
+            str(code or "").strip() for code in raw_codes if str(code or "").strip()
+        )
+    )
+    if not codes:
+        raise ValueError("请选择需要批量处理的专题记录")
+    if len(codes) > MAX_BATCH_REVIEW_ITEMS:
+        raise ValueError(f"单次最多批量处理 {MAX_BATCH_REVIEW_ITEMS} 条记录")
+    batch = conn.execute(
+        "select is_archived from import_batches where id = ?", (batch_id,)
+    ).fetchone()
+    if batch is None:
+        raise ValueError("批次不存在")
+    if batch["is_archived"]:
+        raise ValueError("批次已归档，不能批量修改专题核查结果")
+
+    eligible: list[dict[str, Any]] = []
+    blocked: list[dict[str, str]] = []
+    for code in codes:
+        try:
+            opportunity = match_opportunity_in_conn(
+                conn, code, batch_id=batch_id, route_domain=route_domain
+            )
+        except ValueError as exc:
+            blocked.append({"opportunity_code": code, "error": str(exc)})
+            continue
+        eligible.append(
+            {
+                "opportunity_code": code,
+                "issue_code": opportunity["source_issue_code"],
+                "current_status": opportunity["issue_status"],
+            }
+        )
+    signature_payload = {
+        "batch_id": batch_id,
+        "route_domain": route_domain,
+        "status": status,
+        "review_note": note,
+        "eligible": eligible,
+        "blocked": blocked,
+    }
+    signature = hashlib.sha256(
+        json.dumps(signature_payload, ensure_ascii=False, sort_keys=True).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    return {
+        "selected_count": len(codes),
+        "eligible_count": len(eligible),
+        "blocked_count": len(blocked),
+        "target_status": status,
+        "eligible": eligible,
+        "blocked": blocked,
+        "preview_signature": signature,
+    }
+
+
+def save_batch_opportunity_reviews(
+    config: AppConfig,
+    batch_id: int,
+    route_domain: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    if payload.get("confirmed") is not True:
+        raise ValueError("请先预览影响并确认批量操作")
+    supplied_signature = str(payload.get("preview_signature") or "")
+    with connect(config) as conn:
+        preview = _batch_review_preview_in_conn(conn, batch_id, route_domain, payload)
+        if not supplied_signature or supplied_signature != preview["preview_signature"]:
+            raise ValueError("所选记录或状态已变化，请重新预览后确认")
+        if not preview["eligible_count"]:
+            raise ValueError("所选记录均无法批量处理")
+
+        status = cast(IssueStatus, payload["status"])
+        note = str(payload.get("review_note") or "").strip()
+        succeeded: list[dict[str, Any]] = []
+        failed = list(preview["blocked"])
+        for index, item in enumerate(preview["eligible"]):
+            savepoint = f"batch_review_{index}"
+            conn.execute(f"savepoint {savepoint}")
+            try:
+                saved = _save_opportunity_review_in_conn(
+                    conn,
+                    batch_id,
+                    route_domain,
+                    item["opportunity_code"],
+                    status,
+                    None,
+                    None,
+                    note,
+                )
+                conn.execute(f"release savepoint {savepoint}")
+                succeeded.append(saved["review"])
+            except (ValueError, sqlite3.Error) as exc:
+                conn.execute(f"rollback to savepoint {savepoint}")
+                conn.execute(f"release savepoint {savepoint}")
+                failed.append(
+                    {"opportunity_code": item["opportunity_code"], "error": str(exc)}
+                )
+
+        if succeeded:
+            batch_status = conn.execute(
+                "select status from import_batches where id = ?", (batch_id,)
+            ).fetchone()["status"]
+            if batch_status in {"distributed", "returning"}:
+                transition_batch_in_conn(conn, batch_id, "correction_return")
+        failure_excerpt = "；".join(
+            f"{item['opportunity_code']}（{item['error']}）" for item in failed[:10]
+        )
+        message = (
+            f"批量专题核查：目标状态 {status}，选择 {preview['selected_count']} 条，"
+            f"成功 {len(succeeded)} 条，失败 {len(failed)} 条"
+        )
+        if failure_excerpt:
+            message += f"；失败明细：{failure_excerpt}"
+        conn.execute(
+            "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
+            (batch_id, "batch_analysis_review", message),
+        )
+        return {
+            "selected_count": preview["selected_count"],
+            "success_count": len(succeeded),
+            "failed_count": len(failed),
+            "succeeded": succeeded,
+            "failed": failed,
+        }

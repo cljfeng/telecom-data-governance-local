@@ -113,6 +113,41 @@ def test_analysis_handler_saves_review_for_both_specialist_domains(app_config):
         assert payload["realized_saving_amount"] == 800.0
 
 
+def test_analysis_handler_previews_and_executes_batch_review(app_config):
+    batch_id, opportunities = _review_batch(app_config)
+    payload = {
+        "opportunity_codes": [opportunities["electricity"]],
+        "status": "closed",
+        "review_note": "批量核实完成",
+    }
+    preview_response = _handler()(
+        app_config,
+        "POST",
+        urlparse(f"/api/batches/{batch_id}/electricity-analysis/review-batch-preview"),
+        json.dumps(payload),
+    )
+
+    assert preview_response[0] == 200
+    preview = json.loads(preview_response[2])
+    assert preview["eligible_count"] == 1
+
+    save_response = _handler()(
+        app_config,
+        "POST",
+        urlparse(f"/api/batches/{batch_id}/electricity-analysis/review-batch"),
+        json.dumps(
+            {
+                **payload,
+                "confirmed": True,
+                "preview_signature": preview["preview_signature"],
+            }
+        ),
+    )
+
+    assert save_response[0] == 200
+    assert json.loads(save_response[2])["success_count"] == 1
+
+
 def test_analysis_handler_rejects_invalid_review_json(app_config):
     batch_id, _ = _review_batch(app_config)
 

@@ -40,6 +40,29 @@ def test_shared_review_module_exposes_complete_review_form_contract():
     assert "旧版专题机会，请先重新运行专题分析后再闭环" in shared
 
 
+def test_third_phase_exposes_accessible_batch_review_contract():
+    shared = _read("analysis-review.js")
+    electricity = _read("electricity-analysis.js")
+    tower_rent = _read("tower-rent-analysis.js")
+    styles = _read("styles.css")
+
+    for contract in ("batchReviewToolbar", "bindBatchReview"):
+        assert f"export function {contract}" in shared
+    assert "全选当前列表" in shared
+    assert "预览批量操作" in shared
+    assert "review-batch-preview" in shared
+    assert "preview_signature" in shared
+    assert 'aria-live="assertive"' in shared
+    assert "errorBox.focus()" in shared
+    assert "selectAll.indeterminate" in shared
+    assert "dialog.showModal()" in shared
+    for page in (electricity, tower_rent):
+        assert "batchReviewToolbar" in page
+        assert "bindBatchReview" in page
+    assert ".analysis-review-card.is-selected" in styles
+    assert ".batch-review-dialog::backdrop" in styles
+
+
 def test_issue_status_labels_are_unique_and_shared_by_analysis_pages():
     catalog = _read("issue-status.js")
     shared = _read("analysis-review.js")

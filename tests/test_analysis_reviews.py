@@ -7,8 +7,10 @@ from governance_app.analysis_reviews import (
     load_review_payload_in_conn,
     match_opportunity_in_conn,
     optional_nonnegative_amount,
+    preview_batch_opportunity_reviews,
     review_payload_fields,
     review_summary_in_conn,
+    save_batch_opportunity_reviews,
     save_opportunity_review,
     sync_existing_review_note_in_conn,
     upsert_review_in_conn,
@@ -139,6 +141,112 @@ def test_save_opportunity_review_persists_status_amounts_note_and_estimates(
         ).fetchone()
     assert tuple(review) == tuple(opportunity)
     assert tuple(event) == ("analysis_review", f"保存专题核查：{opportunity_code}")
+
+
+def test_batch_review_previews_impact_and_reports_partial_success(
+    app_config, sample_workbook
+):
+    batch_id, opportunity_code, issue_code = _electricity_opportunity(app_config, sample_workbook)
+    payload = {
+        "opportunity_codes": [opportunity_code, "missing-opportunity", opportunity_code],
+        "status": "closed",
+        "review_note": "批量核对账单与退款凭证",
+    }
+
+    preview = preview_batch_opportunity_reviews(
+        app_config, batch_id, "electricity-analysis", payload
+    )
+
+    assert preview["selected_count"] == 2
+    assert preview["eligible_count"] == 1
+    assert preview["blocked_count"] == 1
+    assert preview["eligible"][0]["issue_code"] == issue_code
+    assert preview["blocked"][0]["opportunity_code"] == "missing-opportunity"
+    assert len(preview["preview_signature"]) == 64
+
+    saved = save_batch_opportunity_reviews(
+        app_config,
+        batch_id,
+        "electricity-analysis",
+        {
+            **payload,
+            "confirmed": True,
+            "preview_signature": preview["preview_signature"],
+        },
+    )
+
+    assert saved["selected_count"] == 2
+    assert saved["success_count"] == 1
+    assert saved["failed_count"] == 1
+    assert saved["succeeded"][0]["issue_status"] == "closed"
+    assert saved["failed"][0]["opportunity_code"] == "missing-opportunity"
+    with connect(app_config) as conn:
+        issue = conn.execute(
+            "select status, correction_note from issues where issue_code = ?", (issue_code,)
+        ).fetchone()
+        operation = conn.execute(
+            "select operation, message from operation_logs where batch_id = ? order by id desc limit 1",
+            (batch_id,),
+        ).fetchone()
+    assert tuple(issue) == ("closed", "批量核对账单与退款凭证")
+    assert operation["operation"] == "batch_analysis_review"
+    assert "成功 1 条，失败 1 条" in operation["message"]
+
+
+def test_batch_review_requires_confirmation_and_fresh_preview(
+    app_config, sample_workbook
+):
+    batch_id, opportunity_code, issue_code = _electricity_opportunity(app_config, sample_workbook)
+    payload = {
+        "opportunity_codes": [opportunity_code],
+        "status": "needs_review",
+        "review_note": "统一复核说明",
+    }
+    preview = preview_batch_opportunity_reviews(
+        app_config, batch_id, "electricity-analysis", payload
+    )
+
+    with pytest.raises(ValueError, match="先预览影响"):
+        save_batch_opportunity_reviews(
+            app_config, batch_id, "electricity-analysis", payload
+        )
+
+    with connect(app_config) as conn:
+        conn.execute(
+            "update issues set status = 'returned' where issue_code = ?", (issue_code,)
+        )
+    with pytest.raises(ValueError, match="状态已变化"):
+        save_batch_opportunity_reviews(
+            app_config,
+            batch_id,
+            "electricity-analysis",
+            {
+                **payload,
+                "confirmed": True,
+                "preview_signature": preview["preview_signature"],
+            },
+        )
+
+
+def test_batch_review_rejects_archived_batch(app_config, sample_workbook):
+    batch_id, opportunity_code, _ = _electricity_opportunity(app_config, sample_workbook)
+    with connect(app_config) as conn:
+        conn.execute(
+            "update import_batches set status = 'archived', is_archived = 1 where id = ?",
+            (batch_id,),
+        )
+
+    with pytest.raises(ValueError, match="已归档"):
+        preview_batch_opportunity_reviews(
+            app_config,
+            batch_id,
+            "electricity-analysis",
+            {
+                "opportunity_codes": [opportunity_code],
+                "status": "closed",
+                "review_note": "归档后不应修改",
+            },
+        )
 
 
 def test_blank_amount_preserves_existing_value_while_zero_overwrites(

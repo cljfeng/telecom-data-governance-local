@@ -5,8 +5,8 @@ import { renderLedgerData } from "/ledger-data.js?v=20260517-1";
 import { renderRules } from "/rules.js?v=20260517-1";
 import { renderSettings } from "/settings.js?v=20260517-1";
 import { renderAnalytics } from "/analytics.js?v=20260517-1";
-import { renderElectricityAnalysis } from "/electricity-analysis.js?v=20260717-2";
-import { renderTowerRentAnalysis } from "/tower-rent-analysis.js?v=20260717-2";
+import { renderElectricityAnalysis } from "/electricity-analysis.js?v=20260717-3";
+import { renderTowerRentAnalysis } from "/tower-rent-analysis.js?v=20260717-3";
 import { issueStatusLabel, issueStatusOptions } from "/issue-status.js?v=20260717-1";
 
 const views = {

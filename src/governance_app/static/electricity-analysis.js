@@ -1,5 +1,5 @@
 import { fetchJson, postJson } from "/api.js?v=20260712-1";
-import { bindReviewForms, reviewForm } from "/analysis-review.js?v=20260712-1";
+import { batchReviewToolbar, bindBatchReview, bindReviewForms, reviewForm } from "/analysis-review.js?v=20260717-3";
 import { issueStatusLabel } from "/issue-status.js?v=20260717-1";
 import {
   bindSpecialistMetricFilters,
@@ -44,6 +44,7 @@ export async function renderElectricityAnalysis(ctx) {
     <section class="card">
       <div id="electricity-queue-heading">${ctx.shellHeader("待处理清单", "电费机会")}</div>
       ${specialistFilterControls("electricity", initialView)}
+      ${batchReviewToolbar("electricity")}
       <div id="electricity-opportunity-list" class="analysis-review-list"><div class="empty-state">正在加载</div></div>
     </section>
     <div class="dashboard-grid specialist-breakdowns">
@@ -210,4 +211,5 @@ function renderRows(ctx, rows) {
     )
     .join("");
   bindReviewForms(ctx, "electricity-analysis", () => loadElectricityAnalysisData(ctx));
+  bindBatchReview(ctx, "electricity-analysis", "electricity", () => loadElectricityAnalysisData(ctx));
 }

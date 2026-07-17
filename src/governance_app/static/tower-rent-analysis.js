@@ -1,5 +1,5 @@
 import { fetchJson, postJson } from "/api.js?v=20260712-1";
-import { bindReviewForms, reviewForm } from "/analysis-review.js?v=20260712-1";
+import { batchReviewToolbar, bindBatchReview, bindReviewForms, reviewForm } from "/analysis-review.js?v=20260717-3";
 import { issueStatusLabel } from "/issue-status.js?v=20260717-1";
 import {
   bindSpecialistMetricFilters,
@@ -44,6 +44,7 @@ export async function renderTowerRentAnalysis(ctx) {
     <section class="card">
       <div id="tower-rent-queue-heading">${ctx.shellHeader("待处理清单", "租费线索")}</div>
       ${specialistFilterControls("tower-rent", initialView)}
+      ${batchReviewToolbar("tower-rent")}
       <div id="tower-rent-clue-list" class="analysis-review-list"><div class="empty-state">正在加载</div></div>
     </section>
     <div class="dashboard-grid specialist-breakdowns">
@@ -213,4 +214,5 @@ function renderRows(ctx, rows) {
     )
     .join("");
   bindReviewForms(ctx, "tower-rent-analysis", () => loadTowerRentAnalysisData(ctx));
+  bindBatchReview(ctx, "tower-rent-analysis", "tower-rent", () => loadTowerRentAnalysisData(ctx));
 }
