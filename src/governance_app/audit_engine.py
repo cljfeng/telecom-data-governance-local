@@ -38,6 +38,12 @@ def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
             raise ValueError("batch not found")
         if batch["is_archived"]:
             raise ValueError("batch is archived")
+        ledger_count = conn.execute(
+            "select count(*) as c from ledger_rows where batch_id = ?",
+            (batch_id,),
+        ).fetchone()["c"]
+        if not ledger_count:
+            raise ValueError("当前批次没有台账数据，请先导入台账再执行稽核")
         audit_run_id = conn.execute(
             "insert into audit_runs(batch_id, rule_count) values (?, ?)",
             (batch_id, len(rules) + len(batch_rules)),

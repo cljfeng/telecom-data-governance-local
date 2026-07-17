@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from openpyxl import load_workbook
 
 from governance_app.analysis_reviews import save_opportunity_review
@@ -207,8 +208,17 @@ def test_tower_rent_summary_groups_amounts(app_config):
     assert summary["total_rent_amount"] == 1350
     assert summary["recoverable_amount"] > 0
     assert summary["review_amount"] > 0
+    assert summary["analysis_generated"] is True
     assert isinstance(summary["city_rankings"], list)
     assert isinstance(summary["type_breakdown"], list)
+
+
+def test_tower_rent_export_requires_generated_analysis(app_config):
+    batch_id = _audited_tower_batch(app_config)
+
+    assert get_tower_rent_summary(app_config, batch_id)["analysis_generated"] is False
+    with pytest.raises(ValueError, match="请先生成租费异常分析"):
+        export_tower_rent_clues(app_config, batch_id)
 
 
 def test_tower_rent_clue_filters(app_config):

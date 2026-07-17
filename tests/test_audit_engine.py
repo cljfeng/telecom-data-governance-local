@@ -34,6 +34,24 @@ def test_run_audit_generates_issue_for_invalid_electricity_price(app_config, sam
         assert issue["status"] == "pending_export"
 
 
+def test_run_audit_rejects_batch_without_ledger_rows(app_config):
+    initialize_database(app_config)
+    with connect(app_config) as conn:
+        batch_id = conn.execute(
+            "insert into import_batches(source_file, name, status) values ('', '空批次', 'created')"
+        ).lastrowid
+
+    try:
+        run_audit(app_config, batch_id)
+    except ValueError as exc:
+        assert str(exc) == "当前批次没有台账数据，请先导入台账再执行稽核"
+    else:
+        raise AssertionError("空批次不应允许执行稽核")
+
+    with connect(app_config) as conn:
+        assert conn.execute("select count(*) as c from audit_runs").fetchone()["c"] == 0
+
+
 def test_run_audit_stores_structured_finding_context(app_config, sample_workbook):
     initialize_database(app_config)
     result = import_workbook(app_config, sample_workbook)

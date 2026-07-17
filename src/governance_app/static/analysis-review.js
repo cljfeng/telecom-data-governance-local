@@ -1,15 +1,5 @@
 import { postJson } from "/api.js?v=20260712-1";
-
-const STATUS_OPTIONS = [
-  ["pending_export", "待导出"],
-  ["pending_correction", "待整改"],
-  ["returned", "待复核"],
-  ["needs_review", "待复核"],
-  ["still_invalid", "仍不合规"],
-  ["closed", "已闭环"],
-  ["not_required", "无需整改"],
-  ["resolved_by_reaudit", "复审已解决"],
-];
+import { issueStatusLabel, issueStatusOptions } from "/issue-status.js?v=20260717-1";
 
 function escapeAttribute(ctx, value) {
   return ctx.escapeHtml(String(value ?? ""));
@@ -19,18 +9,8 @@ function amountValue(ctx, value) {
   return value === null || value === undefined ? "" : escapeAttribute(ctx, value);
 }
 
-function statusLabel(status) {
-  return new Map(STATUS_OPTIONS).get(status) || "待处理";
-}
-
 export function statusOptions(selected = "") {
-  return [
-    '<option value="">全部状态</option>',
-    ...STATUS_OPTIONS.map(
-      ([value, label]) =>
-        `<option value="${value}"${value === selected ? " selected" : ""}>${label}</option>`,
-    ),
-  ].join("");
+  return issueStatusOptions(selected);
 }
 
 export function reviewForm(ctx, row) {
@@ -50,7 +30,7 @@ export function reviewForm(ctx, row) {
           <span class="analysis-review-kicker">核查处理</span>
           <strong>记录最终认定与落实结果</strong>
         </div>
-        <span class="analysis-review-status">${escapeAttribute(ctx, statusLabel(row.issue_status))}</span>
+        <span class="analysis-review-status">${escapeAttribute(ctx, issueStatusLabel(row.issue_status))}</span>
       </div>
       <div class="analysis-review-fields">
         <label>
@@ -67,9 +47,9 @@ export function reviewForm(ctx, row) {
         <textarea name="review_note" rows="3" placeholder="填写核查依据、退款进展或无需整改原因">${escapeAttribute(ctx, note)}</textarea>
       </label>
       <div class="analysis-review-actions">
-        <button class="review-action review-action-review" type="submit" data-status="needs_review">待复核</button>
-        <button class="review-action review-action-close" type="submit" data-status="closed">已闭环</button>
-        <button class="review-action review-action-invalid" type="submit" data-status="still_invalid">仍不合规</button>
+        <button class="review-action review-action-review" type="submit" data-status="needs_review">提交人工复核</button>
+        <button class="review-action review-action-close" type="submit" data-status="closed">确认闭环</button>
+        <button class="review-action review-action-invalid" type="submit" data-status="still_invalid">仍需整改</button>
         <button class="review-action review-action-muted" type="submit" data-status="not_required">无需整改</button>
       </div>
       <p class="analysis-review-error" role="alert" aria-live="polite"></p>

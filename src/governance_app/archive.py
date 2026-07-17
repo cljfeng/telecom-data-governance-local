@@ -9,6 +9,7 @@ from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
 from governance_app.db import connect
 from governance_app.exporter import excel_safe
+from governance_app.issue_status import issue_status_label
 from governance_app.rule_settings import load_rule_settings
 from governance_app.version import version_payload
 from governance_app.workflow import city_progress, transition_batch_in_conn
@@ -508,13 +509,4 @@ def _rule_category_label(value: str | None) -> str:
 
 
 def _status_label(value: str | None) -> str:
-    return {
-        "pending_export": "待导出",
-        "pending_correction": "待整改",
-        "returned": "已回传",
-        "still_invalid": "仍异常",
-        "needs_review": "待复核",
-        "closed": "已关闭",
-        "not_required": "无需整改",
-        "resolved_by_reaudit": "复核稽核已解除",
-    }.get(str(value or ""), str(value or "未知"))
+    return issue_status_label(value)

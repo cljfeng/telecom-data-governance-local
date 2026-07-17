@@ -298,7 +298,7 @@ def test_archive_batch_preserves_reviewed_opportunity_after_derived_row_is_delet
     assert ws["A2"].value == imported.batch_id
     assert ws["B2"].value == "电费压降"
     assert ws["C2"].value == opportunity_code
-    assert ws["F2"].value == "已关闭"
+    assert ws["F2"].value == "已确认闭环"
     assert ws["L2"].value == 1200.5
     assert ws["N2"].value == "'=HYPERLINK(\"http://bad\")"
     assert ws["N2"].data_type == "s"

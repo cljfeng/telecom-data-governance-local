@@ -36,6 +36,36 @@ def test_shared_review_module_exposes_complete_review_form_contract():
     assert "旧版专题机会，请先重新运行专题分析后再闭环" in shared
 
 
+def test_issue_status_labels_are_unique_and_shared_by_analysis_pages():
+    catalog = _read("issue-status.js")
+    shared = _read("analysis-review.js")
+    electricity = _read("electricity-analysis.js")
+    tower_rent = _read("tower-rent-analysis.js")
+
+    assert '["returned", "已回传待确认"]' in catalog
+    assert '["needs_review", "待人工复核"]' in catalog
+    assert catalog.count("待人工复核") == 1
+    assert "issueStatusOptions" in shared
+    assert "issueStatusLabel" in electricity
+    assert "issueStatusLabel" in tower_rent
+    assert 'returned: "待复核"' not in electricity + tower_rent
+
+
+def test_first_phase_actions_expose_prerequisite_gates():
+    app = _read("app.js")
+    electricity = _read("electricity-analysis.js")
+    tower_rent = _read("tower-rent-analysis.js")
+
+    assert "approvedPreviewSignature" in app
+    assert "请先完成模板预检" in app
+    assert "覆盖当前批次将替换" in app
+    assert "当前批次还没有台账，请先完成数据导入" in app
+    assert "请先完成当前批次稽核，再导出整改包" in app
+    for page in (electricity, tower_rent):
+        assert "analysis_generated" in page
+        assert "disabled aria-describedby" in page
+
+
 def test_review_cards_collapse_to_one_column_on_mobile():
     styles = _read("styles.css")
 

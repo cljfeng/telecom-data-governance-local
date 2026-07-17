@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from openpyxl import load_workbook
 
 from governance_app.analysis_reviews import save_opportunity_review
@@ -133,8 +134,17 @@ def test_electricity_summary_groups_amounts(app_config, sample_workbook):
     assert summary["total_electricity_amount"] == 300
     assert summary["recoverable_amount"] > 0
     assert summary["saving_opportunity_amount"] > 0
+    assert summary["analysis_generated"] is True
     assert isinstance(summary["city_rankings"], list)
     assert isinstance(summary["type_breakdown"], list)
+
+
+def test_electricity_export_requires_generated_analysis(app_config, sample_workbook):
+    batch_id = _import_and_audit(app_config, sample_workbook)
+
+    assert get_electricity_summary(app_config, batch_id)["analysis_generated"] is False
+    with pytest.raises(ValueError, match="请先生成电费压降分析"):
+        export_electricity_opportunities(app_config, batch_id)
 
 
 def test_electricity_opportunity_filters(app_config, sample_workbook):

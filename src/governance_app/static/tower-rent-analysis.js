@@ -1,5 +1,6 @@
 import { fetchJson, postJson } from "/api.js?v=20260712-1";
 import { bindReviewForms, reviewForm, statusOptions } from "/analysis-review.js?v=20260712-1";
+import { issueStatusLabel } from "/issue-status.js?v=20260717-1";
 
 function money(value) {
   const number = Number(value || 0);
@@ -9,19 +10,6 @@ function money(value) {
 function optionRows(rows, field, label) {
   const values = [...new Set(rows.map((row) => row[field]).filter(Boolean))];
   return [`<option value="">全部${label}</option>`, ...values.map((value) => `<option value="${value}">${value}</option>`)].join("");
-}
-
-function statusLabel(status) {
-  return {
-    pending_export: "待导出",
-    pending_correction: "待整改",
-    returned: "待复核",
-    needs_review: "待复核",
-    still_invalid: "仍不合规",
-    closed: "已闭环",
-    not_required: "无需整改",
-    resolved_by_reaudit: "复审已解决",
-  }[status] || "待处理";
 }
 
 export async function renderTowerRentAnalysis(ctx) {
@@ -35,10 +23,11 @@ export async function renderTowerRentAnalysis(ctx) {
     <section class="card">
       ${ctx.shellHeader("租费异常分析", `${batch.batch_code || `#${batch.id}`} ${batch.name}`, ctx.renderBatchSelector())}
       <div class="button-row">
-        <button id="run-tower-rent-analysis" class="primary-button" type="button">生成分析</button>
-        <button id="export-tower-rent-analysis" class="secondary-button" type="button">导出 Excel</button>
+        <button id="run-tower-rent-analysis" class="primary-button" type="button" disabled aria-describedby="tower-rent-analysis-gate">生成分析</button>
+        <button id="export-tower-rent-analysis" class="secondary-button" type="button" disabled aria-describedby="tower-rent-analysis-gate">导出 Excel</button>
       </div>
-      <div id="tower-rent-analysis-result" class="result-box">可先生成分析，再查看异常线索清单。</div>
+      <div id="tower-rent-analysis-result" class="result-box">正在检查当前批次是否可以生成分析。</div>
+      <p id="tower-rent-analysis-gate" class="field-hint">正在检查前置条件。</p>
     </section>
     <section class="card metric-section">
       <div id="tower-rent-summary" class="metric-grid"></div>
@@ -108,6 +97,7 @@ async function loadTowerRentAnalysisData(ctx) {
     renderSummary(ctx, summary);
     renderBreakdown(ctx, summary);
     renderRows(ctx, list.opportunities || []);
+    updateTowerRentActions(ctx, summary);
   } catch (error) {
     document.querySelector("#tower-rent-summary").innerHTML = [
       ctx.metricCard("租费总额", 0, "等待分析", "info"),
@@ -116,12 +106,35 @@ async function loadTowerRentAnalysisData(ctx) {
       ctx.metricCard("优惠落实金额", 0, "等待分析", "success"),
       ctx.metricCard("待核查金额", 0, "等待分析", "review"),
       ctx.metricCard("待处理", 0, "等待分析", "warning"),
-      ctx.metricCard("待复核", 0, "等待分析", "review"),
-      ctx.metricCard("已闭环", 0, "等待分析", "success"),
+      ctx.metricCard("待人工复核", 0, "等待分析", "review"),
+      ctx.metricCard("已确认闭环", 0, "等待分析", "success"),
       ctx.metricCard("核实可追回", 0, "等待分析", "danger"),
       ctx.metricCard("实际落实", 0, "等待分析", "success"),
     ].join("");
     document.querySelector("#tower-rent-clue-list").innerHTML = `<div class="empty-state">${ctx.escapeHtml(error.message)}</div>`;
+  }
+}
+
+function updateTowerRentActions(ctx, summary) {
+  const batch = ctx.currentBatch();
+  const runButton = document.querySelector("#run-tower-rent-analysis");
+  const exportButton = document.querySelector("#export-tower-rent-analysis");
+  const hint = document.querySelector("#tower-rent-analysis-gate");
+  const result = document.querySelector("#tower-rent-analysis-result");
+  const allowedStatus = ["audited", "distributed", "returning"].includes(batch?.status);
+  const canRun = Boolean(batch && !batch.is_archived && allowedStatus && Number(summary.ledger_row_count || 0) > 0);
+  runButton.disabled = !canRun;
+  exportButton.disabled = !canRun || !summary.analysis_generated;
+  if (batch?.is_archived) hint.textContent = "当前批次已归档，不能重新生成或导出专题分析。";
+  else if (!allowedStatus) hint.textContent = "请先完成台账导入和稽核，再生成租费异常分析。";
+  else if (!Number(summary.ledger_row_count || 0)) hint.textContent = "当前批次没有铁塔租费台账，请先导入铁塔租费台账。";
+  else if (!summary.analysis_generated) hint.textContent = "可以生成分析；生成完成后才能导出 Excel。";
+  else hint.textContent = "分析已生成，可以重新生成或导出 Excel。";
+  if (result.className === "result-box") {
+    result.textContent = summary.analysis_generated ? "租费异常分析已生成。" : hint.textContent;
+  }
+  if (!summary.analysis_generated && !canRun) {
+    document.querySelector("#tower-rent-clue-list").innerHTML = `<div class="empty-state">${ctx.escapeHtml(hint.textContent)}</div>`;
   }
 }
 
@@ -133,8 +146,8 @@ function renderSummary(ctx, summary) {
     ctx.metricCard("优惠落实金额", summary.discount_realization_amount, "共享折扣等优惠线索", "success"),
     ctx.metricCard("待核查金额", summary.review_amount, `高风险 ${ctx.formatNumber(summary.high_risk_count)} 条`, "review"),
     ctx.metricCard("待处理", summary.pending_count, "等待整改或再次核验", "warning"),
-    ctx.metricCard("待复核", summary.review_count, "已返回核查结果", "review"),
-    ctx.metricCard("已闭环", summary.closed_count, "含无需整改与复审解决", "success"),
+    ctx.metricCard("待人工复核", summary.review_count, "已填写核查信息", "review"),
+    ctx.metricCard("已确认闭环", summary.closed_count, "含无需整改与复审解决", "success"),
     ctx.metricCard("核实可追回", summary.verified_recoverable_amount, "以核查认定为准", "danger"),
     ctx.metricCard("实际落实", summary.realized_saving_amount, "已退款或已完成优化", "success"),
   ].join("");
@@ -171,7 +184,7 @@ function renderRows(ctx, rows) {
                 <span class="analysis-review-kicker">${ctx.escapeHtml(row.opportunity_type || "租费线索")}</span>
                 <h3>${ctx.escapeHtml(row.telecom_site_name || row.telecom_site_code || "未命名站址")}</h3>
               </div>
-              <span class="analysis-status analysis-status-${ctx.escapeHtml(row.issue_status || "legacy")}">${ctx.escapeHtml(statusLabel(row.issue_status))}</span>
+              <span class="analysis-status analysis-status-${ctx.escapeHtml(row.issue_status || "legacy")}">${ctx.escapeHtml(issueStatusLabel(row.issue_status))}</span>
             </div>
             <dl class="analysis-review-meta">
               <div><dt>问题编号</dt><dd>${ctx.escapeHtml(row.issue_code || "未关联来源问题")}</dd></div>

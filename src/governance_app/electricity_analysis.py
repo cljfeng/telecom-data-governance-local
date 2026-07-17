@@ -48,7 +48,7 @@ def run_electricity_analysis(config: AppConfig, batch_id: int) -> dict[str, int]
             raise ValueError("批次不存在")
         if batch["is_archived"]:
             raise ValueError("归档批次不允许刷新电费压降分析")
-        if batch["status"] not in {"audited", "exported", "returned", "archived"}:
+        if batch["status"] not in {"audited", "distributed", "returning"}:
             raise ValueError("请先执行稽核，再生成电费压降分析")
         electricity_count = conn.execute(
             "select count(*) as c from ledger_rows where batch_id = ? and ledger_type = 'electricity'",
@@ -153,6 +153,12 @@ def get_electricity_summary(config: AppConfig, batch_id: int) -> dict[str, Any]:
             "recoverable_amount": round(float(amount_row["recoverable_amount"] or 0), 2),
             "saving_opportunity_amount": round(float(amount_row["saving_opportunity_amount"] or 0), 2),
             "high_risk_count": int(amount_row["high_risk_count"] or 0),
+            "analysis_generated": bool(
+                conn.execute(
+                    "select 1 from operation_logs where batch_id = ? and operation = 'electricity_analysis' limit 1",
+                    (batch_id,),
+                ).fetchone()
+            ),
             "city_rankings": _city_rankings(conn, batch_id),
             "type_breakdown": _type_breakdown(conn, batch_id),
         }
@@ -193,6 +199,8 @@ def get_electricity_opportunities(config: AppConfig, batch_id: int, filters: dic
 
 def export_electricity_opportunities(config: AppConfig, batch_id: int) -> Path:
     summary = get_electricity_summary(config, batch_id)
+    if not summary["analysis_generated"]:
+        raise ValueError("请先生成电费压降分析，再导出 Excel")
     opportunities = get_electricity_opportunities(config, batch_id)
     config.export_dir.mkdir(parents=True, exist_ok=True)
     path = config.export_dir / f"批次{batch_id}_电费压降机会清单.xlsx"

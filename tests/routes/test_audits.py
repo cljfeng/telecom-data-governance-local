@@ -3,7 +3,8 @@ import importlib.util
 import json
 from urllib.parse import urlparse
 
-from governance_app.db import connect, initialize_database
+from governance_app.db import initialize_database
+from governance_app.importer import import_workbook
 
 
 def _handler():
@@ -11,12 +12,16 @@ def _handler():
     return importlib.import_module("governance_app.routes.audits").handle_audit_route
 
 
-def test_audit_handler_runs_audit(app_config):
+def test_audit_handler_runs_audit(app_config, sample_workbook):
     initialize_database(app_config)
-    with connect(app_config) as conn:
-        conn.execute("insert into import_batches(source_file, name, status) values ('test.xlsx', 'test', 'imported')")
+    imported = import_workbook(app_config, sample_workbook)
 
-    response = _handler()(app_config, "POST", urlparse("/api/audit"), json.dumps({"batch_id": 1}))
+    response = _handler()(
+        app_config,
+        "POST",
+        urlparse("/api/audit"),
+        json.dumps({"batch_id": imported.batch_id}),
+    )
 
     assert response[0] == 200
     assert json.loads(response[2])["audit_run_id"] == 1

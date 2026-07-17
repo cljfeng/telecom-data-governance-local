@@ -7,6 +7,7 @@ import { renderSettings } from "/settings.js?v=20260517-1";
 import { renderAnalytics } from "/analytics.js?v=20260517-1";
 import { renderElectricityAnalysis } from "/electricity-analysis.js?v=20260712-1";
 import { renderTowerRentAnalysis } from "/tower-rent-analysis.js?v=20260712-1";
+import { issueStatusLabel, issueStatusOptions } from "/issue-status.js?v=20260717-1";
 
 const views = {
   dashboard: "专项工作台",
@@ -96,17 +97,7 @@ function percentValue(value) {
 }
 
 function statusLabel(status) {
-  const labels = {
-    pending_export: "待导出",
-    pending_correction: "待整改",
-    returned: "已回传",
-    still_invalid: "仍异常",
-    needs_review: "待复核",
-    closed: "已关闭",
-    not_required: "无需整改",
-    resolved_by_reaudit: "复核稽核已解除",
-  };
-  return labels[status] || status || "未开始";
+  return issueStatusLabel(status, status || "未开始");
 }
 
 function ledgerLabel(type) {
@@ -595,6 +586,7 @@ function renderOperationLog(items) {
 async function renderImport() {
   await refreshBatches().catch(() => []);
   const recent = await fetchJson("/api/import/recent").catch(() => ({ files: [] }));
+  let approvedPreviewSignature = "";
   mainContent.innerHTML = `
     <section class="card">
       ${shellHeader("数据导入", "台账导入")}
@@ -617,9 +609,10 @@ async function renderImport() {
           </label>
         </div>
         <div class="button-row">
-          <button id="preview-import" class="secondary-button" type="button">预检模板</button>
-          <button id="operation-submit" class="primary-button" type="button">导入台账</button>
+          <button id="preview-import" class="secondary-button" type="button" disabled aria-describedby="import-gate-hint">预检模板</button>
+          <button id="operation-submit" class="primary-button" type="button" disabled aria-describedby="import-gate-hint">导入台账</button>
         </div>
+        <p id="import-gate-hint" class="field-hint">请先选择台账文件。</p>
       </div>
     </section>
     <section class="card">
@@ -632,11 +625,34 @@ async function renderImport() {
     </section>
   `;
   renderRecentFiles(recent.files || []);
+  const importSignature = () => {
+    const file = selectedWorkbookFile();
+    if (file) return `file:${file.name}:${file.size}:${file.lastModified}`;
+    const path = fieldValue("workbook-path");
+    return path ? `path:${path}` : "";
+  };
+  const updateImportGate = () => {
+    const signature = importSignature();
+    const previewButton = document.querySelector("#preview-import");
+    const importButton = document.querySelector("#operation-submit");
+    const hint = document.querySelector("#import-gate-hint");
+    previewButton.disabled = !signature;
+    importButton.disabled = !signature || approvedPreviewSignature !== signature;
+    if (!signature) hint.textContent = "请先选择台账文件。";
+    else if (approvedPreviewSignature !== signature) hint.textContent = "请先完成模板预检；预检通过后才能正式导入。";
+    else hint.textContent = "模板预检已通过，可以正式导入。";
+  };
+  const resetPreviewApproval = () => {
+    approvedPreviewSignature = "";
+    updateImportGate();
+  };
   document.querySelector("#workbook-file").addEventListener("change", () => {
     const file = selectedWorkbookFile();
     document.querySelector("#workbook-path").value = "";
     document.querySelector("#selected-workbook-name").textContent = file ? `${file.name} · ${(file.size / 1024 / 1024).toFixed(2)} MB` : "尚未选择文件";
+    resetPreviewApproval();
   });
+  document.querySelector("#workbook-path").addEventListener("change", resetPreviewApproval);
   document.querySelector("#preview-import").addEventListener("click", async (event) => {
     const path = fieldValue("workbook-path");
     const formData = workbookFormData();
@@ -645,10 +661,14 @@ async function renderImport() {
       setOperationResult("pending", "正在预检模板...");
       try {
         const data = formData ? await postFormData("/api/import/preview/upload", formData) : await postJson("/api/import/preview", { path });
+        approvedPreviewSignature = importSignature();
+        updateImportGate();
         setOperationHtml("success", renderImportPreviewResult(data, "预检通过，可以正式导入"));
         const recentData = await fetchJson("/api/import/recent").catch(() => ({ files: [] }));
         renderRecentFiles(recentData.files || []);
       } catch (error) {
+        approvedPreviewSignature = "";
+        updateImportGate();
         if (error.data) {
           setOperationHtml("error", renderImportPreviewResult(error.data, "预检未通过，请按错误明细修正后重试"));
         } else {
@@ -663,10 +683,18 @@ async function renderImport() {
     const path = fieldValue("workbook-path");
     const file = selectedWorkbookFile();
     if (!file && !path) return setOperationResult("error", "请选择台账文件");
+    if (approvedPreviewSignature !== importSignature()) return setOperationResult("error", "请先完成模板预检，预检通过后再导入台账");
+    const strategy = document.querySelector("#import-strategy").value;
+    if (strategy !== "new" && !state.batchId) return setOperationResult("error", "当前没有可追加或覆盖的批次");
+    if (strategy === "replace") {
+      const workflow = await fetchJson(`/api/workflow?batch_id=${state.batchId}`).catch(() => null);
+      const ledgerCount = Number(workflow?.todo_summary?.ledger_count || 0);
+      const message = `覆盖当前批次将替换 ${formatNumber(ledgerCount)} 条台账记录，并需要重新执行稽核、专题分析、导出与回传。确认继续？`;
+      if (!window.confirm(message)) return;
+    }
     await withBusy(event.currentTarget, "导入中...", async () => {
       setOperationResult("pending", "正在导入...");
       try {
-        const strategy = document.querySelector("#import-strategy").value;
         const payload = { path, strategy };
         if (strategy !== "new") payload.batch_id = state.batchId;
         const formData = workbookFormData({ strategy, batch_id: strategy !== "new" ? state.batchId : "" });
@@ -767,13 +795,15 @@ function renderRecentFiles(files) {
       document.querySelector("#workbook-path").value = button.dataset.usePath;
       document.querySelector("#workbook-file").value = "";
       document.querySelector("#selected-workbook-name").textContent = `使用最近文件：${button.dataset.usePath}`;
+      document.querySelector("#workbook-path").dispatchEvent(new Event("change"));
     });
   });
 }
 
 async function renderAudit() {
   await refreshBatches().catch(() => []);
-  if (!currentBatch()) {
+  const batch = currentBatch();
+  if (!batch) {
     renderNoBatchPrompt("没有批次时无法执行稽核。");
     return;
   }
@@ -798,10 +828,11 @@ async function renderAudit() {
         <input id="filter-city" placeholder="地市">
         <select id="filter-ledger"><option value="">全部台账</option><option value="site">站址</option><option value="tower_rent">铁塔租费</option><option value="electricity">电费</option><option value="generator">发电费</option></select>
         <select id="filter-rule"><option value="">全部规则</option></select>
-        <select id="filter-status"><option value="">全部状态</option><option value="pending_export">待导出</option><option value="pending_correction">待整改</option><option value="returned">已回传</option><option value="still_invalid">仍异常</option><option value="needs_review">待人工复核</option><option value="closed">已关闭</option><option value="not_required">无需整改</option></select>
-        <button id="run-audit" class="primary-button" type="button">执行稽核</button>
+        <select id="filter-status" aria-label="问题状态">${issueStatusOptions()}</select>
+        <button id="run-audit" class="primary-button" type="button" ${batch.status === "created" || batch.is_archived ? "disabled" : ""} aria-describedby="audit-gate-hint">执行稽核</button>
         <button id="load-issues" class="secondary-button" type="button">查询问题</button>
       </div>
+      <p id="audit-gate-hint" class="field-hint">${batch.is_archived ? "当前批次已归档，不能重新执行稽核。" : batch.status === "created" ? "当前批次还没有台账，请先完成数据导入。" : "当前批次可以执行稽核；重新稽核会刷新专题分析结果。"}</p>
       <div id="issue-table-wrap" class="table-wrap issue-table-wrap"></div>
       <div class="pagination-bar">
         <button id="issue-prev-page" class="secondary-button" type="button">上一页</button>
@@ -1067,7 +1098,8 @@ function confidenceTone(confidence) {
 
 async function renderExport() {
   await refreshBatches().catch(() => []);
-  if (!currentBatch()) {
+  const batch = currentBatch();
+  if (!batch) {
     renderNoBatchPrompt("没有批次时无法导出整改包。");
     return;
   }
@@ -1089,7 +1121,8 @@ async function renderExport() {
             </select>
           </label>
         </div>
-        <button id="operation-submit" class="primary-button" type="button">导出整改包</button>
+        <button id="operation-submit" class="primary-button" type="button" ${batch.status !== "audited" || batch.is_archived ? "disabled" : ""} aria-describedby="export-gate-hint">导出整改包</button>
+        <p id="export-gate-hint" class="field-hint">${batch.is_archived ? "当前批次已归档，不能再次导出整改包。" : batch.status !== "audited" ? "请先完成当前批次稽核，再导出整改包。" : "稽核已完成，可以导出整改包。"}</p>
       </div>
     </section>
     <section class="card">

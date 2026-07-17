@@ -59,7 +59,7 @@ def run_tower_rent_analysis(config: AppConfig, batch_id: int) -> dict[str, int]:
             raise ValueError("批次不存在")
         if batch["is_archived"]:
             raise ValueError("归档批次不允许刷新租费异常分析")
-        if batch["status"] not in {"audited", "exported", "returned", "archived"}:
+        if batch["status"] not in {"audited", "distributed", "returning"}:
             raise ValueError("请先执行稽核，再生成租费异常分析")
         rent_count = conn.execute(
             "select count(*) as c from ledger_rows where batch_id = ? and ledger_type = 'tower_rent'",
@@ -169,6 +169,12 @@ def get_tower_rent_summary(config: AppConfig, batch_id: int) -> dict[str, Any]:
             "discount_realization_amount": round(discount, 2),
             "review_amount": round(max(current - recoverable - discount, 0), 2),
             "high_risk_count": int(amount_row["high_risk_count"] or 0),
+            "analysis_generated": bool(
+                conn.execute(
+                    "select 1 from operation_logs where batch_id = ? and operation = 'tower_rent_analysis' limit 1",
+                    (batch_id,),
+                ).fetchone()
+            ),
             "city_rankings": _city_rankings(conn, batch_id),
             "type_breakdown": _type_breakdown(conn, batch_id),
         }
@@ -209,6 +215,8 @@ def get_tower_rent_clues(config: AppConfig, batch_id: int, filters: dict[str, st
 
 def export_tower_rent_clues(config: AppConfig, batch_id: int) -> Path:
     summary = get_tower_rent_summary(config, batch_id)
+    if not summary["analysis_generated"]:
+        raise ValueError("请先生成租费异常分析，再导出 Excel")
     clues = get_tower_rent_clues(config, batch_id)
     config.export_dir.mkdir(parents=True, exist_ok=True)
     path = config.export_dir / f"批次{batch_id}_租费异常线索清单.xlsx"
