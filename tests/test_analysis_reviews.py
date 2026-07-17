@@ -429,20 +429,20 @@ def test_load_review_payload_and_review_payload_fields(app_config, sample_workbo
 
 
 @pytest.mark.parametrize(
-    ("status", "count_field"),
+    ("status", "count_field", "detail_field"),
     [
-        ("pending_export", "pending_count"),
-        ("pending_correction", "pending_count"),
-        ("still_invalid", "pending_count"),
-        ("returned", "review_count"),
-        ("needs_review", "review_count"),
-        ("closed", "closed_count"),
-        ("not_required", "closed_count"),
-        ("resolved_by_reaudit", "closed_count"),
+        ("pending_export", "pending_count", None),
+        ("pending_correction", "pending_count", None),
+        ("still_invalid", "pending_count", None),
+        ("returned", "review_count", "returned_count"),
+        ("needs_review", "review_count", "needs_review_count"),
+        ("closed", "closed_count", None),
+        ("not_required", "closed_count", None),
+        ("resolved_by_reaudit", "closed_count", None),
     ],
 )
 def test_review_summary_groups_issue_statuses_and_sums_review_amounts(
-    app_config, sample_workbook, status, count_field
+    app_config, sample_workbook, status, count_field, detail_field
 ):
     batch_id, opportunity_code, issue_code = _electricity_opportunity(app_config, sample_workbook)
     with connect(app_config) as conn:
@@ -452,11 +452,16 @@ def test_review_summary_groups_issue_statuses_and_sums_review_amounts(
 
         summary = review_summary_in_conn(conn, batch_id, "electricity")
 
-    assert summary == {
+    expected = {
         "pending_count": 0,
+        "returned_count": 0,
+        "needs_review_count": 0,
         "review_count": 0,
         "closed_count": 0,
         "verified_recoverable_amount": 1200.56,
         "realized_saving_amount": 800.44,
         count_field: 1,
     }
+    if detail_field:
+        expected[detail_field] = 1
+    assert summary == expected

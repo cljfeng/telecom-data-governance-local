@@ -237,6 +237,30 @@ def test_tower_rent_clue_filters(app_config):
     assert all(row["confidence"] == all_rows[0]["confidence"] for row in filtered)
 
 
+def test_tower_rent_actionable_queue_excludes_closed_clue(app_config):
+    batch_id = _audited_tower_batch(app_config)
+    run_tower_rent_analysis(app_config, batch_id)
+    target = get_tower_rent_clues(app_config, batch_id)[0]
+    save_opportunity_review(
+        app_config,
+        batch_id,
+        "tower-rent-analysis",
+        {
+            "opportunity_code": target["opportunity_code"],
+            "status": "closed",
+            "verified_recoverable_amount": 50,
+            "realized_saving_amount": 20,
+            "review_note": "已完成",
+        },
+    )
+
+    actionable = get_tower_rent_clues(app_config, batch_id, {"queue": "actionable"})
+    verified = get_tower_rent_clues(app_config, batch_id, {"review": "verified"})
+
+    assert target["opportunity_code"] not in {row["opportunity_code"] for row in actionable}
+    assert [row["opportunity_code"] for row in verified] == [target["opportunity_code"]]
+
+
 def test_export_tower_rent_clues_writes_workbook(app_config):
     batch_id = _audited_tower_batch(app_config)
     run_tower_rent_analysis(app_config, batch_id)

@@ -163,6 +163,32 @@ def test_electricity_opportunity_filters(app_config, sample_workbook):
     assert all(row["confidence"] == all_rows[0]["confidence"] for row in filtered)
 
 
+def test_electricity_actionable_and_review_amount_filters(app_config, sample_workbook):
+    batch_id = _import_and_audit(app_config, sample_workbook)
+    run_electricity_analysis(app_config, batch_id)
+    target = get_electricity_opportunities(app_config, batch_id)[0]
+    save_opportunity_review(
+        app_config,
+        batch_id,
+        "electricity-analysis",
+        {
+            "opportunity_code": target["opportunity_code"],
+            "status": "closed",
+            "verified_recoverable_amount": 100,
+            "realized_saving_amount": 80,
+            "review_note": "已完成",
+        },
+    )
+
+    actionable = get_electricity_opportunities(app_config, batch_id, {"queue": "actionable"})
+    verified = get_electricity_opportunities(app_config, batch_id, {"review": "verified"})
+    realized = get_electricity_opportunities(app_config, batch_id, {"review": "realized"})
+
+    assert target["opportunity_code"] not in {row["opportunity_code"] for row in actionable}
+    assert [row["opportunity_code"] for row in verified] == [target["opportunity_code"]]
+    assert [row["opportunity_code"] for row in realized] == [target["opportunity_code"]]
+
+
 def test_export_electricity_opportunities_writes_workbook(app_config, sample_workbook):
     batch_id = _import_and_audit(app_config, sample_workbook)
     run_electricity_analysis(app_config, batch_id)

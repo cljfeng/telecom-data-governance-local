@@ -179,6 +179,10 @@ def review_summary_in_conn(
         """
         select sum(case when i.status in ('pending_export', 'pending_correction', 'still_invalid')
                         then 1 else 0 end) as pending_count,
+               sum(case when i.status = 'returned'
+                        then 1 else 0 end) as returned_count,
+               sum(case when i.status = 'needs_review'
+                        then 1 else 0 end) as needs_review_count,
                sum(case when i.status in ('returned', 'needs_review')
                         then 1 else 0 end) as review_count,
                sum(case when i.status in ('closed', 'not_required', 'resolved_by_reaudit')
@@ -195,6 +199,8 @@ def review_summary_in_conn(
     ).fetchone()
     return {
         "pending_count": int(row["pending_count"] or 0),
+        "returned_count": int(row["returned_count"] or 0),
+        "needs_review_count": int(row["needs_review_count"] or 0),
         "review_count": int(row["review_count"] or 0),
         "closed_count": int(row["closed_count"] or 0),
         "verified_recoverable_amount": round(float(row["verified_recoverable_amount"] or 0), 2),

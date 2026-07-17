@@ -1,6 +1,14 @@
 import { fetchJson, postJson } from "/api.js?v=20260712-1";
-import { bindReviewForms, reviewForm, statusOptions } from "/analysis-review.js?v=20260712-1";
+import { bindReviewForms, reviewForm } from "/analysis-review.js?v=20260712-1";
 import { issueStatusLabel } from "/issue-status.js?v=20260717-1";
+import {
+  bindSpecialistMetricFilters,
+  initialSpecialistView,
+  rememberSpecialistView,
+  specialistFilterControls,
+  specialistFilterQuery,
+  specialistSummary,
+} from "/specialist-analysis-ui.js?v=20260717-1";
 
 function money(value) {
   const number = Number(value || 0);
@@ -19,6 +27,7 @@ export async function renderTowerRentAnalysis(ctx) {
     ctx.renderNoBatchPrompt("还没有可分析的批次。");
     return;
   }
+  const initialView = initialSpecialistView(ctx, "tower_rent");
   ctx.mainContent.innerHTML = `
     <section class="card">
       ${ctx.shellHeader("租费异常分析", `${batch.batch_code || `#${batch.id}`} ${batch.name}`, ctx.renderBatchSelector())}
@@ -32,20 +41,15 @@ export async function renderTowerRentAnalysis(ctx) {
     <section class="card metric-section">
       <div id="tower-rent-summary" class="metric-grid"></div>
     </section>
-    <div class="dashboard-grid">
+    <section class="card">
+      <div id="tower-rent-queue-heading">${ctx.shellHeader("待处理清单", "租费线索")}</div>
+      ${specialistFilterControls("tower-rent", initialView)}
+      <div id="tower-rent-clue-list" class="analysis-review-list"><div class="empty-state">正在加载</div></div>
+    </section>
+    <div class="dashboard-grid specialist-breakdowns">
       <section class="card">${ctx.shellHeader("异常分类", "分类")}<div id="tower-rent-type-breakdown" class="risk-summary"></div></section>
       <section class="card">${ctx.shellHeader("地市排行", "地市")}<div id="tower-rent-city-ranking" class="risk-summary"></div></section>
     </div>
-    <section class="card">
-      ${ctx.shellHeader("异常线索清单", "线索")}
-      <div class="toolbar">
-        <label class="compact-field"><span>异常类型</span><select id="tower-rent-type-filter"><option value="">全部类型</option></select></label>
-        <label class="compact-field"><span>置信度</span><select id="tower-rent-confidence-filter"><option value="">全部置信度</option></select></label>
-        <label class="compact-field"><span>闭环状态</span><select id="tower-rent-status-filter">${statusOptions()}</select></label>
-        <button id="apply-tower-rent-filters" class="secondary-button" type="button">筛选</button>
-      </div>
-      <div id="tower-rent-clue-list" class="analysis-review-list"><div class="empty-state">正在加载</div></div>
-    </section>
   `;
   ctx.bindBatchSelector(() => renderTowerRentAnalysis(ctx));
   document.querySelector("#run-tower-rent-analysis").addEventListener("click", async (event) => {
@@ -82,13 +86,8 @@ export async function renderTowerRentAnalysis(ctx) {
 }
 
 async function loadTowerRentAnalysisData(ctx) {
-  const type = document.querySelector("#tower-rent-type-filter")?.value || "";
-  const confidence = document.querySelector("#tower-rent-confidence-filter")?.value || "";
-  const status = document.querySelector("#tower-rent-status-filter")?.value || "";
-  const query = new URLSearchParams();
-  if (type) query.set("opportunity_type", type);
-  if (confidence) query.set("confidence", confidence);
-  if (status) query.set("status", status);
+  rememberSpecialistView(ctx, "tower_rent", "tower-rent");
+  const query = specialistFilterQuery("tower-rent");
   try {
     const [summary, list] = await Promise.all([
       fetchJson(`/api/batches/${ctx.state.batchId}/tower-rent-analysis/summary`),
@@ -97,6 +96,7 @@ async function loadTowerRentAnalysisData(ctx) {
     renderSummary(ctx, summary);
     renderBreakdown(ctx, summary);
     renderRows(ctx, list.opportunities || []);
+    bindSpecialistMetricFilters("tower-rent", () => loadTowerRentAnalysisData(ctx));
     updateTowerRentActions(ctx, summary);
   } catch (error) {
     document.querySelector("#tower-rent-summary").innerHTML = [
@@ -139,18 +139,25 @@ function updateTowerRentActions(ctx, summary) {
 }
 
 function renderSummary(ctx, summary) {
-  document.querySelector("#tower-rent-summary").innerHTML = [
-    ctx.metricCard("租费总额", summary.total_rent_amount, `租费记录 ${ctx.formatNumber(summary.ledger_row_count)}`, "info"),
-    ctx.metricCard("异常站址", summary.abnormal_site_count, `线索 ${ctx.formatNumber(summary.clue_count)} 条`, "warning"),
-    ctx.metricCard("预计可追回金额", summary.recoverable_amount, "相对确定问题", "danger"),
-    ctx.metricCard("优惠落实金额", summary.discount_realization_amount, "共享折扣等优惠线索", "success"),
-    ctx.metricCard("待核查金额", summary.review_amount, `高风险 ${ctx.formatNumber(summary.high_risk_count)} 条`, "review"),
-    ctx.metricCard("待处理", summary.pending_count, "等待整改或再次核验", "warning"),
-    ctx.metricCard("待人工复核", summary.review_count, "已填写核查信息", "review"),
-    ctx.metricCard("已确认闭环", summary.closed_count, "含无需整改与复审解决", "success"),
-    ctx.metricCard("核实可追回", summary.verified_recoverable_amount, "以核查认定为准", "danger"),
-    ctx.metricCard("实际落实", summary.realized_saving_amount, "已退款或已完成优化", "success"),
-  ].join("");
+  document.querySelector("#tower-rent-summary").className = "specialist-summary";
+  document.querySelector("#tower-rent-summary").innerHTML = specialistSummary(
+    [
+      { label: "异常线索", value: ctx.formatNumber(summary.clue_count), note: "查看全部线索", tone: "info", view: "all" },
+      { label: "待人工复核", value: ctx.formatNumber(summary.needs_review_count), note: "优先完成省级复核", tone: "review", view: "needs_review" },
+      { label: "核实可追回", value: money(summary.verified_recoverable_amount), note: "查看已核实金额", tone: "danger", view: "verified" },
+      { label: "实际落实", value: money(summary.realized_saving_amount), note: "查看已落实成果", tone: "success", view: "realized" },
+    ],
+    [
+      { html: ctx.metricCard("租费总额", summary.total_rent_amount, `租费记录 ${ctx.formatNumber(summary.ledger_row_count)}`, "info") },
+      { html: ctx.metricCard("异常站址", summary.abnormal_site_count, `线索 ${ctx.formatNumber(summary.clue_count)} 条`, "warning") },
+      { html: ctx.metricCard("预计可追回", summary.recoverable_amount, "相对确定问题", "danger") },
+      { html: ctx.metricCard("优惠落实金额", summary.discount_realization_amount, "共享折扣等优惠线索", "success") },
+      { html: ctx.metricCard("待核查金额", summary.review_amount, `高风险 ${ctx.formatNumber(summary.high_risk_count)} 条`, "review") },
+      { html: ctx.metricCard("待处理", summary.pending_count, "等待整改或再次核验", "warning") },
+      { html: ctx.metricCard("已回传待确认", summary.returned_count, "地市已提交整改结果", "review") },
+      { html: ctx.metricCard("已确认闭环", summary.closed_count, "含无需整改与复审解决", "success") },
+    ],
+  );
 }
 
 function renderBreakdown(ctx, summary) {

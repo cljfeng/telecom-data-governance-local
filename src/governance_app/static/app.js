@@ -5,8 +5,8 @@ import { renderLedgerData } from "/ledger-data.js?v=20260517-1";
 import { renderRules } from "/rules.js?v=20260517-1";
 import { renderSettings } from "/settings.js?v=20260517-1";
 import { renderAnalytics } from "/analytics.js?v=20260517-1";
-import { renderElectricityAnalysis } from "/electricity-analysis.js?v=20260712-1";
-import { renderTowerRentAnalysis } from "/tower-rent-analysis.js?v=20260712-1";
+import { renderElectricityAnalysis } from "/electricity-analysis.js?v=20260717-2";
+import { renderTowerRentAnalysis } from "/tower-rent-analysis.js?v=20260717-2";
 import { issueStatusLabel, issueStatusOptions } from "/issue-status.js?v=20260717-1";
 
 const views = {
@@ -294,6 +294,10 @@ async function loadDashboard() {
         <div class="metric-card skeleton"></div>
       </div>
     </section>
+    <section class="card">
+      ${shellHeader("专题待办", "电费与租费")}
+      <div id="specialist-todos" class="specialist-todo-grid"><div class="empty-state">正在加载专题待办</div></div>
+    </section>
     <div class="dashboard-grid">
       <section class="card">
         ${shellHeader("地市整改进度", "地市进度")}
@@ -313,13 +317,16 @@ async function loadDashboard() {
   `;
   bindBatchSelector(loadDashboard);
   try {
-    const [workflow, summary, progress] = await Promise.all([
+    const [workflow, summary, progress, electricity, towerRent] = await Promise.all([
       fetchJson(`/api/workflow?batch_id=${state.batchId}`),
       fetchJson(`/api/dashboard?batch_id=${state.batchId}`),
       fetchJson(`/api/city-progress?batch_id=${state.batchId}`),
+      fetchJson(`/api/batches/${state.batchId}/electricity-analysis/summary`),
+      fetchJson(`/api/batches/${state.batchId}/tower-rent-analysis/summary`),
     ]);
-    renderWorkflow(workflow);
+    renderWorkflow(workflow, { electricity, towerRent });
     renderMetrics(summary, progress.cities || []);
+    renderSpecialistTodos(electricity, towerRent);
     renderCityProgress(progress.cities || []);
     renderRiskSummary(summary.issues_by_rule || []);
     renderOperationLog(workflow.operations || []);
@@ -340,6 +347,7 @@ async function loadDashboard() {
     renderCityProgress([]);
     renderRiskSummary([]);
     renderOperationLog([]);
+    renderSpecialistTodos(null, null);
   }
 }
 
@@ -454,10 +462,18 @@ function renderBatchRows() {
   });
 }
 
-function renderWorkflow(workflow) {
+function renderWorkflow(workflow, specialist = {}) {
   const action = actionForWorkflow(workflow);
   const guidance = workflow.guidance || {};
   const todo = workflow.todo_summary || {};
+  const specialistPriority = [
+    { summary: specialist.electricity, view: "electricityAnalysis", key: "electricity", label: "电费压降" },
+    { summary: specialist.towerRent, view: "towerRentAnalysis", key: "tower_rent", label: "租费异常" },
+  ].find((item) => Number(item.summary?.needs_review_count || 0) > 0);
+  const primaryTitle = specialistPriority ? `下一步：处理${specialistPriority.label}待复核` : guidance.title || workflow.next_action;
+  const primaryReason = specialistPriority
+    ? `当前有 ${formatNumber(specialistPriority.summary.needs_review_count)} 条专题结果待人工复核，建议优先完成后再归档。`
+    : guidance.reason || "系统会按当前批次状态引导完成导入、稽核、导出、回传和归档。";
   document.querySelector("#workflow-area").innerHTML = `
     <div class="workflow-layout">
       <div class="workflow-steps">
@@ -475,8 +491,8 @@ function renderWorkflow(workflow) {
       </div>
       <div class="next-action">
         <p class="eyebrow">下一步动作</p>
-        <h3>${escapeHtml(guidance.title || workflow.next_action)}</h3>
-        <p>${escapeHtml(guidance.reason || "系统会按当前批次状态引导完成导入、稽核、导出、回传和归档。")}</p>
+        <h3>${escapeHtml(primaryTitle)}</h3>
+        <p>${escapeHtml(primaryReason)}</p>
         <div class="todo-strip">
           <span>台账 ${formatNumber(todo.ledger_count || 0)}</span>
           <span>未闭环 ${formatNumber(todo.open_issue_count || 0)}</span>
@@ -484,14 +500,62 @@ function renderWorkflow(workflow) {
           <span>仍异常 ${formatNumber(todo.still_invalid_count || 0)}</span>
         </div>
         <div class="button-row">
-          <button class="primary-button" type="button" data-next-view="${escapeHtml(guidance.primary_view || workflow.steps.find((step) => step.can_operate)?.primary_action?.view || action.view)}">${escapeHtml(guidance.primary_label || workflow.steps.find((step) => step.can_operate)?.primary_action?.label || action.label)}</button>
+          <button class="primary-button" type="button" data-next-view="${escapeHtml(specialistPriority?.view || guidance.primary_view || workflow.steps.find((step) => step.can_operate)?.primary_action?.view || action.view)}" ${specialistPriority ? `data-specialist-key="${specialistPriority.key}" data-specialist-view="needs_review"` : ""}>${escapeHtml(specialistPriority ? "处理待人工复核" : guidance.primary_label || workflow.steps.find((step) => step.can_operate)?.primary_action?.label || action.label)}</button>
           <button class="secondary-button" type="button" data-next-view="${escapeHtml(action.secondaryView)}">${escapeHtml(action.secondary)}</button>
         </div>
       </div>
     </div>
   `;
   document.querySelectorAll("[data-next-view]").forEach((button) => {
-    button.addEventListener("click", () => activateView(button.dataset.nextView));
+    button.addEventListener("click", () => {
+      if (button.dataset.specialistKey) {
+        state.specialistViews ||= {};
+        state.specialistViews[button.dataset.specialistKey] = button.dataset.specialistView || "actionable";
+      }
+      activateView(button.dataset.nextView);
+    });
+  });
+}
+
+function renderSpecialistTodos(electricity, towerRent) {
+  const container = document.querySelector("#specialist-todos");
+  if (!container) return;
+  if (!electricity || !towerRent) {
+    container.innerHTML = '<div class="empty-state">专题待办加载失败，可从左侧导航进入专题分析。</div>';
+    return;
+  }
+  const cards = [
+    { key: "electricity", view: "electricityAnalysis", label: "电费压降", itemLabel: "机会", count: electricity.opportunity_count, summary: electricity },
+    { key: "tower_rent", view: "towerRentAnalysis", label: "租费异常", itemLabel: "线索", count: towerRent.clue_count, summary: towerRent },
+  ];
+  container.innerHTML = cards
+    .map((item) => {
+      const generated = Boolean(item.summary.analysis_generated);
+      const targetView = !generated ? "actionable" : Number(item.summary.needs_review_count || 0) > 0 ? "needs_review" : "actionable";
+      const actionLabel = !generated ? "进入并生成分析" : Number(item.summary.needs_review_count || 0) > 0 ? "处理待人工复核" : "查看待处理队列";
+      return `
+        <article class="specialist-todo-card">
+          <div>
+            <p class="eyebrow">${escapeHtml(item.label)}</p>
+            <h3>${generated ? `${formatNumber(item.count)} 条${item.itemLabel}` : "尚未生成分析"}</h3>
+          </div>
+          <div class="specialist-todo-stats">
+            <span><strong>${formatNumber(item.summary.pending_count || 0)}</strong>待处理</span>
+            <span><strong>${formatNumber(item.summary.returned_count || 0)}</strong>已回传待确认</span>
+            <span><strong>${formatNumber(item.summary.needs_review_count || 0)}</strong>待人工复核</span>
+            <span><strong>${formatNumber(item.summary.closed_count || 0)}</strong>已确认闭环</span>
+          </div>
+          <button class="secondary-button" type="button" data-specialist-target="${item.view}" data-specialist-key="${item.key}" data-specialist-view="${targetView}">${actionLabel}</button>
+        </article>
+      `;
+    })
+    .join("");
+  container.querySelectorAll("[data-specialist-target]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.specialistViews ||= {};
+      state.specialistViews[button.dataset.specialistKey] = button.dataset.specialistView || "actionable";
+      activateView(button.dataset.specialistTarget);
+    });
   });
 }
 

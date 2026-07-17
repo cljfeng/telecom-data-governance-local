@@ -178,6 +178,24 @@ def get_electricity_opportunities(config: AppConfig, batch_id: int, filters: dic
     if status:
         where.append("i.status = ?")
         params.append(status)
+    elif filters.get("queue") == "actionable":
+        where.append(
+            "i.status in ('pending_export', 'pending_correction', 'returned', 'needs_review', 'still_invalid')"
+        )
+    if filters.get("review") == "verified":
+        where.append("r.verified_recoverable_amount is not null")
+    elif filters.get("review") == "realized":
+        where.append("r.realized_saving_amount is not null")
+    order_by = "ao.recoverable_amount desc, ao.saving_opportunity_amount desc, ao.id"
+    if filters.get("queue") == "actionable":
+        order_by = """
+            case ao.severity when 'high' then 0 when 'medium' then 1 else 2 end,
+            case i.status
+                when 'needs_review' then 0 when 'returned' then 1
+                when 'still_invalid' then 2 when 'pending_correction' then 3
+                when 'pending_export' then 4 else 5 end,
+            ao.recoverable_amount desc, ao.saving_opportunity_amount desc, ao.id
+        """
     with connect(config) as conn:
         _require_batch(conn, batch_id)
         rows = conn.execute(
@@ -190,7 +208,7 @@ def get_electricity_opportunities(config: AppConfig, batch_id: int, filters: dic
               left join issues i on i.issue_code = ao.source_issue_code
               left join analysis_opportunity_reviews r on r.opportunity_code = ao.opportunity_code
              where {" and ".join(where)}
-             order by ao.recoverable_amount desc, ao.saving_opportunity_amount desc, ao.id
+             order by {order_by}
             """,
             params,
         ).fetchall()

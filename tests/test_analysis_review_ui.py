@@ -10,13 +10,17 @@ def _read(name: str) -> str:
 def test_both_analysis_pages_use_shared_review_module_and_status_filter():
     electricity = _read("electricity-analysis.js")
     tower_rent = _read("tower-rent-analysis.js")
+    specialist = _read("specialist-analysis-ui.js")
 
     for page in (electricity, tower_rent):
         assert 'from "/analysis-review.js?' in page
-        assert 'query.set("status", status)' in page
-        assert "status-filter" in page
+        assert 'from "/specialist-analysis-ui.js?' in page
+        assert "specialistFilterControls" in page
         assert "reviewForm(ctx, row)" in page
         assert "bindReviewForms(ctx," in page
+        assert 'shellHeader("待处理清单"' in page
+    assert 'query.set("status", status)' in specialist
+    assert 'query.set("queue", "actionable")' in specialist
 
 
 def test_shared_review_module_exposes_complete_review_form_contract():
@@ -64,6 +68,29 @@ def test_first_phase_actions_expose_prerequisite_gates():
     for page in (electricity, tower_rent):
         assert "analysis_generated" in page
         assert "disabled aria-describedby" in page
+
+
+def test_second_phase_uses_shared_summary_filters_and_dashboard_deep_links():
+    specialist = _read("specialist-analysis-ui.js")
+    app = _read("app.js")
+    styles = _read("styles.css")
+
+    for contract in (
+        "specialistFilterControls",
+        "specialistFilterQuery",
+        "specialistSummary",
+        "bindSpecialistMetricFilters",
+        "initialSpecialistView",
+    ):
+        assert f"export function {contract}" in specialist
+    assert "待处理队列" in specialist
+    assert "更多指标" in specialist
+    assert 'id="specialist-todos"' in app
+    assert "/electricity-analysis/summary" in app
+    assert "/tower-rent-analysis/summary" in app
+    assert "data-specialist-target" in app
+    assert ".specialist-primary-metrics" in styles
+    assert ".specialist-todo-grid" in styles
 
 
 def test_review_cards_collapse_to_one_column_on_mobile():
