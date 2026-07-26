@@ -8,8 +8,10 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
 from governance_app.database_runtime import database_for
+from governance_app.file_storage_runtime import file_storage_for
 from governance_app.geo import normalize_city
 from governance_app.ports.database import Database
+from governance_app.ports.file_storage import FileStorage
 from governance_app.workflow import transition_batch_in_unit_of_work
 
 ISSUE_HEADERS = [
@@ -52,6 +54,7 @@ def export_issue_packages(
     mode: str = "city",
     *,
     database: Database | None = None,
+    storage: FileStorage | None = None,
 ) -> list[Path]:
     if mode not in {"city", "province"}:
         raise ValueError("invalid export mode")
@@ -60,8 +63,14 @@ def export_issue_packages(
             config,
             batch_id,
             database=database,
+            storage=storage,
         )
-    return export_city_issue_packages(config, batch_id, database=database)
+    return export_city_issue_packages(
+        config,
+        batch_id,
+        database=database,
+        storage=storage,
+    )
 
 
 def export_city_issue_packages(
@@ -69,11 +78,11 @@ def export_city_issue_packages(
     batch_id: int,
     *,
     database: Database | None = None,
+    storage: FileStorage | None = None,
 ) -> list[Path]:
-    config.export_dir.mkdir(parents=True, exist_ok=True)
-    export_root = config.export_dir.resolve()
     paths: list[Path] = []
     selected_database = database or database_for(config)
+    selected_storage = storage or file_storage_for(config)
     with selected_database.unit_of_work() as unit_of_work:
         batch = unit_of_work.batches.get(batch_id)
         if batch is None:
@@ -103,9 +112,10 @@ def export_city_issue_packages(
             if not issues:
                 continue
             batch_code = batch["batch_code"] or f"批次{batch_id}"
-            path = config.export_dir / f"{_safe_filename_part(city)}_整改问题清单_{_safe_filename_part(batch_code)}.xlsx"
-            if not path.resolve().is_relative_to(export_root):
-                raise ValueError(f"导出路径越界：{path}")
+            path = selected_storage.prepare_export(
+                f"{_safe_filename_part(city)}_整改问题清单_"
+                f"{_safe_filename_part(batch_code)}.xlsx"
+            )
             wb = _issue_workbook()
             ws = wb["整改问题清单"]
             for issue in issues:
@@ -132,10 +142,10 @@ def _export_province_issue_package(
     batch_id: int,
     *,
     database: Database | None = None,
+    storage: FileStorage | None = None,
 ) -> list[Path]:
-    config.export_dir.mkdir(parents=True, exist_ok=True)
-    export_root = config.export_dir.resolve()
     selected_database = database or database_for(config)
+    selected_storage = storage or file_storage_for(config)
     with selected_database.unit_of_work() as unit_of_work:
         batch = unit_of_work.batches.get(batch_id)
         if batch is None:
@@ -158,9 +168,9 @@ def _export_province_issue_package(
             )
             return []
         batch_code = batch["batch_code"] or f"批次{batch_id}"
-        path = config.export_dir / f"全省_整改问题清单_{_safe_filename_part(batch_code)}.xlsx"
-        if not path.resolve().is_relative_to(export_root):
-            raise ValueError(f"导出路径越界：{path}")
+        path = selected_storage.prepare_export(
+            f"全省_整改问题清单_{_safe_filename_part(batch_code)}.xlsx"
+        )
         wb = _issue_workbook()
         ws = wb["整改问题清单"]
         for issue in issues:

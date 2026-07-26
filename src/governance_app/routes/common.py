@@ -123,6 +123,13 @@ def file_payload(
     storage: FileStorage | None = None,
 ) -> dict[str, str]:
     stored_file = (storage or file_storage_for(config)).publish(path)
+    return stored_file_payload(config, stored_file)
+
+
+def stored_file_payload(
+    config: AppConfig,
+    stored_file: StoredFile,
+) -> dict[str, str]:
     payload = {
         "file_id": stored_file.file_id,
         "name": stored_file.name,

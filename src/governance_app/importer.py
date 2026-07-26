@@ -37,6 +37,7 @@ def import_workbook(
     batch_id: int | None = None,
     *,
     database: Database | None = None,
+    source_reference: str | None = None,
 ) -> ImportResult:
     started_at = perf_counter()
     wb = load_workbook(workbook_path, data_only=True)
@@ -66,11 +67,12 @@ def import_workbook(
         raise ValueError("batch_id is required")
 
     selected_database = database or database_for(config)
+    source_file = source_reference or str(workbook_path)
     with selected_database.unit_of_work() as unit_of_work:
         if strategy == "new":
             batch_name = _clean_batch_name(workbook_path.stem)
             batch_id = unit_of_work.batches.create_imported(
-                source_file=str(workbook_path),
+                source_file=source_file,
                 name=batch_name,
                 batch_code=_new_batch_code(),
             )
@@ -92,7 +94,7 @@ def import_workbook(
                 message = f"追加导入台账：{workbook_path.name}"
             unit_of_work.batches.update_source(
                 batch_id,
-                source_file=str(workbook_path),
+                source_file=source_file,
                 fallback_name=_clean_batch_name(workbook_path.stem),
             )
             transition_batch_in_unit_of_work(unit_of_work, batch_id, "import")
@@ -132,6 +134,7 @@ def import_workbook(
         ledger_counts,
         0,
         database=selected_database,
+        reference=source_reference,
     )
     return ImportResult(batch_id=batch_id, ledger_counts=ledger_counts)
 

@@ -8,8 +8,10 @@ from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
 from governance_app.database_runtime import database_for
 from governance_app.exporter import excel_safe
+from governance_app.file_storage_runtime import file_storage_for
 from governance_app.issue_status import issue_status_label
 from governance_app.ports.database import Database, UnitOfWork
+from governance_app.ports.file_storage import FileStorage
 from governance_app.rule_settings import load_rule_settings
 from governance_app.version import version_payload
 from governance_app.workflow import city_progress, transition_batch_in_unit_of_work
@@ -95,8 +97,10 @@ def archive_batch(
     batch_id: int,
     *,
     database: Database | None = None,
+    storage: FileStorage | None = None,
 ) -> Path:
     selected_database = database or database_for(config)
+    selected_storage = storage or file_storage_for(config)
     with selected_database.unit_of_work() as unit_of_work:
         eligibility = _archive_eligibility(unit_of_work, batch_id)
         if eligibility.is_archived:
@@ -113,9 +117,9 @@ def archive_batch(
             open_only=True,
         )
 
-    archive_dir = config.export_dir / f"archive_batch_{batch_id}"
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    path = archive_dir / f"批次{batch_id}_专项治理归档汇总.xlsx"
+    path = selected_storage.prepare_export(
+        f"archive_batch_{batch_id}/批次{batch_id}_专项治理归档汇总.xlsx"
+    )
 
     summary = dashboard_summary(
         config,
@@ -319,9 +323,10 @@ def export_notice_report(
     batch_id: int,
     *,
     database: Database | None = None,
+    storage: FileStorage | None = None,
 ) -> Path:
     selected_database = database or database_for(config)
-    config.export_dir.mkdir(parents=True, exist_ok=True)
+    selected_storage = storage or file_storage_for(config)
     summary = dashboard_summary(
         config,
         batch_id,
@@ -334,7 +339,9 @@ def export_notice_report(
             raise ValueError("batch not found")
         batch_code = batch["batch_code"] or f"批次{batch_id}"
         issues = unit_of_work.archives.issue_snapshot(batch_id)
-    path = config.export_dir / f"稽核问题通报_{batch_code}.xlsx"
+    path = selected_storage.prepare_export(
+        f"稽核问题通报_{batch_code}.xlsx"
+    )
 
     wb = Workbook()
     ws = wb.active

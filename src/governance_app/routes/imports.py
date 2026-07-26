@@ -1,9 +1,11 @@
+from pathlib import Path
 from urllib.parse import ParseResult
 from zipfile import BadZipFile
 
 from openpyxl.utils.exceptions import InvalidFileException
 
-from governance_app.config import AppConfig
+from governance_app.config import AppConfig, RuntimeMode
+from governance_app.file_storage_runtime import file_storage_for
 from governance_app.import_preview import (
     export_preview_errors,
     preview_error_payload,
@@ -20,6 +22,7 @@ from governance_app.routes.common import (
     json_body,
     json_response,
     store_uploaded_workbook,
+    stored_file_payload,
     workbook_path_from_payload,
 )
 
@@ -39,7 +42,7 @@ def handle_import_route(
         payload, error = json_body(body)
         return error or _preview_from_payload(config, payload)
     if method == "GET" and parsed.path == "/api/import/recent":
-        return json_response({"files": list_recent_files(config)})
+        return json_response({"files": _recent_file_payloads(config)})
     return None
 
 
@@ -74,7 +77,11 @@ def handle_import_upload(
 def _preview_from_payload(config: AppConfig, payload: dict) -> JsonResponse:
     try:
         workbook_path = workbook_path_from_payload(config, payload)
-        result = preview_workbook(config, workbook_path)
+        result = preview_workbook(
+            config,
+            workbook_path,
+            source_reference=_online_file_reference(config, payload),
+        )
     except (ValueError, OSError, InvalidFileException, BadZipFile) as exc:
         return json_response({"error": f"无法读取 Excel 文件：{exc}"}, status=400)
     error_file: dict[str, str] | None = None
@@ -111,6 +118,7 @@ def _import_from_payload(config: AppConfig, payload: dict) -> JsonResponse:
                 workbook_path,
                 strategy=strategy,
                 batch_id=int(batch_id) if batch_id not in (None, "") else None,
+                source_reference=_online_file_reference(config, payload),
             )
     except OperationConflict as exc:
         return json_response({"error": str(exc)}, status=409)
@@ -125,3 +133,35 @@ def _import_from_payload(config: AppConfig, payload: dict) -> JsonResponse:
         },
         status=200 if result.batch_id is not None else 400,
     )
+
+
+def _online_file_reference(config: AppConfig, payload: dict) -> str | None:
+    file_id = payload.get("file_id")
+    if (
+        config.runtime_mode is RuntimeMode.ONLINE
+        and isinstance(file_id, str)
+        and file_id
+    ):
+        return file_id
+    return None
+
+
+def _recent_file_payloads(config: AppConfig) -> list[dict]:
+    storage = file_storage_for(config)
+    payloads = []
+    for item in list_recent_files(config):
+        value = str(item["path"])
+        try:
+            stored_file = (
+                storage.resolve(value)
+                if ":" in value
+                else storage.publish(Path(value))
+            )
+            file = stored_file_payload(config, stored_file)
+        except (FileNotFoundError, ValueError):
+            file = None
+        payload = {**item, "file": file}
+        if config.runtime_mode is RuntimeMode.ONLINE:
+            payload["path"] = "" if file is None else file_location(file)
+        payloads.append(payload)
+    return payloads

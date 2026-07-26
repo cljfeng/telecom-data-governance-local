@@ -12,12 +12,14 @@ from governance_app.audit_rules import parse_row
 from governance_app.config import AppConfig
 from governance_app.database_runtime import database_for
 from governance_app.exporter import append_analysis_correction_sheet, excel_safe
+from governance_app.file_storage_runtime import file_storage_for
 from governance_app.geo import normalize_city
 from governance_app.ports.database import (
     AnalysisOpportunityRecord,
     AnalysisQuery,
     Database,
 )
+from governance_app.ports.file_storage import FileStorage
 from governance_app.rule_fields import (
     AMOUNT_FIELD_KEYWORDS,
     MAINTENANCE_DISCOUNT_FIELDS,
@@ -231,13 +233,19 @@ def get_tower_rent_clues(
     return [_clue_payload(row) for row in rows]
 
 
-def export_tower_rent_clues(config: AppConfig, batch_id: int) -> Path:
+def export_tower_rent_clues(
+    config: AppConfig,
+    batch_id: int,
+    *,
+    storage: FileStorage | None = None,
+) -> Path:
     summary = get_tower_rent_summary(config, batch_id)
     if not summary["analysis_generated"]:
         raise ValueError("请先生成租费异常分析，再导出 Excel")
     clues = get_tower_rent_clues(config, batch_id)
-    config.export_dir.mkdir(parents=True, exist_ok=True)
-    path = config.export_dir / f"批次{batch_id}_租费异常线索清单.xlsx"
+    path = (storage or file_storage_for(config)).prepare_export(
+        f"批次{batch_id}_租费异常线索清单.xlsx"
+    )
     wb = Workbook()
     guide = wb.active
     guide.title = "填写说明"

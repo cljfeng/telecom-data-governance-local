@@ -31,11 +31,20 @@ def import_correction_return(
     workbook_path: Path,
     *,
     database: Database | None = None,
+    source_reference: str | None = None,
 ) -> CorrectionImportResult:
+    source_file = source_reference or str(workbook_path)
     wb = load_workbook(workbook_path, data_only=True)
     if "整改问题清单" not in wb.sheetnames:
         errors = ["缺少 sheet：整改问题清单"]
-        _record_return(config, workbook_path, 0, errors, [], database=database)
+        _record_return(
+            config,
+            source_file,
+            0,
+            errors,
+            [],
+            database=database,
+        )
         return CorrectionImportResult(matched_count=0, errors=errors)
     ws = wb["整改问题清单"]
     headers = [cell.value for cell in ws[1]]
@@ -44,7 +53,14 @@ def import_correction_return(
     missing = [name for name in required if name not in index]
     if missing:
         errors = [f"缺少回填列：{name}" for name in missing]
-        _record_return(config, workbook_path, 0, errors, [], database=database)
+        _record_return(
+            config,
+            source_file,
+            0,
+            errors,
+            [],
+            database=database,
+        )
         return CorrectionImportResult(matched_count=0, errors=errors)
     specialist_headers = ["机会编号", "核实可追回金额", "实际落实金额"]
     present_specialist_headers = [name for name in specialist_headers if name in index]
@@ -53,7 +69,14 @@ def import_correction_return(
     ):
         missing_specialist = [name for name in specialist_headers if name not in index]
         errors = [f"缺少专题回填列：{name}" for name in missing_specialist]
-        _record_return(config, workbook_path, 0, errors, [], database=database)
+        _record_return(
+            config,
+            source_file,
+            0,
+            errors,
+            [],
+            database=database,
+        )
         return CorrectionImportResult(matched_count=0, errors=errors)
     is_specialist = len(present_specialist_headers) == len(specialist_headers)
 
@@ -178,7 +201,7 @@ def import_correction_return(
             auto_review[target_status] = auto_review.get(target_status, 0) + 1
             matched_count += 1
         unit_of_work.corrections.record_return(
-            source_file=str(workbook_path),
+            source_file=source_file,
             matched_count=matched_count,
             errors_json=json.dumps(errors, ensure_ascii=False),
             warnings_json=json.dumps(review_warnings, ensure_ascii=False),
@@ -231,7 +254,7 @@ def _auto_review_status(issue_row, result: object, note: object) -> str:
 
 def _record_return(
     config: AppConfig,
-    workbook_path: Path,
+    source_file: str,
     matched_count: int,
     errors: list[str],
     warnings: list[str],
@@ -241,7 +264,7 @@ def _record_return(
     selected_database = database or database_for(config)
     with selected_database.unit_of_work() as unit_of_work:
         unit_of_work.corrections.record_return(
-            source_file=str(workbook_path),
+            source_file=source_file,
             matched_count=matched_count,
             errors_json=json.dumps(errors, ensure_ascii=False),
             warnings_json=json.dumps(warnings, ensure_ascii=False),

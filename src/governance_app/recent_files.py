@@ -15,11 +15,12 @@ def record_recent_file(
     error_count: int,
     *,
     database: Database | None = None,
+    reference: str | None = None,
 ) -> None:
     selected_database = database or database_for(config)
     with selected_database.unit_of_work() as unit_of_work:
         unit_of_work.recent_files.record(
-            path=str(workbook_path),
+            path=reference or str(workbook_path),
             kind=kind,
             ok=ok,
             ledger_counts_json=json.dumps(ledger_counts, ensure_ascii=False),

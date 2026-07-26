@@ -1,7 +1,12 @@
+import shutil
 from pathlib import Path
 from uuid import uuid4
 
-from governance_app.ports.file_storage import FileStorage, StoredFile
+from governance_app.ports.file_storage import (
+    FileStorage,
+    StorageArea,
+    StoredFile,
+)
 
 _FILE_AREAS = ("uploads", "exports", "backups")
 
@@ -28,6 +33,14 @@ class LocalFileStorage(FileStorage):
         path.write_bytes(content)
         return self._stored_file("uploads", path)
 
+    def prepare_export(self, relative_path: str) -> Path:
+        export_root = self._roots["exports"]
+        path = (export_root / relative_path).resolve()
+        if not path.is_relative_to(export_root):
+            raise ValueError("导出路径越界")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
     def publish(self, path: Path) -> StoredFile:
         resolved = path.resolve()
         for area in _FILE_AREAS:
@@ -49,6 +62,30 @@ class LocalFileStorage(FileStorage):
         if not path.is_file():
             raise FileNotFoundError(f"Stored file not found: {file_id}")
         return self._stored_file(area, path)
+
+    def clear(
+        self,
+        area: StorageArea,
+        *,
+        keep_file_ids: set[str] | None = None,
+    ) -> int:
+        root = self._roots[area]
+        if not root.exists():
+            return 0
+        keep_paths = {
+            self.resolve(file_id).local_path
+            for file_id in (keep_file_ids or set())
+        }
+        removed = 0
+        for item in root.iterdir():
+            if item.resolve() in keep_paths:
+                continue
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+            removed += 1
+        return removed
 
     def _stored_file(self, area: str, path: Path) -> StoredFile:
         root = self._roots[area]

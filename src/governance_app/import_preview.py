@@ -7,9 +7,11 @@ from typing import Any
 from openpyxl import Workbook, load_workbook
 
 from governance_app.config import AppConfig
+from governance_app.file_storage_runtime import file_storage_for
 from governance_app.importer import _data_rows, _headers
 from governance_app.models import LedgerType, ValidationErrorDetail
 from governance_app.ports.database import Database
+from governance_app.ports.file_storage import FileStorage
 from governance_app.recent_files import (
     list_recent_files as list_recent_files,
     record_recent_file,
@@ -35,6 +37,7 @@ def preview_workbook(
     workbook_path: Path,
     *,
     database: Database | None = None,
+    source_reference: str | None = None,
 ) -> ImportPreviewResult:
     wb = load_workbook(workbook_path, data_only=True)
     errors: list[ValidationErrorDetail] = []
@@ -71,6 +74,7 @@ def preview_workbook(
         result.ledger_counts,
         len(result.errors),
         database=database,
+        reference=source_reference,
     )
     return result
 
@@ -217,10 +221,17 @@ def _is_blank(value: object) -> bool:
     return value is None or (isinstance(value, str) and value.strip() in {"", "/", "\\", "-", "#N/A"})
 
 
-def export_preview_errors(config: AppConfig, workbook_path: Path, result: ImportPreviewResult) -> Path:
-    error_dir = config.export_dir / "import_errors"
-    error_dir.mkdir(parents=True, exist_ok=True)
-    path = error_dir / f"{_safe_filename_part(workbook_path.stem)}_导入预检错误.xlsx"
+def export_preview_errors(
+    config: AppConfig,
+    workbook_path: Path,
+    result: ImportPreviewResult,
+    *,
+    storage: FileStorage | None = None,
+) -> Path:
+    path = (storage or file_storage_for(config)).prepare_export(
+        f"import_errors/{_safe_filename_part(workbook_path.stem)}"
+        "_导入预检错误.xlsx"
+    )
 
     wb = Workbook()
     ws = wb.active

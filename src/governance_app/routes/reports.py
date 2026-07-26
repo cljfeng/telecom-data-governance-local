@@ -2,7 +2,7 @@ from pathlib import Path
 from urllib.parse import ParseResult
 
 from governance_app.archive import archive_batch, archive_precheck, export_notice_report
-from governance_app.config import AppConfig
+from governance_app.config import AppConfig, RuntimeMode
 from governance_app.corrections import import_correction_return
 from governance_app.exporter import export_issue_packages
 from governance_app.operation_guard import OperationConflict, exclusive_operation
@@ -62,7 +62,11 @@ def handle_report_route(config: AppConfig, method: str, parsed: ParseResult, bod
             workbook_path = workbook_path_from_payload(config, payload)
         except (FileNotFoundError, ValueError) as exc:
             return json_response({"error": str(exc)}, status=400)
-        return _correction_response(config, workbook_path)
+        return _correction_response(
+            config,
+            workbook_path,
+            source_reference=_online_file_reference(config, payload),
+        )
     if method == "POST" and parsed.path == "/api/archive":
         payload, error = json_body(body)
         if error:
@@ -109,12 +113,29 @@ def handle_report_upload(
         stored_file = store_uploaded_workbook(config, filename, content)
     except ValueError as exc:
         return json_response({"error": str(exc)}, status=400)
-    return _correction_response(config, stored_file.local_path)
+    return _correction_response(
+        config,
+        stored_file.local_path,
+        source_reference=(
+            stored_file.file_id
+            if config.runtime_mode is RuntimeMode.ONLINE
+            else None
+        ),
+    )
 
 
-def _correction_response(config: AppConfig, workbook_path: Path) -> JsonResponse:
+def _correction_response(
+    config: AppConfig,
+    workbook_path: Path,
+    *,
+    source_reference: str | None = None,
+) -> JsonResponse:
     try:
-        result = import_correction_return(config, workbook_path)
+        result = import_correction_return(
+            config,
+            workbook_path,
+            source_reference=source_reference,
+        )
     except ValueError as exc:
         return json_response({"error": str(exc)}, status=400)
     return json_response(
@@ -126,3 +147,14 @@ def _correction_response(config: AppConfig, workbook_path: Path) -> JsonResponse
         },
         status=200 if not result.errors else 400,
     )
+
+
+def _online_file_reference(config: AppConfig, payload: dict) -> str | None:
+    file_id = payload.get("file_id")
+    if (
+        config.runtime_mode is RuntimeMode.ONLINE
+        and isinstance(file_id, str)
+        and file_id
+    ):
+        return file_id
+    return None
