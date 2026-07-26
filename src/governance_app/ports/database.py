@@ -9,6 +9,11 @@ from governance_app.models import IssueStatus
 BatchRecord = Mapping[str, Any]
 IssueRecord = Mapping[str, Any]
 LedgerRecord = Mapping[str, Any]
+ReviewRecord = Mapping[str, Any]
+
+
+class PersistenceError(RuntimeError):
+    """A recoverable repository operation failed."""
 
 
 @dataclass(frozen=True)
@@ -106,6 +111,8 @@ class BatchRepository(Protocol):
 
     def add_operation(self, batch_id: int, operation: str, message: str) -> None: ...
 
+    def recent_operations(self, batch_id: int, limit: int = 10) -> list[BatchRecord]: ...
+
 
 class IssueRepository(Protocol):
     def query(self, query: IssueQuery) -> tuple[list[IssueRecord], int]: ...
@@ -123,6 +130,10 @@ class IssueRepository(Protocol):
         *,
         source: str,
         event_note: str,
+        correction_value: str | None = None,
+        correction_note: str | None = None,
+        update_correction_value: bool = False,
+        update_correction_note: bool = False,
     ) -> None: ...
 
     def update_group_status(
@@ -133,6 +144,12 @@ class IssueRepository(Protocol):
         source: str,
         event_note: str,
     ) -> int: ...
+
+    def workflow_summary(self, batch_id: int) -> IssueRecord: ...
+
+    def city_progress(self, batch_id: int) -> list[IssueRecord]: ...
+
+    def top_rules_by_city(self, batch_id: int) -> list[IssueRecord]: ...
 
 
 class LedgerRepository(Protocol):
@@ -162,11 +179,42 @@ class AuditRepository(Protocol):
     def clear_analysis_opportunities(self, batch_id: int) -> None: ...
 
 
+class ReviewRepository(Protocol):
+    def get_opportunity(self, opportunity_code: str) -> ReviewRecord | None: ...
+
+    def upsert(
+        self,
+        opportunity: ReviewRecord,
+        verified: float | None,
+        realized: float | None,
+        note: str,
+    ) -> None: ...
+
+    def sync_note(self, issue_code: str, note: str) -> None: ...
+
+    def load_payload(self, opportunity_code: str) -> ReviewRecord | None: ...
+
+    def savepoint(self) -> AbstractContextManager[None]: ...
+
+
+class CorrectionRepository(Protocol):
+    def record_return(
+        self,
+        *,
+        source_file: str,
+        matched_count: int,
+        errors_json: str,
+        warnings_json: str,
+    ) -> None: ...
+
+
 class UnitOfWork(Protocol):
     batches: BatchRepository
     issues: IssueRepository
     ledgers: LedgerRepository
     audits: AuditRepository
+    reviews: ReviewRepository
+    corrections: CorrectionRepository
 
 
 class Database(Protocol):

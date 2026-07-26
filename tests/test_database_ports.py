@@ -5,8 +5,10 @@ from governance_app.audit_engine import run_audit
 from governance_app.db import connect, initialize_database
 from governance_app.importer import import_workbook
 from governance_app.workflow import (
+    city_progress,
     count_ledger_rows,
     create_batch,
+    get_batch_workflow,
     list_batches,
     list_issue_groups,
     list_issue_rules,
@@ -208,6 +210,16 @@ def test_import_audit_and_ledger_queries_share_database_port(
             imported.batch_id,
             database=database,
         )
+        workflow = get_batch_workflow(
+            app_config,
+            imported.batch_id,
+            database=database,
+        )
+        progress = city_progress(
+            app_config,
+            imported.batch_id,
+            database=database,
+        )
     finally:
         database.dispose()
 
@@ -215,3 +227,6 @@ def test_import_audit_and_ledger_queries_share_database_port(
     assert len(ledger_rows) == 3
     assert audit.audit_run_id > 0
     assert audit.issue_count == 2
+    assert workflow["todo_summary"]["ledger_count"] == 4
+    assert workflow["todo_summary"]["total_issue_count"] == 2
+    assert progress[0]["total_count"] == 2

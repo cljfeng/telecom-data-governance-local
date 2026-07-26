@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
 from sqlalchemy import (
     Column,
+    Float,
     Integer,
     MetaData,
     String,
@@ -20,6 +22,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.engine import URL, Connection, Engine
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.pool import NullPool
 
 from governance_app.models import IssueStatus
@@ -28,6 +31,7 @@ from governance_app.ports.database import (
     AuditRepository,
     BatchRecord,
     BatchRepository,
+    CorrectionRepository,
     ImportedLedgerRow,
     IssueGroupQuery,
     IssueGroupSelector,
@@ -37,6 +41,9 @@ from governance_app.ports.database import (
     LedgerQuery,
     LedgerRecord,
     LedgerRepository,
+    PersistenceError,
+    ReviewRecord,
+    ReviewRepository,
     UnitOfWork,
 )
 
@@ -165,6 +172,41 @@ _analysis_opportunities = Table(
     _metadata,
     Column("id", Integer, primary_key=True),
     Column("batch_id", Integer, nullable=False),
+    Column("domain", String, nullable=False),
+    Column("opportunity_code", String, nullable=False),
+    Column("opportunity_type", String, nullable=False),
+    Column("recoverable_amount", Float, nullable=False),
+    Column("saving_opportunity_amount", Float, nullable=False),
+    Column("source_issue_code", String),
+)
+
+_analysis_opportunity_reviews = Table(
+    "analysis_opportunity_reviews",
+    _metadata,
+    Column("id", Integer, primary_key=True),
+    Column("batch_id", Integer, nullable=False),
+    Column("domain", String, nullable=False),
+    Column("opportunity_code", String, nullable=False),
+    Column("opportunity_type", String, nullable=False),
+    Column("source_issue_code", String, nullable=False),
+    Column("estimated_recoverable_amount", Float, nullable=False),
+    Column("estimated_saving_amount", Float, nullable=False),
+    Column("verified_recoverable_amount", Float),
+    Column("realized_saving_amount", Float),
+    Column("review_note", String),
+    Column("updated_at", String, nullable=False),
+)
+
+_correction_returns = Table(
+    "correction_returns",
+    _metadata,
+    Column("id", Integer, primary_key=True),
+    Column("source_file", String, nullable=False),
+    Column("matched_count", Integer, nullable=False),
+    Column("error_count", Integer, nullable=False),
+    Column("errors_json", String, nullable=False),
+    Column("warning_count", Integer, nullable=False),
+    Column("warnings_json", String, nullable=False),
 )
 
 
@@ -288,6 +330,19 @@ class SqliteBatchRepository(BatchRepository):
                 message=message,
             )
         )
+
+    def recent_operations(self, batch_id: int, limit: int = 10) -> list[BatchRecord]:
+        statement = (
+            select(
+                _operation_logs.c.operation,
+                _operation_logs.c.message,
+                _operation_logs.c.created_at,
+            )
+            .where(_operation_logs.c.batch_id == batch_id)
+            .order_by(_operation_logs.c.id.desc())
+            .limit(limit)
+        )
+        return [dict(row) for row in self._connection.execute(statement).mappings()]
 
 
 class SqliteIssueRepository(IssueRepository):
@@ -414,6 +469,7 @@ class SqliteIssueRepository(IssueRepository):
             select(
                 _issues.c.id,
                 _issues.c.batch_id,
+                _issues.c.severity,
                 _issues.c.status,
                 _import_batches.c.is_archived,
             )
@@ -435,11 +491,23 @@ class SqliteIssueRepository(IssueRepository):
         *,
         source: str,
         event_note: str,
+        correction_value: str | None = None,
+        correction_note: str | None = None,
+        update_correction_value: bool = False,
+        update_correction_note: bool = False,
     ) -> None:
+        values: dict[str, Any] = {
+            "status": status,
+            "updated_at": func.current_timestamp(),
+        }
+        if update_correction_value:
+            values["correction_value"] = correction_value
+        if update_correction_note:
+            values["correction_note"] = correction_note
         self._connection.execute(
             update(_issues)
             .where(_issues.c.id == issue["id"])
-            .values(status=status, updated_at=func.current_timestamp())
+            .values(**values)
         )
         self._connection.execute(
             insert(_issue_events).values(
@@ -486,6 +554,73 @@ class SqliteIssueRepository(IssueRepository):
             ],
         )
         return len(affected)
+
+    def workflow_summary(self, batch_id: int) -> IssueRecord:
+        statement = select(
+            func.count().label("total_issue_count"),
+            func.sum(
+                case(
+                    (~_issues.c.status.in_(_CLOSED_ISSUE_STATUSES), 1),
+                    else_=0,
+                )
+            ).label("open_issue_count"),
+            func.sum(
+                case((_issues.c.status == "pending_correction", 1), else_=0)
+            ).label("pending_count"),
+            func.sum(
+                case((_issues.c.status == "needs_review", 1), else_=0)
+            ).label("review_count"),
+            func.sum(
+                case((_issues.c.status == "still_invalid", 1), else_=0)
+            ).label("still_invalid_count"),
+        ).where(_issues.c.batch_id == batch_id)
+        return dict(self._connection.execute(statement).mappings().one())
+
+    def city_progress(self, batch_id: int) -> list[IssueRecord]:
+        city = func.coalesce(_issues.c.city, "未填地市")
+        statement = (
+            select(
+                city.label("city"),
+                func.count().label("total_count"),
+                *[
+                    func.sum(case((_issues.c.status == status, 1), else_=0)).label(label)
+                    for status, label in (
+                        ("pending_correction", "pending_count"),
+                        ("returned", "returned_count"),
+                        ("needs_review", "review_count"),
+                        ("still_invalid", "still_invalid_count"),
+                        ("closed", "closed_count"),
+                        ("not_required", "not_required_count"),
+                        ("resolved_by_reaudit", "resolved_count"),
+                    )
+                ],
+            )
+            .where(_issues.c.batch_id == batch_id)
+            .group_by(city)
+            .order_by(func.count().desc(), city)
+        )
+        return [dict(row) for row in self._connection.execute(statement).mappings()]
+
+    def top_rules_by_city(self, batch_id: int) -> list[IssueRecord]:
+        city = func.coalesce(_issues.c.city, "未填地市")
+        count = func.count().label("count")
+        severity_order = case(
+            (_issues.c.severity == "high", 0),
+            (_issues.c.severity == "medium", 1),
+            else_=2,
+        )
+        statement = (
+            select(
+                city.label("city"),
+                _issues.c.rule_id,
+                _issues.c.severity,
+                count,
+            )
+            .where(_issues.c.batch_id == batch_id)
+            .group_by(city, _issues.c.rule_id, _issues.c.severity)
+            .order_by(count.desc(), severity_order, _issues.c.rule_id)
+        )
+        return [dict(row) for row in self._connection.execute(statement).mappings()]
 
 
 class SqliteLedgerRepository(LedgerRepository):
@@ -754,12 +889,159 @@ class SqliteAuditRepository(AuditRepository):
         )
 
 
+class SqliteReviewRepository(ReviewRepository):
+    def __init__(self, connection: Connection) -> None:
+        self._connection = connection
+
+    def get_opportunity(self, opportunity_code: str) -> ReviewRecord | None:
+        statement = (
+            select(
+                _analysis_opportunities,
+                _issues.c.issue_code,
+                _issues.c.ledger_type.label("issue_ledger_type"),
+                _issues.c.status.label("issue_status"),
+                _issues.c.correction_value,
+                _issues.c.correction_note,
+                _import_batches.c.status.label("batch_status"),
+                _import_batches.c.is_archived,
+            )
+            .select_from(
+                _analysis_opportunities.join(
+                    _import_batches,
+                    _import_batches.c.id == _analysis_opportunities.c.batch_id,
+                ).outerjoin(
+                    _issues,
+                    _issues.c.issue_code
+                    == _analysis_opportunities.c.source_issue_code,
+                )
+            )
+            .where(_analysis_opportunities.c.opportunity_code == opportunity_code)
+        )
+        row = self._connection.execute(statement).mappings().one_or_none()
+        return None if row is None else dict(row)
+
+    def upsert(
+        self,
+        opportunity: ReviewRecord,
+        verified: float | None,
+        realized: float | None,
+        note: str,
+    ) -> None:
+        existing_id = self._connection.execute(
+            select(_analysis_opportunity_reviews.c.id).where(
+                _analysis_opportunity_reviews.c.opportunity_code
+                == opportunity["opportunity_code"]
+            )
+        ).scalar_one_or_none()
+        if existing_id is None:
+            self._connection.execute(
+                insert(_analysis_opportunity_reviews).values(
+                    batch_id=opportunity["batch_id"],
+                    domain=opportunity["domain"],
+                    opportunity_code=opportunity["opportunity_code"],
+                    opportunity_type=opportunity["opportunity_type"],
+                    source_issue_code=opportunity["source_issue_code"],
+                    estimated_recoverable_amount=opportunity["recoverable_amount"],
+                    estimated_saving_amount=opportunity[
+                        "saving_opportunity_amount"
+                    ],
+                    verified_recoverable_amount=verified,
+                    realized_saving_amount=realized,
+                    review_note=note,
+                )
+            )
+            return
+        values: dict[str, Any] = {
+            "review_note": note,
+            "updated_at": func.current_timestamp(),
+        }
+        if verified is not None:
+            values["verified_recoverable_amount"] = verified
+        if realized is not None:
+            values["realized_saving_amount"] = realized
+        self._connection.execute(
+            update(_analysis_opportunity_reviews)
+            .where(_analysis_opportunity_reviews.c.id == existing_id)
+            .values(**values)
+        )
+
+    def sync_note(self, issue_code: str, note: str) -> None:
+        self._connection.execute(
+            update(_analysis_opportunity_reviews)
+            .where(_analysis_opportunity_reviews.c.source_issue_code == issue_code)
+            .values(review_note=note, updated_at=func.current_timestamp())
+        )
+
+    def load_payload(self, opportunity_code: str) -> ReviewRecord | None:
+        statement = (
+            select(
+                _analysis_opportunities.c.opportunity_code,
+                _issues.c.issue_code,
+                _issues.c.status.label("issue_status"),
+                _issues.c.correction_value,
+                _issues.c.correction_note,
+                _analysis_opportunity_reviews.c.verified_recoverable_amount,
+                _analysis_opportunity_reviews.c.realized_saving_amount,
+                _analysis_opportunity_reviews.c.review_note,
+                _analysis_opportunity_reviews.c.updated_at.label("reviewed_at"),
+            )
+            .select_from(
+                _analysis_opportunities.outerjoin(
+                    _issues,
+                    _issues.c.issue_code
+                    == _analysis_opportunities.c.source_issue_code,
+                ).outerjoin(
+                    _analysis_opportunity_reviews,
+                    _analysis_opportunity_reviews.c.opportunity_code
+                    == _analysis_opportunities.c.opportunity_code,
+                )
+            )
+            .where(_analysis_opportunities.c.opportunity_code == opportunity_code)
+        )
+        row = self._connection.execute(statement).mappings().one_or_none()
+        return None if row is None else dict(row)
+
+    @contextmanager
+    def savepoint(self) -> Iterator[None]:
+        try:
+            with self._connection.begin_nested():
+                yield
+        except DBAPIError as exc:
+            raise PersistenceError(str(exc.orig)) from exc
+
+
+class SqliteCorrectionRepository(CorrectionRepository):
+    def __init__(self, connection: Connection) -> None:
+        self._connection = connection
+
+    def record_return(
+        self,
+        *,
+        source_file: str,
+        matched_count: int,
+        errors_json: str,
+        warnings_json: str,
+    ) -> None:
+        self._connection.execute(
+            insert(_correction_returns).values(
+                source_file=source_file,
+                matched_count=matched_count,
+                error_count=len(json.loads(errors_json)),
+                errors_json=errors_json,
+                warning_count=len(json.loads(warnings_json)),
+                warnings_json=warnings_json,
+            )
+        )
+
+
 class SqliteUnitOfWork(UnitOfWork):
     def __init__(self, connection: Connection) -> None:
         self.batches = SqliteBatchRepository(connection)
         self.issues = SqliteIssueRepository(connection)
         self.ledgers = SqliteLedgerRepository(connection)
         self.audits = SqliteAuditRepository(connection)
+        self.reviews = SqliteReviewRepository(connection)
+        self.corrections = SqliteCorrectionRepository(connection)
 
 
 class SqliteDatabase:
@@ -771,8 +1053,14 @@ class SqliteDatabase:
 
     @contextmanager
     def unit_of_work(self) -> Iterator[UnitOfWork]:
-        with self._engine.begin() as connection:
-            yield SqliteUnitOfWork(connection)
+        try:
+            with self._engine.begin() as connection:
+                yield SqliteUnitOfWork(connection)
+        except DBAPIError as exc:
+            original = exc.orig
+            if isinstance(original, BaseException):
+                raise original from exc
+            raise
 
     def dispose(self) -> None:
         self._engine.dispose()

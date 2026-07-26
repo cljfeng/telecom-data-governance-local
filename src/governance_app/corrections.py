@@ -6,17 +6,15 @@ from typing import cast
 from openpyxl import load_workbook
 
 from governance_app.analysis_reviews import (
-    match_opportunity_in_conn,
+    match_opportunity,
     optional_nonnegative_amount,
-    sync_existing_review_note_in_conn,
-    upsert_review_in_conn,
 )
 from governance_app.config import AppConfig
-from governance_app.db import connect
+from governance_app.database_runtime import database_for
 from governance_app.models import IssueStatus
+from governance_app.ports.database import Database
 from governance_app.workflow import (
-    transition_batch_in_conn,
-    update_issue_status_in_conn,
+    transition_batch_in_unit_of_work,
 )
 
 
@@ -28,11 +26,16 @@ class CorrectionImportResult:
     auto_review: dict[str, int] = field(default_factory=dict)
 
 
-def import_correction_return(config: AppConfig, workbook_path: Path) -> CorrectionImportResult:
+def import_correction_return(
+    config: AppConfig,
+    workbook_path: Path,
+    *,
+    database: Database | None = None,
+) -> CorrectionImportResult:
     wb = load_workbook(workbook_path, data_only=True)
     if "整改问题清单" not in wb.sheetnames:
         errors = ["缺少 sheet：整改问题清单"]
-        _record_return(config, workbook_path, 0, errors, [])
+        _record_return(config, workbook_path, 0, errors, [], database=database)
         return CorrectionImportResult(matched_count=0, errors=errors)
     ws = wb["整改问题清单"]
     headers = [cell.value for cell in ws[1]]
@@ -41,7 +44,7 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
     missing = [name for name in required if name not in index]
     if missing:
         errors = [f"缺少回填列：{name}" for name in missing]
-        _record_return(config, workbook_path, 0, errors, [])
+        _record_return(config, workbook_path, 0, errors, [], database=database)
         return CorrectionImportResult(matched_count=0, errors=errors)
     specialist_headers = ["机会编号", "核实可追回金额", "实际落实金额"]
     present_specialist_headers = [name for name in specialist_headers if name in index]
@@ -50,7 +53,7 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
     ):
         missing_specialist = [name for name in specialist_headers if name not in index]
         errors = [f"缺少专题回填列：{name}" for name in missing_specialist]
-        _record_return(config, workbook_path, 0, errors, [])
+        _record_return(config, workbook_path, 0, errors, [], database=database)
         return CorrectionImportResult(matched_count=0, errors=errors)
     is_specialist = len(present_specialist_headers) == len(specialist_headers)
 
@@ -60,7 +63,8 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
     auto_review = {"needs_review": 0, "still_invalid": 0, "not_required": 0}
     matched_batch_ids: set[int] = set()
     seen_issue_codes: set[str] = set()
-    with connect(config) as conn:
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
         for row_number, values in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
             if _is_blank_row(values):
                 continue
@@ -111,15 +115,7 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
                     )
                     row_has_error = True
 
-            batch_row = conn.execute(
-                """
-                select i.id, i.batch_id, i.severity, i.status, b.is_archived
-                  from issues i
-                  join import_batches b on b.id = i.batch_id
-                 where i.issue_code = ?
-                """,
-                (issue_code_text,),
-            ).fetchone()
+            batch_row = unit_of_work.issues.get_with_batch(issue_code_text)
             if batch_row is not None and batch_row["is_archived"]:
                 raise ValueError("batch is archived")
             if batch_row is None and not is_specialist:
@@ -130,8 +126,8 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
             if is_specialist:
                 opportunity_code = str(values[index["机会编号"]] or "").strip()
                 try:
-                    opportunity = match_opportunity_in_conn(
-                        conn,
+                    opportunity = match_opportunity(
+                        unit_of_work,
                         opportunity_code,
                         batch_id=(
                             batch_row["batch_id"] if batch_row is not None else None
@@ -156,9 +152,9 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
                 )
             correction_value = None if corrected is None else str(corrected)
             correction_note = None if note is None else str(note or result or "")
-            issue_row = update_issue_status_in_conn(
-                conn,
-                issue_code_text,
+            assert batch_row is not None
+            unit_of_work.issues.update_status(
+                batch_row,
                 cast(IssueStatus, target_status),
                 source="correction_return",
                 event_note=f"导入整改回传：{issue_code_text}",
@@ -170,38 +166,34 @@ def import_correction_return(config: AppConfig, workbook_path: Path) -> Correcti
             review_note = str(note or result or "")
             if is_specialist:
                 assert opportunity is not None
-                upsert_review_in_conn(
-                    conn,
+                unit_of_work.reviews.upsert(
                     opportunity,
                     verified,
                     realized,
                     review_note,
                 )
             else:
-                sync_existing_review_note_in_conn(conn, issue_code_text, review_note)
-            matched_batch_ids.add(issue_row["batch_id"])
+                unit_of_work.reviews.sync_note(issue_code_text, review_note)
+            matched_batch_ids.add(int(batch_row["batch_id"]))
             auto_review[target_status] = auto_review.get(target_status, 0) + 1
             matched_count += 1
-        conn.execute(
-            """
-            insert into correction_returns(source_file, matched_count, error_count, errors_json, warning_count, warnings_json)
-            values (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                str(workbook_path),
-                matched_count,
-                len(errors),
-                json.dumps(errors, ensure_ascii=False),
-                len(review_warnings),
-                json.dumps(review_warnings, ensure_ascii=False),
-            ),
+        unit_of_work.corrections.record_return(
+            source_file=str(workbook_path),
+            matched_count=matched_count,
+            errors_json=json.dumps(errors, ensure_ascii=False),
+            warnings_json=json.dumps(review_warnings, ensure_ascii=False),
         )
         if matched_batch_ids:
             for batch_id in matched_batch_ids:
-                transition_batch_in_conn(conn, batch_id, "correction_return")
-                conn.execute(
-                    "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
-                    (batch_id, "correction_return", f"导入整改回传，匹配 {matched_count} 条"),
+                transition_batch_in_unit_of_work(
+                    unit_of_work,
+                    batch_id,
+                    "correction_return",
+                )
+                unit_of_work.batches.add_operation(
+                    batch_id,
+                    "correction_return",
+                    f"导入整改回传，匹配 {matched_count} 条",
                 )
     return CorrectionImportResult(
         matched_count=matched_count,
@@ -237,19 +229,20 @@ def _auto_review_status(issue_row, result: object, note: object) -> str:
     return "needs_review"
 
 
-def _record_return(config: AppConfig, workbook_path: Path, matched_count: int, errors: list[str], warnings: list[str]) -> None:
-    with connect(config) as conn:
-        conn.execute(
-            """
-            insert into correction_returns(source_file, matched_count, error_count, errors_json, warning_count, warnings_json)
-            values (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                str(workbook_path),
-                matched_count,
-                len(errors),
-                json.dumps(errors, ensure_ascii=False),
-                len(warnings),
-                json.dumps(warnings, ensure_ascii=False),
-            ),
+def _record_return(
+    config: AppConfig,
+    workbook_path: Path,
+    matched_count: int,
+    errors: list[str],
+    warnings: list[str],
+    *,
+    database: Database | None = None,
+) -> None:
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        unit_of_work.corrections.record_return(
+            source_file=str(workbook_path),
+            matched_count=matched_count,
+            errors_json=json.dumps(errors, ensure_ascii=False),
+            warnings_json=json.dumps(warnings, ensure_ascii=False),
         )
