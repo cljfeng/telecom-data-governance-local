@@ -22,6 +22,8 @@ from governance_app.ports.database import (
     IssueGroupQuery,
     IssueGroupSelector,
     IssueQuery,
+    LedgerQuery,
+    UnitOfWork,
 )
 from governance_app.templates import FIELD_GROUPS
 
@@ -126,16 +128,24 @@ def transition_batch(
 ) -> str:
     selected_database = database or database_for(config)
     with selected_database.unit_of_work() as unit_of_work:
-        batch = unit_of_work.batches.get(batch_id)
-        if batch is None:
-            raise ValueError("batch not found")
-        target, archive = _batch_transition_target(
-            status=str(batch["status"]),
-            is_archived=bool(batch["is_archived"]),
-            event=event,
-        )
-        unit_of_work.batches.update_status(batch_id, target, archive=archive)
-        return target
+        return transition_batch_in_unit_of_work(unit_of_work, batch_id, event)
+
+
+def transition_batch_in_unit_of_work(
+    unit_of_work: UnitOfWork,
+    batch_id: int,
+    event: str,
+) -> str:
+    batch = unit_of_work.batches.get(batch_id)
+    if batch is None:
+        raise ValueError("batch not found")
+    target, archive = _batch_transition_target(
+        status=str(batch["status"]),
+        is_archived=bool(batch["is_archived"]),
+        event=event,
+    )
+    unit_of_work.batches.update_status(batch_id, target, archive=archive)
+    return target
 
 
 def transition_batch_in_conn(conn, batch_id: int, event: str) -> str:
@@ -582,36 +592,21 @@ def list_ledger_rows(
     *,
     limit: int = 500,
     offset: int = 0,
+    database: Database | None = None,
 ) -> list[dict[str, Any]]:
     filters = filters or {}
-    where = ["lr.batch_id = ?"]
-    params: list[Any] = [batch_id]
-    for key, column in {
-        "ledger_type": "lr.ledger_type",
-        "city": "coalesce(lr.city, '未填地市')",
-        "district": "coalesce(lr.district, '')",
-        "site_code": "coalesce(lr.telecom_site_code, '')",
-    }.items():
-        value = filters.get(key)
-        if value:
-            where.append(f"{column} = ?")
-            params.append(value)
-    sql = f"""
-        select lr.id, lr.ledger_type, coalesce(lr.city, '未填地市') as city, lr.district,
-               lr.telecom_site_code, lr.telecom_site_name, lr.tower_site_code, lr.tower_site_name,
-               case
-                   when lr.row_json is not null and lr.row_json <> '{{}}' then lr.row_json
-                   else coalesce(rr.row_json, lr.row_json)
-               end as row_json
-          from ledger_rows lr
-          left join raw_rows rr on rr.id = lr.raw_row_id
-         where {" and ".join(where)}
-         order by lr.ledger_type, lr.city, lr.telecom_site_code, lr.id
-         limit ? offset ?
-    """
-    params.extend([max(1, min(limit, 500)), max(offset, 0)])
-    with connect(config) as conn:
-        rows = conn.execute(sql, params).fetchall()
+    query = LedgerQuery(
+        batch_id=batch_id,
+        ledger_type=filters.get("ledger_type"),
+        city=filters.get("city"),
+        district=filters.get("district"),
+        site_code=filters.get("site_code"),
+        limit=max(1, min(limit, 500)),
+        offset=max(offset, 0),
+    )
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        rows = unit_of_work.ledgers.query(query)
     result: list[dict[str, Any]] = []
     for row in rows:
         raw = json.loads(row["row_json"])
@@ -633,26 +628,24 @@ def list_ledger_rows(
     return result
 
 
-def count_ledger_rows(config: AppConfig, batch_id: int, filters: dict[str, str] | None = None) -> int:
+def count_ledger_rows(
+    config: AppConfig,
+    batch_id: int,
+    filters: dict[str, str] | None = None,
+    *,
+    database: Database | None = None,
+) -> int:
     filters = filters or {}
-    where = ["batch_id = ?"]
-    params: list[Any] = [batch_id]
-    for key, column in {
-        "ledger_type": "ledger_type",
-        "city": "coalesce(city, '未填地市')",
-        "district": "coalesce(district, '')",
-        "site_code": "coalesce(telecom_site_code, '')",
-    }.items():
-        value = filters.get(key)
-        if value:
-            where.append(f"{column} = ?")
-            params.append(value)
-    with connect(config) as conn:
-        row = conn.execute(
-            f"select count(*) as count from ledger_rows where {' and '.join(where)}",
-            params,
-        ).fetchone()
-    return int(row["count"] or 0)
+    query = LedgerQuery(
+        batch_id=batch_id,
+        ledger_type=filters.get("ledger_type"),
+        city=filters.get("city"),
+        district=filters.get("district"),
+        site_code=filters.get("site_code"),
+    )
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        return unit_of_work.ledgers.count(query)
 
 
 def _issue_explanation(issue: dict[str, Any], metadata) -> dict[str, str]:

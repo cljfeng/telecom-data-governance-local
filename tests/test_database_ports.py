@@ -5,11 +5,13 @@ from governance_app.audit_engine import run_audit
 from governance_app.db import connect, initialize_database
 from governance_app.importer import import_workbook
 from governance_app.workflow import (
+    count_ledger_rows,
     create_batch,
     list_batches,
     list_issue_groups,
     list_issue_rules,
     list_issues,
+    list_ledger_rows,
     set_current_batch,
     transition_batch,
     update_issue_status,
@@ -169,3 +171,47 @@ def test_issue_update_rolls_back_status_and_event_together(
 
     assert issue["status"] != "closed"
     assert events == 0
+
+
+def test_import_audit_and_ledger_queries_share_database_port(
+    app_config,
+    sample_workbook,
+):
+    initialize_database(app_config)
+    database = SqliteDatabase(app_config.database_path)
+
+    try:
+        imported = import_workbook(
+            app_config,
+            sample_workbook,
+            database=database,
+        )
+        with connect(app_config) as connection:
+            connection.execute(
+                "update raw_rows set row_json = replace(row_json, '0.8', '9.9') "
+                "where ledger_type = 'electricity'"
+            )
+        ledger_rows = list_ledger_rows(
+            app_config,
+            imported.batch_id,
+            {"city": "杭州"},
+            database=database,
+        )
+        ledger_count = count_ledger_rows(
+            app_config,
+            imported.batch_id,
+            {},
+            database=database,
+        )
+        audit = run_audit(
+            app_config,
+            imported.batch_id,
+            database=database,
+        )
+    finally:
+        database.dispose()
+
+    assert ledger_count == 4
+    assert len(ledger_rows) == 3
+    assert audit.audit_run_id > 0
+    assert audit.issue_count == 2

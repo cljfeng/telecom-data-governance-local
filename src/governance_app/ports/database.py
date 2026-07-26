@@ -8,6 +8,7 @@ from governance_app.models import IssueStatus
 
 BatchRecord = Mapping[str, Any]
 IssueRecord = Mapping[str, Any]
+LedgerRecord = Mapping[str, Any]
 
 
 @dataclass(frozen=True)
@@ -42,8 +43,54 @@ class IssueGroupSelector:
     telecom_site_code: str
 
 
+@dataclass(frozen=True)
+class LedgerQuery:
+    batch_id: int
+    ledger_type: str | None = None
+    city: str | None = None
+    district: str | None = None
+    site_code: str | None = None
+    limit: int = 500
+    offset: int = 0
+
+
+@dataclass(frozen=True)
+class ImportedLedgerRow:
+    ledger_type: str
+    sheet_name: str
+    row_number: int
+    row_json: str
+    city: str | None
+    district: str | None
+    telecom_site_code: str | None
+    telecom_site_name: str | None
+    tower_site_code: str | None
+    tower_site_name: str | None
+
+
+@dataclass(frozen=True)
+class AuditFindingRecord:
+    audit_run_id: int
+    batch_id: int
+    ledger_row_id: int
+    ledger_type: str
+    city: str | None
+    district: str | None
+    telecom_site_code: str | None
+    telecom_site_name: str | None
+    rule_id: str
+    severity: str
+    message: str
+    suggestion: str
+    field_name: str | None
+    result_json: str
+    issue_code: str
+
+
 class BatchRepository(Protocol):
     def create(self, *, name: str, batch_code: str) -> int: ...
+
+    def create_imported(self, *, source_file: str, name: str, batch_code: str) -> int: ...
 
     def get(self, batch_id: int) -> BatchRecord | None: ...
 
@@ -54,6 +101,8 @@ class BatchRepository(Protocol):
     def set_current(self, batch_id: int) -> None: ...
 
     def update_status(self, batch_id: int, status: str, *, archive: bool = False) -> None: ...
+
+    def update_source(self, batch_id: int, *, source_file: str, fallback_name: str) -> None: ...
 
     def add_operation(self, batch_id: int, operation: str, message: str) -> None: ...
 
@@ -86,9 +135,38 @@ class IssueRepository(Protocol):
     ) -> int: ...
 
 
+class LedgerRepository(Protocol):
+    def query(self, query: LedgerQuery) -> list[LedgerRecord]: ...
+
+    def count(self, query: LedgerQuery) -> int: ...
+
+    def add_imported_row(self, batch_id: int, row: ImportedLedgerRow) -> None: ...
+
+    def clear_batch_data(self, batch_id: int) -> None: ...
+
+    def audit_rows(self, batch_id: int) -> list[LedgerRecord]: ...
+
+
+class AuditRepository(Protocol):
+    def create_run(self, batch_id: int, rule_count: int) -> int: ...
+
+    def save_finding(self, finding: AuditFindingRecord) -> None: ...
+
+    def resolve_missing(
+        self,
+        batch_id: int,
+        audit_run_id: int,
+        seen_issue_codes: set[str],
+    ) -> int: ...
+
+    def clear_analysis_opportunities(self, batch_id: int) -> None: ...
+
+
 class UnitOfWork(Protocol):
     batches: BatchRepository
     issues: IssueRepository
+    ledgers: LedgerRepository
+    audits: AuditRepository
 
 
 class Database(Protocol):

@@ -12,6 +12,7 @@ from sqlalchemy import (
     Table,
     case,
     create_engine,
+    delete,
     event,
     func,
     insert,
@@ -23,13 +24,19 @@ from sqlalchemy.pool import NullPool
 
 from governance_app.models import IssueStatus
 from governance_app.ports.database import (
+    AuditFindingRecord,
+    AuditRepository,
     BatchRecord,
     BatchRepository,
+    ImportedLedgerRow,
     IssueGroupQuery,
     IssueGroupSelector,
     IssueQuery,
     IssueRecord,
     IssueRepository,
+    LedgerQuery,
+    LedgerRecord,
+    LedgerRepository,
     UnitOfWork,
 )
 
@@ -71,6 +78,12 @@ _audit_results = Table(
     "audit_results",
     _metadata,
     Column("id", Integer, primary_key=True),
+    Column("audit_run_id", Integer, nullable=False),
+    Column("ledger_row_id", Integer),
+    Column("rule_id", String, nullable=False),
+    Column("severity", String, nullable=False),
+    Column("message", String, nullable=False),
+    Column("field_name", String),
     Column("result_json", String, nullable=False),
 )
 
@@ -93,6 +106,8 @@ _issues = Table(
     Column("suggestion", String, nullable=False),
     Column("correction_value", String),
     Column("correction_note", String),
+    Column("last_seen_audit_run_id", Integer),
+    Column("resolved_at", String),
     Column("updated_at", String, nullable=False),
 )
 
@@ -108,6 +123,50 @@ _issue_events = Table(
     Column("created_at", String, nullable=False),
 )
 
+_raw_rows = Table(
+    "raw_rows",
+    _metadata,
+    Column("id", Integer, primary_key=True),
+    Column("batch_id", Integer, nullable=False),
+    Column("ledger_type", String, nullable=False),
+    Column("sheet_name", String, nullable=False),
+    Column("row_number", Integer, nullable=False),
+    Column("row_json", String, nullable=False),
+)
+
+_ledger_rows = Table(
+    "ledger_rows",
+    _metadata,
+    Column("id", Integer, primary_key=True),
+    Column("batch_id", Integer, nullable=False),
+    Column("ledger_type", String, nullable=False),
+    Column("city", String),
+    Column("district", String),
+    Column("telecom_site_code", String),
+    Column("telecom_site_name", String),
+    Column("tower_site_code", String),
+    Column("tower_site_name", String),
+    Column("raw_row_id", Integer),
+    Column("row_json", String, nullable=False),
+    Column("sheet_name", String),
+    Column("row_number", Integer),
+)
+
+_audit_runs = Table(
+    "audit_runs",
+    _metadata,
+    Column("id", Integer, primary_key=True),
+    Column("batch_id", Integer, nullable=False),
+    Column("rule_count", Integer, nullable=False),
+)
+
+_analysis_opportunities = Table(
+    "analysis_opportunities",
+    _metadata,
+    Column("id", Integer, primary_key=True),
+    Column("batch_id", Integer, nullable=False),
+)
+
 
 class SqliteBatchRepository(BatchRepository):
     def __init__(self, connection: Connection) -> None:
@@ -120,6 +179,20 @@ class SqliteBatchRepository(BatchRepository):
                 name=name,
                 batch_code=batch_code,
                 status="created",
+            )
+        )
+        primary_key = result.inserted_primary_key
+        if primary_key is None or primary_key[0] is None:
+            raise RuntimeError("database did not return a batch id")
+        return int(primary_key[0])
+
+    def create_imported(self, *, source_file: str, name: str, batch_code: str) -> int:
+        result = self._connection.execute(
+            insert(_import_batches).values(
+                source_file=source_file,
+                name=name,
+                batch_code=batch_code,
+                status="imported",
             )
         )
         primary_key = result.inserted_primary_key
@@ -195,6 +268,16 @@ class SqliteBatchRepository(BatchRepository):
             values.update(is_archived=1, archived_at=func.current_timestamp())
         self._connection.execute(
             update(_import_batches).where(_import_batches.c.id == batch_id).values(**values)
+        )
+
+    def update_source(self, batch_id: int, *, source_file: str, fallback_name: str) -> None:
+        self._connection.execute(
+            update(_import_batches)
+            .where(_import_batches.c.id == batch_id)
+            .values(
+                source_file=source_file,
+                name=func.coalesce(_import_batches.c.name, fallback_name),
+            )
         )
 
     def add_operation(self, batch_id: int, operation: str, message: str) -> None:
@@ -405,10 +488,278 @@ class SqliteIssueRepository(IssueRepository):
         return len(affected)
 
 
+class SqliteLedgerRepository(LedgerRepository):
+    def __init__(self, connection: Connection) -> None:
+        self._connection = connection
+
+    def query(self, query: LedgerQuery) -> list[LedgerRecord]:
+        effective_row_json = case(
+            (_ledger_rows.c.row_json != "{}", _ledger_rows.c.row_json),
+            else_=func.coalesce(_raw_rows.c.row_json, _ledger_rows.c.row_json),
+        ).label("row_json")
+        statement = (
+            select(
+                _ledger_rows.c.id,
+                _ledger_rows.c.ledger_type,
+                func.coalesce(_ledger_rows.c.city, "未填地市").label("city"),
+                _ledger_rows.c.district,
+                _ledger_rows.c.telecom_site_code,
+                _ledger_rows.c.telecom_site_name,
+                _ledger_rows.c.tower_site_code,
+                _ledger_rows.c.tower_site_name,
+                effective_row_json,
+            )
+            .select_from(
+                _ledger_rows.outerjoin(
+                    _raw_rows,
+                    _raw_rows.c.id == _ledger_rows.c.raw_row_id,
+                )
+            )
+            .where(*_ledger_conditions(query))
+            .order_by(
+                _ledger_rows.c.ledger_type,
+                _ledger_rows.c.city,
+                _ledger_rows.c.telecom_site_code,
+                _ledger_rows.c.id,
+            )
+            .limit(query.limit)
+            .offset(query.offset)
+        )
+        return [dict(row) for row in self._connection.execute(statement).mappings()]
+
+    def count(self, query: LedgerQuery) -> int:
+        statement = (
+            select(func.count())
+            .select_from(_ledger_rows)
+            .where(*_ledger_conditions(query))
+        )
+        return int(self._connection.execute(statement).scalar_one())
+
+    def add_imported_row(self, batch_id: int, row: ImportedLedgerRow) -> None:
+        raw_result = self._connection.execute(
+            insert(_raw_rows).values(
+                batch_id=batch_id,
+                ledger_type=row.ledger_type,
+                sheet_name=row.sheet_name,
+                row_number=row.row_number,
+                row_json=row.row_json,
+            )
+        )
+        primary_key = raw_result.inserted_primary_key
+        if primary_key is None or primary_key[0] is None:
+            raise RuntimeError("database did not return a raw row id")
+        self._connection.execute(
+            insert(_ledger_rows).values(
+                batch_id=batch_id,
+                ledger_type=row.ledger_type,
+                city=row.city,
+                district=row.district,
+                telecom_site_code=row.telecom_site_code,
+                telecom_site_name=row.telecom_site_name,
+                tower_site_code=row.tower_site_code,
+                tower_site_name=row.tower_site_name,
+                raw_row_id=primary_key[0],
+                row_json="{}",
+                sheet_name=row.sheet_name,
+                row_number=row.row_number,
+            )
+        )
+
+    def clear_batch_data(self, batch_id: int) -> None:
+        run_ids = select(_audit_runs.c.id).where(_audit_runs.c.batch_id == batch_id)
+        self._connection.execute(delete(_issues).where(_issues.c.batch_id == batch_id))
+        self._connection.execute(
+            delete(_audit_results).where(_audit_results.c.audit_run_id.in_(run_ids))
+        )
+        self._connection.execute(delete(_audit_runs).where(_audit_runs.c.batch_id == batch_id))
+        self._connection.execute(delete(_ledger_rows).where(_ledger_rows.c.batch_id == batch_id))
+        self._connection.execute(delete(_raw_rows).where(_raw_rows.c.batch_id == batch_id))
+
+    def audit_rows(self, batch_id: int) -> list[LedgerRecord]:
+        effective_row_json = case(
+            (_ledger_rows.c.row_json != "{}", _ledger_rows.c.row_json),
+            else_=func.coalesce(_raw_rows.c.row_json, _ledger_rows.c.row_json),
+        ).label("effective_row_json")
+        statement = (
+            select(
+                _ledger_rows.c.id,
+                _ledger_rows.c.ledger_type,
+                _ledger_rows.c.city,
+                _ledger_rows.c.district,
+                _ledger_rows.c.telecom_site_code,
+                _ledger_rows.c.telecom_site_name,
+                effective_row_json,
+            )
+            .select_from(
+                _ledger_rows.outerjoin(
+                    _raw_rows,
+                    _raw_rows.c.id == _ledger_rows.c.raw_row_id,
+                )
+            )
+            .where(_ledger_rows.c.batch_id == batch_id)
+            .order_by(_ledger_rows.c.id)
+        )
+        return [dict(row) for row in self._connection.execute(statement).mappings()]
+
+
+class SqliteAuditRepository(AuditRepository):
+    def __init__(self, connection: Connection) -> None:
+        self._connection = connection
+
+    def create_run(self, batch_id: int, rule_count: int) -> int:
+        result = self._connection.execute(
+            insert(_audit_runs).values(batch_id=batch_id, rule_count=rule_count)
+        )
+        primary_key = result.inserted_primary_key
+        if primary_key is None or primary_key[0] is None:
+            raise RuntimeError("database did not return an audit run id")
+        return int(primary_key[0])
+
+    def save_finding(self, finding: AuditFindingRecord) -> None:
+        result = self._connection.execute(
+            insert(_audit_results).values(
+                audit_run_id=finding.audit_run_id,
+                ledger_row_id=finding.ledger_row_id,
+                rule_id=finding.rule_id,
+                severity=finding.severity,
+                message=finding.message,
+                field_name=finding.field_name,
+                result_json=finding.result_json,
+            )
+        )
+        primary_key = result.inserted_primary_key
+        if primary_key is None or primary_key[0] is None:
+            raise RuntimeError("database did not return an audit result id")
+        existing = self._connection.execute(
+            select(_issues.c.id, _issues.c.status).where(
+                _issues.c.issue_code == finding.issue_code
+            )
+        ).mappings().one_or_none()
+        if existing is None:
+            issue_result = self._connection.execute(
+                insert(_issues).values(
+                    issue_code=finding.issue_code,
+                    audit_result_id=primary_key[0],
+                    last_seen_audit_run_id=finding.audit_run_id,
+                    batch_id=finding.batch_id,
+                    city=finding.city,
+                    district=finding.district,
+                    telecom_site_code=finding.telecom_site_code,
+                    telecom_site_name=finding.telecom_site_name,
+                    ledger_type=finding.ledger_type,
+                    rule_id=finding.rule_id,
+                    severity=finding.severity,
+                    message=finding.message,
+                    suggestion=finding.suggestion,
+                )
+            )
+            issue_primary_key = issue_result.inserted_primary_key
+            if issue_primary_key is None or issue_primary_key[0] is None:
+                raise RuntimeError("database did not return an issue id")
+            self._record_event(
+                int(issue_primary_key[0]),
+                None,
+                "pending_export",
+                "audit",
+                "首次命中稽核规则",
+            )
+            return
+
+        reopened = existing["status"] == "resolved_by_reaudit"
+        target_status = "pending_export" if reopened else existing["status"]
+        self._connection.execute(
+            update(_issues)
+            .where(_issues.c.id == existing["id"])
+            .values(
+                audit_result_id=primary_key[0],
+                last_seen_audit_run_id=finding.audit_run_id,
+                city=finding.city,
+                district=finding.district,
+                telecom_site_code=finding.telecom_site_code,
+                telecom_site_name=finding.telecom_site_name,
+                severity=finding.severity,
+                message=finding.message,
+                suggestion=finding.suggestion,
+                status=target_status,
+                resolved_at=None,
+                updated_at=func.current_timestamp(),
+            )
+        )
+        if reopened:
+            self._record_event(
+                int(existing["id"]),
+                "resolved_by_reaudit",
+                "pending_export",
+                "reaudit_reopen",
+                "重复稽核再次命中",
+            )
+
+    def resolve_missing(
+        self,
+        batch_id: int,
+        audit_run_id: int,
+        seen_issue_codes: set[str],
+    ) -> int:
+        rows = list(
+            self._connection.execute(
+                select(_issues.c.id, _issues.c.issue_code, _issues.c.status).where(
+                    _issues.c.batch_id == batch_id,
+                    _issues.c.status != "resolved_by_reaudit",
+                )
+            ).mappings()
+        )
+        missing = [row for row in rows if row["issue_code"] not in seen_issue_codes]
+        for row in missing:
+            self._connection.execute(
+                update(_issues)
+                .where(_issues.c.id == row["id"])
+                .values(
+                    status="resolved_by_reaudit",
+                    resolved_at=func.current_timestamp(),
+                    updated_at=func.current_timestamp(),
+                )
+            )
+            self._record_event(
+                int(row["id"]),
+                str(row["status"]),
+                "resolved_by_reaudit",
+                "reaudit_resolve",
+                f"稽核运行 {audit_run_id} 未再次命中",
+            )
+        return len(missing)
+
+    def clear_analysis_opportunities(self, batch_id: int) -> None:
+        self._connection.execute(
+            delete(_analysis_opportunities).where(
+                _analysis_opportunities.c.batch_id == batch_id
+            )
+        )
+
+    def _record_event(
+        self,
+        issue_id: int,
+        from_status: str | None,
+        to_status: str,
+        source: str,
+        note: str,
+    ) -> None:
+        self._connection.execute(
+            insert(_issue_events).values(
+                issue_id=issue_id,
+                from_status=from_status,
+                to_status=to_status,
+                source=source,
+                note=note,
+            )
+        )
+
+
 class SqliteUnitOfWork(UnitOfWork):
     def __init__(self, connection: Connection) -> None:
         self.batches = SqliteBatchRepository(connection)
         self.issues = SqliteIssueRepository(connection)
+        self.ledgers = SqliteLedgerRepository(connection)
+        self.audits = SqliteAuditRepository(connection)
 
 
 class SqliteDatabase:
@@ -478,3 +829,16 @@ def _issue_group_selector_conditions(selector: IssueGroupSelector) -> list[Any]:
         func.coalesce(_issues.c.city, "未填地市") == selector.city,
         func.coalesce(_issues.c.telecom_site_code, "") == selector.telecom_site_code,
     ]
+
+
+def _ledger_conditions(query: LedgerQuery) -> list[Any]:
+    conditions = [_ledger_rows.c.batch_id == query.batch_id]
+    for value, column in (
+        (query.ledger_type, _ledger_rows.c.ledger_type),
+        (query.city, func.coalesce(_ledger_rows.c.city, "未填地市")),
+        (query.district, func.coalesce(_ledger_rows.c.district, "")),
+        (query.site_code, func.coalesce(_ledger_rows.c.telecom_site_code, "")),
+    ):
+        if value:
+            conditions.append(column == value)
+    return conditions

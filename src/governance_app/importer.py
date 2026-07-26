@@ -9,8 +9,9 @@ from openpyxl import load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
 from governance_app.config import AppConfig
-from governance_app.db import connect
+from governance_app.database_runtime import database_for
 from governance_app.models import LedgerType, ValidationErrorDetail
+from governance_app.ports.database import Database, ImportedLedgerRow
 from governance_app.recent_files import record_recent_file
 from governance_app.templates import (
     EXPECTED_SHEETS,
@@ -19,7 +20,7 @@ from governance_app.templates import (
     required_headers_for,
     workbook_sheet_for,
 )
-from governance_app.workflow import _new_batch_code, transition_batch_in_conn
+from governance_app.workflow import _new_batch_code, transition_batch_in_unit_of_work
 
 
 @dataclass(frozen=True)
@@ -29,7 +30,14 @@ class ImportResult:
     ledger_counts: dict[str, int] = field(default_factory=dict)
 
 
-def import_workbook(config: AppConfig, workbook_path: Path, strategy: str = "new", batch_id: int | None = None) -> ImportResult:
+def import_workbook(
+    config: AppConfig,
+    workbook_path: Path,
+    strategy: str = "new",
+    batch_id: int | None = None,
+    *,
+    database: Database | None = None,
+) -> ImportResult:
     started_at = perf_counter()
     wb = load_workbook(workbook_path, data_only=True)
     errors: list[ValidationErrorDetail] = []
@@ -57,87 +65,67 @@ def import_workbook(config: AppConfig, workbook_path: Path, strategy: str = "new
     if strategy in {"append", "replace"} and batch_id is None:
         raise ValueError("batch_id is required")
 
-    with connect(config) as conn:
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
         if strategy == "new":
             batch_name = _clean_batch_name(workbook_path.stem)
-            batch_id = conn.execute(
-                "insert into import_batches(source_file, name, batch_code, status) values (?, ?, ?, ?)",
-                (str(workbook_path), batch_name, _new_batch_code(), "imported"),
-            ).lastrowid
+            batch_id = unit_of_work.batches.create_imported(
+                source_file=str(workbook_path),
+                name=batch_name,
+                batch_code=_new_batch_code(),
+            )
             operation = "import"
             message = f"导入台账：{workbook_path.name}"
         else:
-            batch = conn.execute("select id, is_archived from import_batches where id = ?", (batch_id,)).fetchone()
+            assert batch_id is not None
+            batch = unit_of_work.batches.get(batch_id)
             if batch is None:
                 raise ValueError("batch not found")
             if batch["is_archived"]:
                 raise ValueError("batch is archived")
             if strategy == "replace":
-                _clear_batch_data(conn, batch_id)
+                unit_of_work.ledgers.clear_batch_data(batch_id)
                 operation = "import_replace"
                 message = f"覆盖导入台账：{workbook_path.name}"
             else:
                 operation = "import_append"
                 message = f"追加导入台账：{workbook_path.name}"
-            conn.execute(
-                "update import_batches set source_file = ?, name = coalesce(name, ?) where id = ?",
-                (str(workbook_path), _clean_batch_name(workbook_path.stem), batch_id),
+            unit_of_work.batches.update_source(
+                batch_id,
+                source_file=str(workbook_path),
+                fallback_name=_clean_batch_name(workbook_path.stem),
             )
-            transition_batch_in_conn(conn, batch_id, "import")
-        conn.execute(
-            "insert into settings(key, value_json) values ('current_batch_id', ?) "
-            "on conflict(key) do update set value_json = excluded.value_json",
-            (str(batch_id),),
-        )
+            transition_batch_in_unit_of_work(unit_of_work, batch_id, "import")
+        unit_of_work.batches.set_current(batch_id)
         ledger_counts: dict[str, int] = {}
         for ledger_type, (sheet_name, rows) in parsed.items():
             ledger_counts[ledger_type] = len(rows)
             for row_number, row in rows:
                 row_json = json.dumps(row, ensure_ascii=False, default=str)
-                raw_row_id = conn.execute(
-                    "insert into raw_rows(batch_id, ledger_type, sheet_name, row_number, row_json) values (?, ?, ?, ?, ?)",
-                    (batch_id, ledger_type, sheet_name, row_number, row_json),
-                ).lastrowid
-                conn.execute(
-                    """
-                    insert into ledger_rows(
-                        batch_id, ledger_type, city, district, telecom_site_code, telecom_site_name,
-                        tower_site_code, tower_site_name, raw_row_id, row_json, sheet_name, row_number
-                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        batch_id,
-                        ledger_type,
-                        _clean(row.get("地市")),
-                        _clean(row.get("区县")),
-                        _clean(row.get("电信站址编码")),
-                        _clean(row.get("电信站址名称")),
-                        _clean(row.get("铁塔站址编码")),
-                        _clean(row.get("铁塔站址名称")),
-                        raw_row_id,
-                        "{}",
-                        sheet_name,
-                        row_number,
+                unit_of_work.ledgers.add_imported_row(
+                    batch_id,
+                    ImportedLedgerRow(
+                        ledger_type=ledger_type,
+                        sheet_name=sheet_name,
+                        row_number=row_number,
+                        row_json=row_json,
+                        city=_clean(row.get("地市")),
+                        district=_clean(row.get("区县")),
+                        telecom_site_code=_clean(row.get("电信站址编码")),
+                        telecom_site_name=_clean(row.get("电信站址名称")),
+                        tower_site_code=_clean(row.get("铁塔站址编码")),
+                        tower_site_name=_clean(row.get("铁塔站址名称")),
                     ),
                 )
         total_records = sum(ledger_counts.values())
         elapsed = perf_counter() - started_at
-        conn.execute(
-            "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
-            (batch_id, operation, f"{message}；记录 {total_records} 条；耗时 {elapsed:.2f} 秒"),
+        unit_of_work.batches.add_operation(
+            batch_id,
+            operation,
+            f"{message}；记录 {total_records} 条；耗时 {elapsed:.2f} 秒",
         )
     record_recent_file(config, workbook_path, "import", True, ledger_counts, 0)
     return ImportResult(batch_id=batch_id, ledger_counts=ledger_counts)
-
-
-def _clear_batch_data(conn, batch_id: int) -> None:
-    audit_run_ids = [row["id"] for row in conn.execute("select id from audit_runs where batch_id = ?", (batch_id,))]
-    conn.execute("delete from issues where batch_id = ?", (batch_id,))
-    if audit_run_ids:
-        conn.executemany("delete from audit_results where audit_run_id = ?", [(audit_run_id,) for audit_run_id in audit_run_ids])
-    conn.execute("delete from audit_runs where batch_id = ?", (batch_id,))
-    conn.execute("delete from ledger_rows where batch_id = ?", (batch_id,))
-    conn.execute("delete from raw_rows where batch_id = ?", (batch_id,))
 
 
 def _headers(ws: Worksheet, header_rows: int, ledger_type: LedgerType) -> list[str]:
