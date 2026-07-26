@@ -13,9 +13,11 @@ from governance_app.audit_quality import (
 )
 from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
+from governance_app.database_runtime import database_for
 from governance_app.db import connect
 from governance_app.geo import normalize_city
 from governance_app.models import IssueStatus
+from governance_app.ports.database import Database
 from governance_app.templates import FIELD_GROUPS
 
 ISSUE_STATUSES = {
@@ -94,46 +96,53 @@ BATCH_TRANSITIONS = {
 }
 
 
-def create_batch(config: AppConfig, name: str) -> int:
+def create_batch(config: AppConfig, name: str, *, database: Database | None = None) -> int:
     cleaned = name.strip()
     if not cleaned:
         raise ValueError("batch name is required")
-    with connect(config) as conn:
-        batch_id = conn.execute(
-            "insert into import_batches(source_file, name, batch_code, status) values (?, ?, ?, ?)",
-            ("", cleaned, _new_batch_code(), "created"),
-        ).lastrowid
-        conn.execute(
-            "insert into settings(key, value_json) values ('current_batch_id', ?) "
-            "on conflict(key) do update set value_json = excluded.value_json",
-            (str(batch_id),),
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        batch_id = unit_of_work.batches.create(name=cleaned, batch_code=_new_batch_code())
+        unit_of_work.batches.set_current(batch_id)
+        unit_of_work.batches.add_operation(
+            batch_id,
+            "create_batch",
+            f"创建专项批次：{cleaned}",
         )
-        conn.execute(
-            "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
-            (batch_id, "create_batch", f"创建专项批次：{cleaned}"),
-        )
-        return int(batch_id)
+        return batch_id
 
 
-def transition_batch(config: AppConfig, batch_id: int, event: str) -> str:
-    with connect(config) as conn:
-        return transition_batch_in_conn(conn, batch_id, event)
+def transition_batch(
+    config: AppConfig,
+    batch_id: int,
+    event: str,
+    *,
+    database: Database | None = None,
+) -> str:
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        batch = unit_of_work.batches.get(batch_id)
+        if batch is None:
+            raise ValueError("batch not found")
+        target, archive = _batch_transition_target(
+            status=str(batch["status"]),
+            is_archived=bool(batch["is_archived"]),
+            event=event,
+        )
+        unit_of_work.batches.update_status(batch_id, target, archive=archive)
+        return target
 
 
 def transition_batch_in_conn(conn, batch_id: int, event: str) -> str:
-    rule = BATCH_TRANSITIONS.get(event)
-    if rule is None:
-        raise ValueError("invalid batch transition")
     row = conn.execute("select status, is_archived from import_batches where id = ?", (batch_id,)).fetchone()
     if row is None:
         raise ValueError("batch not found")
-    if row["is_archived"]:
-        raise ValueError("batch is archived")
-    current = row["status"]
-    if current not in rule["from"]:
-        raise ValueError(f"invalid batch transition: {current} -> {event}")
-    target = rule["to"]
-    if event == "archive":
+    target, archive = _batch_transition_target(
+        status=str(row["status"]),
+        is_archived=bool(row["is_archived"]),
+        event=event,
+    )
+    if archive:
         conn.execute(
             "update import_batches set status = ?, is_archived = 1, archived_at = current_timestamp where id = ?",
             (target, batch_id),
@@ -143,42 +152,52 @@ def transition_batch_in_conn(conn, batch_id: int, event: str) -> str:
     return str(target)
 
 
-def set_current_batch(config: AppConfig, batch_id: int) -> None:
-    with connect(config) as conn:
-        _require_batch(conn, batch_id)
-        conn.execute(
-            "insert into settings(key, value_json) values ('current_batch_id', ?) "
-            "on conflict(key) do update set value_json = excluded.value_json",
-            (str(batch_id),),
-        )
-        conn.execute(
-            "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
-            (batch_id, "select_batch", "切换当前工作批次"),
+def _batch_transition_target(
+    *,
+    status: str,
+    is_archived: bool,
+    event: str,
+) -> tuple[str, bool]:
+    rule = BATCH_TRANSITIONS.get(event)
+    if rule is None:
+        raise ValueError("invalid batch transition")
+    if is_archived:
+        raise ValueError("batch is archived")
+    if status not in rule["from"]:
+        raise ValueError(f"invalid batch transition: {status} -> {event}")
+    return str(rule["to"]), event == "archive"
+
+
+def set_current_batch(
+    config: AppConfig,
+    batch_id: int,
+    *,
+    database: Database | None = None,
+) -> None:
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        if unit_of_work.batches.get(batch_id) is None:
+            raise ValueError("batch not found")
+        unit_of_work.batches.set_current(batch_id)
+        unit_of_work.batches.add_operation(
+            batch_id,
+            "select_batch",
+            "切换当前工作批次",
         )
 
 
-def list_batches(config: AppConfig) -> list[dict[str, Any]]:
-    with connect(config) as conn:
-        current = _current_batch_id(conn)
-        rows = conn.execute(
-            """
-            select id, coalesce(name, source_file, '未命名批次') as name, batch_code, source_file, template_version,
-                   created_at, status, is_archived, archived_at
-              from import_batches
-             order by id desc
-            """
-        ).fetchall()
+def list_batches(
+    config: AppConfig,
+    *,
+    database: Database | None = None,
+) -> list[dict[str, Any]]:
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        current = unit_of_work.batches.current_id()
+        rows = unit_of_work.batches.list_all()
         return [
             {
-                "id": row["id"],
-                "name": _display_batch_name(row["name"]),
-                "batch_code": row["batch_code"] or _code_from_created_at(row["created_at"], row["id"]),
-                "source_file": row["source_file"],
-                "template_version": row["template_version"],
-                "created_at": row["created_at"],
-                "status": row["status"],
-                "is_archived": bool(row["is_archived"]),
-                "archived_at": row["archived_at"],
+                **_batch_dict(row),
                 "is_current": row["id"] == current,
             }
             for row in rows

@@ -13,6 +13,8 @@ EXPECTED_MYPY_FILES = [
     "src/governance_app/audit_rules.py",
     "src/governance_app/rules",
     "src/governance_app/routes",
+    "src/governance_app/ports",
+    "src/governance_app/adapters",
 ]
 EXPECTED_BASELINE_GATE = 90
 EXPECTED_CHECK_SCRIPT = '''#!/usr/bin/env bash

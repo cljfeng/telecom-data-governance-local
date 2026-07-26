@@ -7,7 +7,10 @@ name = "local-base-data-governance"
 version = "0.2.0"
 description = "Local single-machine tool for telecom tower rent and electricity fee data governance"
 requires-python = ">=3.12"
-dependencies = ["openpyxl>=3.1.0"]
+dependencies = [
+  "openpyxl>=3.1.0",
+  "sqlalchemy>=2.0,<3",
+]
 
 [project.optional-dependencies]
 test = [
@@ -40,6 +43,8 @@ files = [
   "src/governance_app/audit_rules.py",
   "src/governance_app/rules",
   "src/governance_app/routes",
+  "src/governance_app/ports",
+  "src/governance_app/adapters",
 ]
 check_untyped_defs = true
 no_implicit_optional = true
