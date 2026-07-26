@@ -1,8 +1,14 @@
 import pytest
 
 from governance_app.adapters.sqlite_database import SqliteDatabase
+from governance_app.archive import archive_batch
 from governance_app.audit_engine import run_audit
 from governance_app.db import connect, initialize_database
+from governance_app.electricity_analysis import (
+    get_electricity_summary,
+    run_electricity_analysis,
+)
+from governance_app.exporter import export_city_issue_packages
 from governance_app.importer import import_workbook
 from governance_app.workflow import (
     city_progress,
@@ -220,6 +226,41 @@ def test_import_audit_and_ledger_queries_share_database_port(
             imported.batch_id,
             database=database,
         )
+        analysis = run_electricity_analysis(
+            app_config,
+            imported.batch_id,
+            database=database,
+        )
+        electricity_summary = get_electricity_summary(
+            app_config,
+            imported.batch_id,
+            database=database,
+        )
+        export_paths = export_city_issue_packages(
+            app_config,
+            imported.batch_id,
+            database=database,
+        )
+        page = list_issues(
+            app_config,
+            imported.batch_id,
+            {},
+            database=database,
+        )
+        for issue in page:
+            update_issue_status(
+                app_config,
+                issue["issue_code"],
+                "closed",
+                database=database,
+            )
+        with database.unit_of_work() as unit_of_work:
+            unit_of_work.batches.update_status(imported.batch_id, "returning")
+        archive_path = archive_batch(
+            app_config,
+            imported.batch_id,
+            database=database,
+        )
     finally:
         database.dispose()
 
@@ -230,3 +271,7 @@ def test_import_audit_and_ledger_queries_share_database_port(
     assert workflow["todo_summary"]["ledger_count"] == 4
     assert workflow["todo_summary"]["total_issue_count"] == 2
     assert progress[0]["total_count"] == 2
+    assert analysis["opportunity_count"] >= 1
+    assert electricity_summary["analysis_generated"] is True
+    assert export_paths
+    assert archive_path.exists()

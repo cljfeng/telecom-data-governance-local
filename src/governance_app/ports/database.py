@@ -92,6 +92,44 @@ class AuditFindingRecord:
     issue_code: str
 
 
+@dataclass(frozen=True)
+class AnalysisOpportunityRecord:
+    batch_id: int
+    ledger_row_id: int
+    domain: str
+    opportunity_code: str
+    source_issue_code: str
+    opportunity_type: str
+    severity: str
+    city: str
+    district: str | None
+    telecom_site_code: str | None
+    telecom_site_name: str | None
+    period: str | None
+    meter_no: str | None
+    current_amount: float
+    reference_amount: float
+    recoverable_amount: float
+    saving_opportunity_amount: float
+    confidence: str
+    source_rule_ids_json: str
+    message: str
+    suggestion: str
+
+
+@dataclass(frozen=True)
+class AnalysisQuery:
+    batch_id: int
+    domain: str
+    city: str | None = None
+    opportunity_type: str | None = None
+    severity: str | None = None
+    confidence: str | None = None
+    status: str | None = None
+    queue: str | None = None
+    review: str | None = None
+
+
 class BatchRepository(Protocol):
     def create(self, *, name: str, batch_code: str) -> int: ...
 
@@ -208,6 +246,63 @@ class CorrectionRepository(Protocol):
     ) -> None: ...
 
 
+class ExportRepository(Protocol):
+    def issue_rows(self, batch_id: int) -> list[IssueRecord]: ...
+
+    def mark_exported(
+        self,
+        issues: list[IssueRecord],
+        *,
+        note: str,
+    ) -> None: ...
+
+
+class AnalysisRepository(Protocol):
+    def source_issues(self, batch_id: int, ledger_type: str) -> list[IssueRecord]: ...
+
+    def clear_domain(self, batch_id: int, domain: str) -> None: ...
+
+    def add_opportunity(self, record: AnalysisOpportunityRecord) -> None: ...
+
+    def ledger_overview(self, batch_id: int, ledger_type: str) -> ReviewRecord: ...
+
+    def ledger_payloads(self, batch_id: int, ledger_type: str) -> list[ReviewRecord]: ...
+
+    def opportunity_summary(self, batch_id: int, domain: str) -> ReviewRecord: ...
+
+    def was_generated(self, batch_id: int, operation: str) -> bool: ...
+
+    def opportunities(self, query: AnalysisQuery) -> list[ReviewRecord]: ...
+
+    def breakdown(
+        self,
+        batch_id: int,
+        domain: str,
+        field: str,
+    ) -> list[ReviewRecord]: ...
+
+    def review_summary(self, batch_id: int, domain: str) -> ReviewRecord: ...
+
+
+class ArchiveRepository(Protocol):
+    def eligibility(self, batch_id: int) -> ReviewRecord: ...
+
+    def severity_counts(self, batch_id: int) -> list[IssueRecord]: ...
+
+    def issue_snapshot(
+        self,
+        batch_id: int,
+        *,
+        open_only: bool = False,
+    ) -> list[IssueRecord]: ...
+
+    def specialist_reviews(self, batch_id: int) -> list[ReviewRecord]: ...
+
+    def operation_logs(self, batch_id: int) -> list[BatchRecord]: ...
+
+    def rule_counts(self, batch_id: int) -> list[IssueRecord]: ...
+
+
 class UnitOfWork(Protocol):
     batches: BatchRepository
     issues: IssueRepository
@@ -215,6 +310,9 @@ class UnitOfWork(Protocol):
     audits: AuditRepository
     reviews: ReviewRepository
     corrections: CorrectionRepository
+    exports: ExportRepository
+    analysis: AnalysisRepository
+    archives: ArchiveRepository
 
 
 class Database(Protocol):

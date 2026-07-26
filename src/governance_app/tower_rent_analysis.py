@@ -7,13 +7,17 @@ from openpyxl import Workbook
 
 from governance_app.analysis_reviews import (
     review_payload_fields,
-    review_summary_in_conn,
 )
 from governance_app.audit_rules import parse_row
 from governance_app.config import AppConfig
-from governance_app.db import connect
+from governance_app.database_runtime import database_for
 from governance_app.exporter import append_analysis_correction_sheet, excel_safe
 from governance_app.geo import normalize_city
+from governance_app.ports.database import (
+    AnalysisOpportunityRecord,
+    AnalysisQuery,
+    Database,
+)
 from governance_app.rule_fields import (
     AMOUNT_FIELD_KEYWORDS,
     MAINTENANCE_DISCOUNT_FIELDS,
@@ -52,39 +56,40 @@ REVIEW_RULE_TYPES = {
 }
 
 
-def run_tower_rent_analysis(config: AppConfig, batch_id: int) -> dict[str, int]:
-    with connect(config) as conn:
-        batch = conn.execute("select id, status, is_archived from import_batches where id = ?", (batch_id,)).fetchone()
+def run_tower_rent_analysis(
+    config: AppConfig,
+    batch_id: int,
+    *,
+    database: Database | None = None,
+) -> dict[str, int]:
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        batch = unit_of_work.batches.get(batch_id)
         if batch is None:
             raise ValueError("批次不存在")
         if batch["is_archived"]:
             raise ValueError("归档批次不允许刷新租费异常分析")
         if batch["status"] not in {"audited", "distributed", "returning"}:
             raise ValueError("请先执行稽核，再生成租费异常分析")
-        rent_count = conn.execute(
-            "select count(*) as c from ledger_rows where batch_id = ? and ledger_type = 'tower_rent'",
-            (batch_id,),
-        ).fetchone()["c"]
-        if not rent_count:
+        ledger = unit_of_work.analysis.ledger_overview(
+            batch_id,
+            TOWER_RENT_DOMAIN,
+        )
+        if not ledger["row_count"]:
             raise ValueError("当前批次没有铁塔租费台账，无法生成租费异常分析")
 
-        conn.execute("delete from analysis_opportunities where batch_id = ? and domain = ?", (batch_id, TOWER_RENT_DOMAIN))
+        unit_of_work.analysis.clear_domain(batch_id, TOWER_RENT_DOMAIN)
         inserted = 0
-        for issue in _issue_rows(conn, batch_id):
+        for issue in unit_of_work.analysis.source_issues(
+            batch_id,
+            TOWER_RENT_DOMAIN,
+        ):
             row_data = parse_row(issue["row_json"])
             payload = _clue_from_issue(batch_id, issue, row_data)
             if payload is None:
                 continue
-            conn.execute(
-                """
-                insert into analysis_opportunities(
-                    batch_id, ledger_row_id, domain, opportunity_code, source_issue_code, opportunity_type, severity,
-                    city, district, telecom_site_code, telecom_site_name, period, meter_no,
-                    current_amount, reference_amount, recoverable_amount, saving_opportunity_amount,
-                    confidence, source_rule_ids_json, message, suggestion
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
+            unit_of_work.analysis.add_opportunity(
+                AnalysisOpportunityRecord(
                     batch_id,
                     issue["ledger_row_id"],
                     TOWER_RENT_DOMAIN,
@@ -109,60 +114,44 @@ def run_tower_rent_analysis(config: AppConfig, batch_id: int) -> dict[str, int]:
                 ),
             )
             inserted += 1
-        conn.execute(
-            "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
-            (batch_id, "tower_rent_analysis", f"生成租费异常线索 {inserted} 条"),
+        unit_of_work.batches.add_operation(
+            batch_id,
+            "tower_rent_analysis",
+            f"生成租费异常线索 {inserted} 条",
         )
         return {"clue_count": inserted}
 
 
-def get_tower_rent_summary(config: AppConfig, batch_id: int) -> dict[str, Any]:
-    with connect(config) as conn:
-        _require_batch(conn, batch_id)
-        ledger = conn.execute(
-            """
-            select count(*) as row_count,
-                   count(distinct telecom_site_code) as site_count
-              from ledger_rows
-             where batch_id = ? and ledger_type = 'tower_rent'
-            """,
-            (batch_id,),
-        ).fetchone()
+def get_tower_rent_summary(
+    config: AppConfig,
+    batch_id: int,
+    *,
+    database: Database | None = None,
+) -> dict[str, Any]:
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        if unit_of_work.batches.get(batch_id) is None:
+            raise ValueError("批次不存在")
+        ledger = unit_of_work.analysis.ledger_overview(
+            batch_id,
+            TOWER_RENT_DOMAIN,
+        )
         total_amount = 0.0
-        for row in conn.execute(
-            """
-            select case
-                       when lr.row_json is not null and lr.row_json <> '{}' then lr.row_json
-                       else coalesce(rr.row_json, lr.row_json)
-                   end as row_json
-              from ledger_rows lr
-              left join raw_rows rr on rr.id = lr.raw_row_id
-             where lr.batch_id = ? and lr.ledger_type = 'tower_rent'
-            """,
-            (batch_id,),
+        for row in unit_of_work.analysis.ledger_payloads(
+            batch_id,
+            TOWER_RENT_DOMAIN,
         ):
             total_amount += _total_rent_amount(parse_row(row["row_json"]))
-        amount_row = conn.execute(
-            """
-            select count(*) as clue_count,
-                   count(distinct telecom_site_code) as abnormal_site_count,
-                   coalesce(sum(current_amount), 0) as current_amount,
-                   coalesce(sum(recoverable_amount), 0) as recoverable_amount,
-                   coalesce(sum(saving_opportunity_amount), 0) as saving_opportunity_amount,
-                   sum(case when severity = 'high' then 1 else 0 end) as high_risk_count
-              from analysis_opportunities
-             where batch_id = ? and domain = ?
-            """,
-            (batch_id, TOWER_RENT_DOMAIN),
-        ).fetchone()
+        amount_row = unit_of_work.analysis.opportunity_summary(
+            batch_id,
+            TOWER_RENT_DOMAIN,
+        )
         recoverable = float(amount_row["recoverable_amount"] or 0)
         discount = float(amount_row["saving_opportunity_amount"] or 0)
         current = float(amount_row["current_amount"] or 0)
-        generation_exists = bool(
-            conn.execute(
-                "select 1 from operation_logs where batch_id = ? and operation = 'tower_rent_analysis' limit 1",
-                (batch_id,),
-            ).fetchone()
+        generation_exists = unit_of_work.analysis.was_generated(
+            batch_id,
+            "tower_rent_analysis",
         )
         ledger_row_count = int(ledger["row_count"] or 0)
         summary = {
@@ -171,67 +160,74 @@ def get_tower_rent_summary(config: AppConfig, batch_id: int) -> dict[str, Any]:
             "site_count": int(ledger["site_count"] or 0),
             "total_rent_amount": round(total_amount, 2),
             "abnormal_site_count": int(amount_row["abnormal_site_count"] or 0),
-            "clue_count": int(amount_row["clue_count"] or 0),
+            "clue_count": int(amount_row["opportunity_count"] or 0),
             "recoverable_amount": round(recoverable, 2),
             "discount_realization_amount": round(discount, 2),
             "review_amount": round(max(current - recoverable - discount, 0), 2),
             "high_risk_count": int(amount_row["high_risk_count"] or 0),
             "analysis_generated": generation_exists and ledger_row_count > 0,
             "analysis_stale": generation_exists and ledger_row_count == 0,
-            "city_rankings": _city_rankings(conn, batch_id),
-            "type_breakdown": _type_breakdown(conn, batch_id),
+            "city_rankings": [
+                _summary_payload(row, "city")
+                for row in unit_of_work.analysis.breakdown(
+                    batch_id,
+                    TOWER_RENT_DOMAIN,
+                    "city",
+                )
+            ],
+            "type_breakdown": [
+                _summary_payload(row, "opportunity_type")
+                for row in unit_of_work.analysis.breakdown(
+                    batch_id,
+                    TOWER_RENT_DOMAIN,
+                    "opportunity_type",
+                )
+            ],
         }
-        return {**summary, **review_summary_in_conn(conn, batch_id, TOWER_RENT_DOMAIN)}
+        review = unit_of_work.analysis.review_summary(batch_id, TOWER_RENT_DOMAIN)
+        return {
+            **summary,
+            "pending_count": int(review["pending_count"] or 0),
+            "returned_count": int(review["returned_count"] or 0),
+            "needs_review_count": int(review["needs_review_count"] or 0),
+            "review_count": int(review["review_count"] or 0),
+            "closed_count": int(review["closed_count"] or 0),
+            "verified_recoverable_amount": round(
+                float(review["verified_recoverable_amount"] or 0),
+                2,
+            ),
+            "realized_saving_amount": round(
+                float(review["realized_saving_amount"] or 0),
+                2,
+            ),
+        }
 
 
-def get_tower_rent_clues(config: AppConfig, batch_id: int, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
+def get_tower_rent_clues(
+    config: AppConfig,
+    batch_id: int,
+    filters: dict[str, str] | None = None,
+    *,
+    database: Database | None = None,
+) -> list[dict[str, Any]]:
     filters = filters or {}
-    where = ["ao.batch_id = ?", "ao.domain = ?"]
-    params: list[Any] = [batch_id, TOWER_RENT_DOMAIN]
-    for key in ("city", "opportunity_type", "severity", "confidence"):
-        value = filters.get(key)
-        if value:
-            where.append(f"ao.{key} = ?")
-            params.append(value)
-    status = filters.get("status")
-    if status:
-        where.append("i.status = ?")
-        params.append(status)
-    elif filters.get("queue") == "actionable":
-        where.append(
-            "i.status in ('pending_export', 'pending_correction', 'returned', 'needs_review', 'still_invalid')"
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        if unit_of_work.batches.get(batch_id) is None:
+            raise ValueError("批次不存在")
+        rows = unit_of_work.analysis.opportunities(
+            AnalysisQuery(
+                batch_id=batch_id,
+                domain=TOWER_RENT_DOMAIN,
+                city=filters.get("city"),
+                opportunity_type=filters.get("opportunity_type"),
+                severity=filters.get("severity"),
+                confidence=filters.get("confidence"),
+                status=filters.get("status"),
+                queue=filters.get("queue"),
+                review=filters.get("review"),
+            )
         )
-    if filters.get("review") == "verified":
-        where.append("r.verified_recoverable_amount is not null")
-    elif filters.get("review") == "realized":
-        where.append("r.realized_saving_amount is not null")
-    order_by = "ao.recoverable_amount desc, ao.saving_opportunity_amount desc, ao.current_amount desc, ao.id"
-    if filters.get("queue") == "actionable":
-        order_by = """
-            case ao.severity when 'high' then 0 when 'medium' then 1 else 2 end,
-            case i.status
-                when 'needs_review' then 0 when 'returned' then 1
-                when 'still_invalid' then 2 when 'pending_correction' then 3
-                when 'pending_export' then 4 else 5 end,
-            ao.recoverable_amount desc, ao.saving_opportunity_amount desc,
-            ao.current_amount desc, ao.id
-        """
-    with connect(config) as conn:
-        _require_batch(conn, batch_id)
-        rows = conn.execute(
-            f"""
-            select ao.*,
-                   i.issue_code, i.status as issue_status, i.correction_value, i.correction_note,
-                   r.verified_recoverable_amount, r.realized_saving_amount,
-                   r.review_note, r.updated_at as reviewed_at
-              from analysis_opportunities ao
-              left join issues i on i.issue_code = ao.source_issue_code
-              left join analysis_opportunity_reviews r on r.opportunity_code = ao.opportunity_code
-             where {" and ".join(where)}
-             order by {order_by}
-            """,
-            params,
-        ).fetchall()
     return [_clue_payload(row) for row in rows]
 
 
@@ -306,27 +302,6 @@ def export_tower_rent_clues(config: AppConfig, batch_id: int) -> Path:
     return path
 
 
-def _issue_rows(conn, batch_id: int):
-    return conn.execute(
-        """
-        select i.id, i.issue_code, i.rule_id, i.severity, i.city, i.district, i.telecom_site_code, i.telecom_site_name,
-               i.message, i.suggestion, ar.ledger_row_id,
-               case
-                   when lr.row_json is not null and lr.row_json <> '{}' then lr.row_json
-                   else coalesce(rr.row_json, lr.row_json)
-               end as row_json
-          from issues i
-          join audit_results ar on ar.id = i.audit_result_id
-          join ledger_rows lr on lr.id = ar.ledger_row_id
-          left join raw_rows rr on rr.id = lr.raw_row_id
-         where i.batch_id = ? and i.ledger_type = 'tower_rent'
-           and i.status <> 'resolved_by_reaudit'
-         order by i.id
-        """,
-        (batch_id,),
-    ).fetchall()
-
-
 def _clue_from_issue(batch_id: int, issue, row: dict[str, Any]) -> dict[str, Any] | None:
     rule_id = issue["rule_id"]
     opportunity_type = RECOVERABLE_RULE_TYPES.get(rule_id) or DISCOUNT_RULE_TYPES.get(rule_id) or REVIEW_RULE_TYPES.get(rule_id)
@@ -390,11 +365,6 @@ def _total_rent_amount(row: dict[str, Any]) -> float:
     return round(total, 2)
 
 
-def _require_batch(conn, batch_id: int) -> None:
-    if conn.execute("select 1 from import_batches where id = ?", (batch_id,)).fetchone() is None:
-        raise ValueError("批次不存在")
-
-
 def _clue_payload(row) -> dict[str, Any]:
     payload = dict(row)
     payload["source_rule_ids"] = json.loads(payload.pop("source_rule_ids_json") or "[]")
@@ -406,46 +376,6 @@ def _clue_payload(row) -> dict[str, Any]:
     return payload
 
 
-def _city_rankings(conn, batch_id: int) -> list[dict[str, Any]]:
-    return [
-        _summary_payload(row, "city")
-        for row in conn.execute(
-            """
-            select coalesce(city, '未填地市') as city,
-                   count(*) as clue_count,
-                   coalesce(sum(current_amount), 0) as current_amount,
-                   coalesce(sum(recoverable_amount), 0) as recoverable_amount,
-                   coalesce(sum(saving_opportunity_amount), 0) as saving_opportunity_amount
-              from analysis_opportunities
-             where batch_id = ? and domain = ?
-             group by coalesce(city, '未填地市')
-             order by recoverable_amount desc, saving_opportunity_amount desc, current_amount desc
-            """,
-            (batch_id, TOWER_RENT_DOMAIN),
-        )
-    ]
-
-
-def _type_breakdown(conn, batch_id: int) -> list[dict[str, Any]]:
-    return [
-        _summary_payload(row, "opportunity_type")
-        for row in conn.execute(
-            """
-            select opportunity_type,
-                   count(*) as clue_count,
-                   coalesce(sum(current_amount), 0) as current_amount,
-                   coalesce(sum(recoverable_amount), 0) as recoverable_amount,
-                   coalesce(sum(saving_opportunity_amount), 0) as saving_opportunity_amount
-              from analysis_opportunities
-             where batch_id = ? and domain = ?
-             group by opportunity_type
-             order by recoverable_amount desc, saving_opportunity_amount desc, current_amount desc
-            """,
-            (batch_id, TOWER_RENT_DOMAIN),
-        )
-    ]
-
-
 def _summary_payload(row, label_field: str) -> dict[str, Any]:
     current = float(row["current_amount"] or 0)
     recoverable = float(row["recoverable_amount"] or 0)
@@ -453,7 +383,7 @@ def _summary_payload(row, label_field: str) -> dict[str, Any]:
     label = normalize_city(row[label_field]) if label_field == "city" else row[label_field]
     return {
         label_field: label,
-        "clue_count": int(row["clue_count"] or 0),
+        "clue_count": int(row.get("item_count", row.get("clue_count", 0)) or 0),
         "recoverable_amount": round(recoverable, 2),
         "discount_realization_amount": round(discount, 2),
         "review_amount": round(max(current - recoverable - discount, 0), 2),

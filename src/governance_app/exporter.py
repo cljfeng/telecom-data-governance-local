@@ -7,9 +7,10 @@ from openpyxl.worksheet.datavalidation import DataValidation
 
 from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
-from governance_app.db import connect
+from governance_app.database_runtime import database_for
 from governance_app.geo import normalize_city
-from governance_app.workflow import transition_batch_in_conn
+from governance_app.ports.database import Database
+from governance_app.workflow import transition_batch_in_unit_of_work
 
 ISSUE_HEADERS = [
     "问题编号",
@@ -45,35 +46,53 @@ ANALYSIS_CORRECTION_HEADERS = [
 ]
 
 
-def export_issue_packages(config: AppConfig, batch_id: int, mode: str = "city") -> list[Path]:
+def export_issue_packages(
+    config: AppConfig,
+    batch_id: int,
+    mode: str = "city",
+    *,
+    database: Database | None = None,
+) -> list[Path]:
     if mode not in {"city", "province"}:
         raise ValueError("invalid export mode")
     if mode == "province":
-        return _export_province_issue_package(config, batch_id)
-    return export_city_issue_packages(config, batch_id)
+        return _export_province_issue_package(
+            config,
+            batch_id,
+            database=database,
+        )
+    return export_city_issue_packages(config, batch_id, database=database)
 
 
-def export_city_issue_packages(config: AppConfig, batch_id: int) -> list[Path]:
+def export_city_issue_packages(
+    config: AppConfig,
+    batch_id: int,
+    *,
+    database: Database | None = None,
+) -> list[Path]:
     config.export_dir.mkdir(parents=True, exist_ok=True)
     export_root = config.export_dir.resolve()
     paths: list[Path] = []
-    with connect(config) as conn:
-        batch = conn.execute("select status, is_archived, batch_code from import_batches where id = ?", (batch_id,)).fetchone()
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        batch = unit_of_work.batches.get(batch_id)
         if batch is None:
             raise ValueError("batch not found")
         if batch["is_archived"]:
             raise ValueError("batch is archived")
         if batch["status"] != "audited":
             raise ValueError("batch must be audited before export")
-        issue_rows = conn.execute(
-            _ISSUE_EXPORT_SQL + " order by i.severity, i.issue_code",
-            (batch_id,),
-        ).fetchall()
+        issue_rows = unit_of_work.exports.issue_rows(batch_id)
         if not issue_rows:
-            transition_batch_in_conn(conn, batch_id, "export_empty")
-            conn.execute(
-                "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
-                (batch_id, "export", "当前批次无待导出问题，可直接归档"),
+            transition_batch_in_unit_of_work(
+                unit_of_work,
+                batch_id,
+                "export_empty",
+            )
+            unit_of_work.batches.add_operation(
+                batch_id,
+                "export",
+                "当前批次无待导出问题，可直接归档",
             )
             return []
         grouped: dict[str, list] = {}
@@ -93,52 +112,49 @@ def export_city_issue_packages(config: AppConfig, batch_id: int) -> list[Path]:
                 _append_issue_row(ws, issue)
             _finish_issue_sheet(ws)
             wb.save(path)
-            conn.executemany(
-                """
-                update issues
-                   set status = 'pending_correction',
-                       updated_at = current_timestamp
-                 where id = ?
-                """,
-                [(issue["id"],) for issue in issues],
-            )
-            conn.executemany(
-                """
-                insert into issue_events(issue_id, from_status, to_status, source, note)
-                values (?, ?, 'pending_correction', 'export', '导出地市整改包')
-                """,
-                [(issue["id"], issue["status"]) for issue in issues],
+            unit_of_work.exports.mark_exported(
+                issues,
+                note="导出地市整改包",
             )
             paths.append(path)
         if paths:
-            transition_batch_in_conn(conn, batch_id, "export")
-            conn.execute(
-                "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
-                (batch_id, "export", f"导出地市整改包 {len(paths)} 个"),
+            transition_batch_in_unit_of_work(unit_of_work, batch_id, "export")
+            unit_of_work.batches.add_operation(
+                batch_id,
+                "export",
+                f"导出地市整改包 {len(paths)} 个",
             )
     return paths
 
 
-def _export_province_issue_package(config: AppConfig, batch_id: int) -> list[Path]:
+def _export_province_issue_package(
+    config: AppConfig,
+    batch_id: int,
+    *,
+    database: Database | None = None,
+) -> list[Path]:
     config.export_dir.mkdir(parents=True, exist_ok=True)
     export_root = config.export_dir.resolve()
-    with connect(config) as conn:
-        batch = conn.execute("select status, is_archived, batch_code from import_batches where id = ?", (batch_id,)).fetchone()
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        batch = unit_of_work.batches.get(batch_id)
         if batch is None:
             raise ValueError("batch not found")
         if batch["is_archived"]:
             raise ValueError("batch is archived")
         if batch["status"] != "audited":
             raise ValueError("batch must be audited before export")
-        issues = conn.execute(
-            _ISSUE_EXPORT_SQL + " order by city, i.severity, i.issue_code",
-            (batch_id,),
-        ).fetchall()
+        issues = unit_of_work.exports.issue_rows(batch_id)
         if not issues:
-            transition_batch_in_conn(conn, batch_id, "export_empty")
-            conn.execute(
-                "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
-                (batch_id, "export", "当前批次无待导出问题，可直接归档"),
+            transition_batch_in_unit_of_work(
+                unit_of_work,
+                batch_id,
+                "export_empty",
+            )
+            unit_of_work.batches.add_operation(
+                batch_id,
+                "export",
+                "当前批次无待导出问题，可直接归档",
             )
             return []
         batch_code = batch["batch_code"] or f"批次{batch_id}"
@@ -151,26 +167,15 @@ def _export_province_issue_package(config: AppConfig, batch_id: int) -> list[Pat
             _append_issue_row(ws, issue)
         _finish_issue_sheet(ws)
         wb.save(path)
-        conn.execute(
-            """
-            update issues
-               set status = 'pending_correction',
-                   updated_at = current_timestamp
-             where batch_id = ?
-            """,
-            (batch_id,),
+        unit_of_work.exports.mark_exported(
+            issues,
+            note="导出全省整改包",
         )
-        conn.executemany(
-            """
-            insert into issue_events(issue_id, from_status, to_status, source, note)
-            values (?, ?, 'pending_correction', 'export', '导出全省整改包')
-            """,
-            [(issue["id"], issue["status"]) for issue in issues],
-        )
-        transition_batch_in_conn(conn, batch_id, "export")
-        conn.execute(
-            "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
-            (batch_id, "export", "导出全省汇总整改包 1 个"),
+        transition_batch_in_unit_of_work(unit_of_work, batch_id, "export")
+        unit_of_work.batches.add_operation(
+            batch_id,
+            "export",
+            "导出全省汇总整改包 1 个",
         )
     return [path]
 
@@ -282,25 +287,6 @@ def _append_issue_row(ws, issue) -> None:
             "",
         ]
     )
-
-
-_ISSUE_EXPORT_SQL = """
-            select i.id, i.issue_code, i.audit_result_id, i.batch_id, coalesce(i.city, '未填地市') as city,
-                   i.district, i.telecom_site_code, i.telecom_site_name, i.ledger_type, i.rule_id, i.severity,
-                   i.status, i.message, i.suggestion, i.correction_value, i.correction_note, i.updated_at,
-                   ar.field_name,
-                   case
-                       when lr.row_json is not null and lr.row_json <> '{}' then lr.row_json
-                       else coalesce(rr.row_json, lr.row_json)
-                   end as row_json,
-                   lr.sheet_name, lr.row_number
-              from issues i
-              join audit_results ar on ar.id = i.audit_result_id
-              left join ledger_rows lr on lr.id = ar.ledger_row_id
-              left join raw_rows rr on rr.id = lr.raw_row_id
-             where i.batch_id = ?
-               and i.status <> 'resolved_by_reaudit'
-"""
 
 
 def _detailed_issue_message(issue) -> str:

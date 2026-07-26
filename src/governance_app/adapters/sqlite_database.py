@@ -27,11 +27,16 @@ from sqlalchemy.pool import NullPool
 
 from governance_app.models import IssueStatus
 from governance_app.ports.database import (
+    AnalysisOpportunityRecord,
+    AnalysisQuery,
+    AnalysisRepository,
+    ArchiveRepository,
     AuditFindingRecord,
     AuditRepository,
     BatchRecord,
     BatchRepository,
     CorrectionRepository,
+    ExportRepository,
     ImportedLedgerRow,
     IssueGroupQuery,
     IssueGroupSelector,
@@ -172,11 +177,25 @@ _analysis_opportunities = Table(
     _metadata,
     Column("id", Integer, primary_key=True),
     Column("batch_id", Integer, nullable=False),
+    Column("ledger_row_id", Integer),
     Column("domain", String, nullable=False),
     Column("opportunity_code", String, nullable=False),
     Column("opportunity_type", String, nullable=False),
+    Column("severity", String, nullable=False),
+    Column("city", String),
+    Column("district", String),
+    Column("telecom_site_code", String),
+    Column("telecom_site_name", String),
+    Column("period", String),
+    Column("meter_no", String),
+    Column("current_amount", Float, nullable=False),
+    Column("reference_amount", Float, nullable=False),
     Column("recoverable_amount", Float, nullable=False),
     Column("saving_opportunity_amount", Float, nullable=False),
+    Column("confidence", String, nullable=False),
+    Column("source_rule_ids_json", String, nullable=False),
+    Column("message", String, nullable=False),
+    Column("suggestion", String, nullable=False),
     Column("source_issue_code", String),
 )
 
@@ -1034,6 +1053,537 @@ class SqliteCorrectionRepository(CorrectionRepository):
         )
 
 
+class SqliteExportRepository(ExportRepository):
+    def __init__(self, connection: Connection) -> None:
+        self._connection = connection
+
+    def issue_rows(self, batch_id: int) -> list[IssueRecord]:
+        effective_row_json = case(
+            (_ledger_rows.c.row_json != "{}", _ledger_rows.c.row_json),
+            else_=func.coalesce(_raw_rows.c.row_json, _ledger_rows.c.row_json),
+        ).label("row_json")
+        statement = (
+            select(
+                _issues,
+                _audit_results.c.field_name,
+                effective_row_json,
+                _ledger_rows.c.sheet_name,
+                _ledger_rows.c.row_number,
+            )
+            .select_from(
+                _issues.join(
+                    _audit_results,
+                    _audit_results.c.id == _issues.c.audit_result_id,
+                )
+                .outerjoin(
+                    _ledger_rows,
+                    _ledger_rows.c.id == _audit_results.c.ledger_row_id,
+                )
+                .outerjoin(
+                    _raw_rows,
+                    _raw_rows.c.id == _ledger_rows.c.raw_row_id,
+                )
+            )
+            .where(
+                _issues.c.batch_id == batch_id,
+                _issues.c.status != "resolved_by_reaudit",
+            )
+            .order_by(_issues.c.city, _issues.c.severity, _issues.c.issue_code)
+        )
+        return [dict(row) for row in self._connection.execute(statement).mappings()]
+
+    def mark_exported(
+        self,
+        issues: list[IssueRecord],
+        *,
+        note: str,
+    ) -> None:
+        if not issues:
+            return
+        ids = [int(issue["id"]) for issue in issues]
+        self._connection.execute(
+            update(_issues)
+            .where(_issues.c.id.in_(ids))
+            .values(status="pending_correction", updated_at=func.current_timestamp())
+        )
+        self._connection.execute(
+            insert(_issue_events),
+            [
+                {
+                    "issue_id": issue["id"],
+                    "from_status": issue["status"],
+                    "to_status": "pending_correction",
+                    "source": "export",
+                    "note": note,
+                }
+                for issue in issues
+            ],
+        )
+
+
+class SqliteAnalysisRepository(AnalysisRepository):
+    def __init__(self, connection: Connection) -> None:
+        self._connection = connection
+
+    def source_issues(self, batch_id: int, ledger_type: str) -> list[IssueRecord]:
+        effective_row_json = case(
+            (_ledger_rows.c.row_json != "{}", _ledger_rows.c.row_json),
+            else_=func.coalesce(_raw_rows.c.row_json, _ledger_rows.c.row_json),
+        ).label("row_json")
+        statement = (
+            select(
+                _issues.c.id,
+                _issues.c.issue_code,
+                _issues.c.rule_id,
+                _issues.c.severity,
+                _issues.c.city,
+                _issues.c.district,
+                _issues.c.telecom_site_code,
+                _issues.c.telecom_site_name,
+                _issues.c.message,
+                _issues.c.suggestion,
+                _audit_results.c.ledger_row_id,
+                effective_row_json,
+            )
+            .select_from(
+                _issues.join(
+                    _audit_results,
+                    _audit_results.c.id == _issues.c.audit_result_id,
+                )
+                .join(
+                    _ledger_rows,
+                    _ledger_rows.c.id == _audit_results.c.ledger_row_id,
+                )
+                .outerjoin(
+                    _raw_rows,
+                    _raw_rows.c.id == _ledger_rows.c.raw_row_id,
+                )
+            )
+            .where(
+                _issues.c.batch_id == batch_id,
+                _issues.c.ledger_type == ledger_type,
+                _issues.c.status != "resolved_by_reaudit",
+            )
+            .order_by(_issues.c.id)
+        )
+        return [dict(row) for row in self._connection.execute(statement).mappings()]
+
+    def clear_domain(self, batch_id: int, domain: str) -> None:
+        self._connection.execute(
+            delete(_analysis_opportunities).where(
+                _analysis_opportunities.c.batch_id == batch_id,
+                _analysis_opportunities.c.domain == domain,
+            )
+        )
+
+    def add_opportunity(self, record: AnalysisOpportunityRecord) -> None:
+        self._connection.execute(insert(_analysis_opportunities).values(**record.__dict__))
+
+    def ledger_overview(self, batch_id: int, ledger_type: str) -> ReviewRecord:
+        statement = select(
+            func.count().label("row_count"),
+            func.count(func.distinct(_ledger_rows.c.telecom_site_code)).label(
+                "site_count"
+            ),
+        ).where(
+            _ledger_rows.c.batch_id == batch_id,
+            _ledger_rows.c.ledger_type == ledger_type,
+        )
+        return dict(self._connection.execute(statement).mappings().one())
+
+    def ledger_payloads(self, batch_id: int, ledger_type: str) -> list[ReviewRecord]:
+        effective_row_json = case(
+            (_ledger_rows.c.row_json != "{}", _ledger_rows.c.row_json),
+            else_=func.coalesce(_raw_rows.c.row_json, _ledger_rows.c.row_json),
+        ).label("row_json")
+        statement = (
+            select(effective_row_json)
+            .select_from(
+                _ledger_rows.outerjoin(
+                    _raw_rows,
+                    _raw_rows.c.id == _ledger_rows.c.raw_row_id,
+                )
+            )
+            .where(
+                _ledger_rows.c.batch_id == batch_id,
+                _ledger_rows.c.ledger_type == ledger_type,
+            )
+        )
+        return [dict(row) for row in self._connection.execute(statement).mappings()]
+
+    def opportunity_summary(self, batch_id: int, domain: str) -> ReviewRecord:
+        statement = select(
+            func.count().label("opportunity_count"),
+            func.count(
+                func.distinct(_analysis_opportunities.c.telecom_site_code)
+            ).label("abnormal_site_count"),
+            func.coalesce(func.sum(_analysis_opportunities.c.current_amount), 0).label(
+                "current_amount"
+            ),
+            func.coalesce(
+                func.sum(_analysis_opportunities.c.recoverable_amount), 0
+            ).label("recoverable_amount"),
+            func.coalesce(
+                func.sum(_analysis_opportunities.c.saving_opportunity_amount), 0
+            ).label("saving_opportunity_amount"),
+            func.sum(
+                case(
+                    (_analysis_opportunities.c.severity == "high", 1),
+                    else_=0,
+                )
+            ).label("high_risk_count"),
+        ).where(
+            _analysis_opportunities.c.batch_id == batch_id,
+            _analysis_opportunities.c.domain == domain,
+        )
+        return dict(self._connection.execute(statement).mappings().one())
+
+    def was_generated(self, batch_id: int, operation: str) -> bool:
+        statement = select(_operation_logs.c.id).where(
+            _operation_logs.c.batch_id == batch_id,
+            _operation_logs.c.operation == operation,
+        ).limit(1)
+        return self._connection.execute(statement).first() is not None
+
+    def opportunities(self, query: AnalysisQuery) -> list[ReviewRecord]:
+        conditions = [
+            _analysis_opportunities.c.batch_id == query.batch_id,
+            _analysis_opportunities.c.domain == query.domain,
+        ]
+        for value, column in (
+            (query.city, _analysis_opportunities.c.city),
+            (query.opportunity_type, _analysis_opportunities.c.opportunity_type),
+            (query.severity, _analysis_opportunities.c.severity),
+            (query.confidence, _analysis_opportunities.c.confidence),
+            (query.status, _issues.c.status),
+        ):
+            if value:
+                conditions.append(column == value)
+        if query.queue == "actionable":
+            conditions.append(
+                _issues.c.status.in_(
+                    (
+                        "pending_export",
+                        "pending_correction",
+                        "returned",
+                        "needs_review",
+                        "still_invalid",
+                    )
+                )
+            )
+        if query.review == "verified":
+            conditions.append(
+                _analysis_opportunity_reviews.c.verified_recoverable_amount.is_not(
+                    None
+                )
+            )
+        elif query.review == "realized":
+            conditions.append(
+                _analysis_opportunity_reviews.c.realized_saving_amount.is_not(None)
+            )
+        statement = (
+            select(
+                _analysis_opportunities,
+                _issues.c.issue_code,
+                _issues.c.status.label("issue_status"),
+                _issues.c.correction_value,
+                _issues.c.correction_note,
+                _analysis_opportunity_reviews.c.verified_recoverable_amount,
+                _analysis_opportunity_reviews.c.realized_saving_amount,
+                _analysis_opportunity_reviews.c.review_note,
+                _analysis_opportunity_reviews.c.updated_at.label("reviewed_at"),
+            )
+            .select_from(
+                _analysis_opportunities.outerjoin(
+                    _issues,
+                    _issues.c.issue_code
+                    == _analysis_opportunities.c.source_issue_code,
+                ).outerjoin(
+                    _analysis_opportunity_reviews,
+                    _analysis_opportunity_reviews.c.opportunity_code
+                    == _analysis_opportunities.c.opportunity_code,
+                )
+            )
+            .where(*conditions)
+        )
+        if query.queue == "actionable":
+            statement = statement.order_by(
+                case(
+                    (_analysis_opportunities.c.severity == "high", 0),
+                    (_analysis_opportunities.c.severity == "medium", 1),
+                    else_=2,
+                ),
+                case(
+                    (_issues.c.status == "needs_review", 0),
+                    (_issues.c.status == "returned", 1),
+                    (_issues.c.status == "still_invalid", 2),
+                    (_issues.c.status == "pending_correction", 3),
+                    (_issues.c.status == "pending_export", 4),
+                    else_=5,
+                ),
+            )
+        statement = statement.order_by(
+            _analysis_opportunities.c.recoverable_amount.desc(),
+            _analysis_opportunities.c.saving_opportunity_amount.desc(),
+            _analysis_opportunities.c.id,
+        )
+        return [dict(row) for row in self._connection.execute(statement).mappings()]
+
+    def breakdown(
+        self,
+        batch_id: int,
+        domain: str,
+        field: str,
+    ) -> list[ReviewRecord]:
+        columns = {
+            "city": func.coalesce(_analysis_opportunities.c.city, "未填地市"),
+            "opportunity_type": _analysis_opportunities.c.opportunity_type,
+        }
+        column = columns[field]
+        statement = (
+            select(
+                column.label(field),
+                func.count().label("item_count"),
+                func.coalesce(
+                    func.sum(_analysis_opportunities.c.current_amount), 0
+                ).label("current_amount"),
+                func.coalesce(
+                    func.sum(_analysis_opportunities.c.recoverable_amount), 0
+                ).label("recoverable_amount"),
+                func.coalesce(
+                    func.sum(_analysis_opportunities.c.saving_opportunity_amount), 0
+                ).label("saving_opportunity_amount"),
+            )
+            .where(
+                _analysis_opportunities.c.batch_id == batch_id,
+                _analysis_opportunities.c.domain == domain,
+            )
+            .group_by(column)
+            .order_by(
+                func.sum(_analysis_opportunities.c.recoverable_amount).desc(),
+                func.sum(
+                    _analysis_opportunities.c.saving_opportunity_amount
+                ).desc(),
+                func.sum(_analysis_opportunities.c.current_amount).desc(),
+            )
+        )
+        return [dict(row) for row in self._connection.execute(statement).mappings()]
+
+    def review_summary(self, batch_id: int, domain: str) -> ReviewRecord:
+        statement = (
+            select(
+                func.sum(
+                    case(
+                        (
+                            _issues.c.status.in_(
+                                (
+                                    "pending_export",
+                                    "pending_correction",
+                                    "still_invalid",
+                                )
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("pending_count"),
+                func.sum(case((_issues.c.status == "returned", 1), else_=0)).label(
+                    "returned_count"
+                ),
+                func.sum(
+                    case((_issues.c.status == "needs_review", 1), else_=0)
+                ).label("needs_review_count"),
+                func.sum(
+                    case(
+                        (_issues.c.status.in_(("returned", "needs_review")), 1),
+                        else_=0,
+                    )
+                ).label("review_count"),
+                func.sum(
+                    case(
+                        (_issues.c.status.in_(_CLOSED_ISSUE_STATUSES), 1),
+                        else_=0,
+                    )
+                ).label("closed_count"),
+                func.coalesce(
+                    func.sum(
+                        _analysis_opportunity_reviews.c.verified_recoverable_amount
+                    ),
+                    0,
+                ).label("verified_recoverable_amount"),
+                func.coalesce(
+                    func.sum(_analysis_opportunity_reviews.c.realized_saving_amount),
+                    0,
+                ).label("realized_saving_amount"),
+            )
+            .select_from(
+                _analysis_opportunities.outerjoin(
+                    _issues,
+                    _issues.c.issue_code
+                    == _analysis_opportunities.c.source_issue_code,
+                ).outerjoin(
+                    _analysis_opportunity_reviews,
+                    _analysis_opportunity_reviews.c.opportunity_code
+                    == _analysis_opportunities.c.opportunity_code,
+                )
+            )
+            .where(
+                _analysis_opportunities.c.batch_id == batch_id,
+                _analysis_opportunities.c.domain == domain,
+            )
+        )
+        return dict(self._connection.execute(statement).mappings().one())
+
+
+class SqliteArchiveRepository(ArchiveRepository):
+    def __init__(self, connection: Connection) -> None:
+        self._connection = connection
+
+    def eligibility(self, batch_id: int) -> ReviewRecord:
+        batch = self._connection.execute(
+            select(_import_batches.c.status, _import_batches.c.is_archived).where(
+                _import_batches.c.id == batch_id
+            )
+        ).mappings().one_or_none()
+        if batch is None:
+            raise ValueError("batch not found")
+        rows = self._connection.execute(
+            select(_issues.c.status, func.count().label("count"))
+            .where(_issues.c.batch_id == batch_id)
+            .group_by(_issues.c.status)
+        ).mappings()
+        status_counts = {str(row["status"]): int(row["count"]) for row in rows}
+        reviewed_closure = self._connection.execute(
+            select(_analysis_opportunity_reviews.c.id)
+            .select_from(
+                _analysis_opportunity_reviews.join(
+                    _issues,
+                    _issues.c.issue_code
+                    == _analysis_opportunity_reviews.c.source_issue_code,
+                )
+            )
+            .where(
+                _analysis_opportunity_reviews.c.batch_id == batch_id,
+                _issues.c.batch_id == batch_id,
+                _issues.c.status.in_(_CLOSED_ISSUE_STATUSES),
+            )
+            .limit(1)
+        ).first()
+        high_risk_open = self._connection.execute(
+            select(func.count())
+            .select_from(_issues)
+            .where(
+                _issues.c.batch_id == batch_id,
+                _issues.c.severity == "high",
+                ~_issues.c.status.in_(_CLOSED_ISSUE_STATUSES),
+            )
+        ).scalar_one()
+        return {
+            "status": batch["status"],
+            "is_archived": batch["is_archived"],
+            "status_counts": status_counts,
+            "audited_reviewed_closure": bool(reviewed_closure),
+            "high_risk_open": int(high_risk_open),
+        }
+
+    def severity_counts(self, batch_id: int) -> list[IssueRecord]:
+        statement = (
+            select(_issues.c.severity, func.count().label("count"))
+            .where(_issues.c.batch_id == batch_id)
+            .group_by(_issues.c.severity)
+            .order_by(func.count().desc(), _issues.c.severity)
+        )
+        return [dict(row) for row in self._connection.execute(statement).mappings()]
+
+    def issue_snapshot(
+        self,
+        batch_id: int,
+        *,
+        open_only: bool = False,
+    ) -> list[IssueRecord]:
+        conditions = [_issues.c.batch_id == batch_id]
+        if open_only:
+            conditions.append(~_issues.c.status.in_(_CLOSED_ISSUE_STATUSES))
+        statement = (
+            select(
+                _issues.c.issue_code,
+                func.coalesce(_issues.c.city, "未填地市").label("city"),
+                _issues.c.district,
+                _issues.c.telecom_site_code,
+                _issues.c.telecom_site_name,
+                _issues.c.ledger_type,
+                _issues.c.rule_id,
+                _issues.c.severity,
+                _issues.c.status,
+                _issues.c.message,
+                _issues.c.suggestion,
+                _issues.c.correction_note,
+            )
+            .where(*conditions)
+            .order_by(_issues.c.city, _issues.c.issue_code)
+        )
+        return [dict(row) for row in self._connection.execute(statement).mappings()]
+
+    def specialist_reviews(self, batch_id: int) -> list[ReviewRecord]:
+        statement = (
+            select(
+                _analysis_opportunity_reviews.c.batch_id,
+                _analysis_opportunity_reviews.c.domain,
+                _analysis_opportunity_reviews.c.opportunity_code,
+                _analysis_opportunity_reviews.c.opportunity_type,
+                _analysis_opportunity_reviews.c.source_issue_code,
+                _issues.c.status.label("issue_status"),
+                func.coalesce(_issues.c.city, "未填地市").label("city"),
+                _issues.c.telecom_site_code,
+                _issues.c.telecom_site_name,
+                _analysis_opportunity_reviews.c.estimated_recoverable_amount,
+                _analysis_opportunity_reviews.c.estimated_saving_amount,
+                _analysis_opportunity_reviews.c.verified_recoverable_amount,
+                _analysis_opportunity_reviews.c.realized_saving_amount,
+                _analysis_opportunity_reviews.c.review_note,
+                _analysis_opportunity_reviews.c.updated_at,
+            )
+            .select_from(
+                _analysis_opportunity_reviews.join(
+                    _issues,
+                    _issues.c.issue_code
+                    == _analysis_opportunity_reviews.c.source_issue_code,
+                )
+            )
+            .where(_analysis_opportunity_reviews.c.batch_id == batch_id)
+            .order_by(
+                _analysis_opportunity_reviews.c.domain,
+                _analysis_opportunity_reviews.c.opportunity_code,
+            )
+        )
+        return [dict(row) for row in self._connection.execute(statement).mappings()]
+
+    def operation_logs(self, batch_id: int) -> list[BatchRecord]:
+        statement = (
+            select(
+                _operation_logs.c.operation,
+                _operation_logs.c.message,
+                _operation_logs.c.created_at,
+            )
+            .where(_operation_logs.c.batch_id == batch_id)
+            .order_by(_operation_logs.c.id)
+        )
+        return [dict(row) for row in self._connection.execute(statement).mappings()]
+
+    def rule_counts(self, batch_id: int) -> list[IssueRecord]:
+        statement = (
+            select(
+                _issues.c.rule_id,
+                _issues.c.severity,
+                func.count().label("count"),
+            )
+            .where(_issues.c.batch_id == batch_id)
+            .group_by(_issues.c.rule_id, _issues.c.severity)
+            .order_by(_issues.c.rule_id)
+        )
+        return [dict(row) for row in self._connection.execute(statement).mappings()]
+
+
 class SqliteUnitOfWork(UnitOfWork):
     def __init__(self, connection: Connection) -> None:
         self.batches = SqliteBatchRepository(connection)
@@ -1042,6 +1592,9 @@ class SqliteUnitOfWork(UnitOfWork):
         self.audits = SqliteAuditRepository(connection)
         self.reviews = SqliteReviewRepository(connection)
         self.corrections = SqliteCorrectionRepository(connection)
+        self.exports = SqliteExportRepository(connection)
+        self.analysis = SqliteAnalysisRepository(connection)
+        self.archives = SqliteArchiveRepository(connection)
 
 
 class SqliteDatabase:

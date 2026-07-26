@@ -1,4 +1,3 @@
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -7,12 +6,13 @@ from openpyxl import Workbook
 from governance_app.analytics import dashboard_summary
 from governance_app.audit_rules import rule_metadata
 from governance_app.config import AppConfig
-from governance_app.db import connect
+from governance_app.database_runtime import database_for
 from governance_app.exporter import excel_safe
 from governance_app.issue_status import issue_status_label
+from governance_app.ports.database import Database, UnitOfWork
 from governance_app.rule_settings import load_rule_settings
 from governance_app.version import version_payload
-from governance_app.workflow import city_progress, transition_batch_in_conn
+from governance_app.workflow import city_progress, transition_batch_in_unit_of_work
 
 CLOSED_STATUSES = {"closed", "not_required", "resolved_by_reaudit"}
 
@@ -27,47 +27,24 @@ class ArchiveEligibility:
     blockers: list[dict[str, str]]
 
 
-def _archive_eligibility_in_conn(
-    conn: sqlite3.Connection, batch_id: int
+def _archive_eligibility(
+    unit_of_work: UnitOfWork,
+    batch_id: int,
 ) -> ArchiveEligibility:
-    batch = conn.execute(
-        "select status, is_archived from import_batches where id = ?", (batch_id,)
-    ).fetchone()
-    if batch is None:
-        raise ValueError("batch not found")
-    status_rows = conn.execute(
-        """
-        select status, count(*) as count
-          from issues
-         where batch_id = ?
-         group by status
-        """,
-        (batch_id,),
-    ).fetchall()
-    status_counts = {row["status"]: row["count"] for row in status_rows}
+    data = unit_of_work.archives.eligibility(batch_id)
+    status_counts = dict(data["status_counts"])
     open_issue_count = sum(
         count
         for status, count in status_counts.items()
         if status not in CLOSED_STATUSES
     )
-    audited_reviewed_closure = batch["status"] == "audited" and bool(
-        conn.execute(
-            """
-            select 1
-             from analysis_opportunity_reviews r
-              join issues i on i.issue_code = r.source_issue_code
-             where r.batch_id = ?
-               and i.batch_id = r.batch_id
-               and i.status in ('closed', 'not_required', 'resolved_by_reaudit')
-             limit 1
-            """,
-            (batch_id,),
-        ).fetchone()
+    audited_reviewed_closure = data["status"] == "audited" and bool(
+        data["audited_reviewed_closure"]
     )
     blockers = []
-    if batch["is_archived"]:
+    if data["is_archived"]:
         blockers.append({"type": "archived", "message": "批次已归档，不能重复归档"})
-    if batch["status"] != "returning" and not audited_reviewed_closure:
+    if data["status"] != "returning" and not audited_reviewed_closure:
         blockers.append(
             {"type": "workflow_status", "message": "批次需要完成导出和回传后再归档"}
         )
@@ -76,8 +53,8 @@ def _archive_eligibility_in_conn(
             {"type": "open_issues", "message": f"仍有 {open_issue_count} 条问题未闭环"}
         )
     return ArchiveEligibility(
-        batch_status=str(batch["status"]),
-        is_archived=bool(batch["is_archived"]),
+        batch_status=str(data["status"]),
+        is_archived=bool(data["is_archived"]),
         status_counts=status_counts,
         open_issue_count=open_issue_count,
         audited_reviewed_closure=audited_reviewed_closure,
@@ -85,28 +62,18 @@ def _archive_eligibility_in_conn(
     )
 
 
-def archive_precheck(config: AppConfig, batch_id: int) -> dict:
-    with connect(config) as conn:
-        eligibility = _archive_eligibility_in_conn(conn, batch_id)
-        high_risk_open = conn.execute(
-            """
-            select count(*) as count
-              from issues
-             where batch_id = ?
-               and severity = 'high'
-               and status not in ('closed', 'not_required', 'resolved_by_reaudit')
-            """,
-            (batch_id,),
-        ).fetchone()["count"]
-        review_count = conn.execute(
-            """
-            select count(*) as count
-              from issues
-             where batch_id = ?
-               and status = 'needs_review'
-            """,
-            (batch_id,),
-        ).fetchone()["count"]
+def archive_precheck(
+    config: AppConfig,
+    batch_id: int,
+    *,
+    database: Database | None = None,
+) -> dict:
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        eligibility = _archive_eligibility(unit_of_work, batch_id)
+        data = unit_of_work.archives.eligibility(batch_id)
+        high_risk_open = int(data["high_risk_open"])
+        review_count = eligibility.status_counts.get("needs_review", 0)
     risk_items = []
     if high_risk_open:
         risk_items.append({"type": "high_risk_open", "message": f"仍有 {high_risk_open} 条高风险问题未闭环"})
@@ -123,20 +90,35 @@ def archive_precheck(config: AppConfig, batch_id: int) -> dict:
     }
 
 
-def archive_batch(config: AppConfig, batch_id: int) -> Path:
-    with connect(config) as conn:
-        eligibility = _archive_eligibility_in_conn(conn, batch_id)
+def archive_batch(
+    config: AppConfig,
+    batch_id: int,
+    *,
+    database: Database | None = None,
+) -> Path:
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        eligibility = _archive_eligibility(unit_of_work, batch_id)
         if eligibility.is_archived:
             raise ValueError("batch is archived")
         if eligibility.blockers:
             raise ValueError("batch must be ready for archive")
+        severity_counts = unit_of_work.archives.severity_counts(batch_id)
+        issues = unit_of_work.archives.issue_snapshot(batch_id)
+        specialist_reviews = unit_of_work.archives.specialist_reviews(batch_id)
+        operation_logs = unit_of_work.archives.operation_logs(batch_id)
+        rule_counts = unit_of_work.archives.rule_counts(batch_id)
+        open_issues = unit_of_work.archives.issue_snapshot(
+            batch_id,
+            open_only=True,
+        )
 
     archive_dir = config.export_dir / f"archive_batch_{batch_id}"
     archive_dir.mkdir(parents=True, exist_ok=True)
     path = archive_dir / f"批次{batch_id}_专项治理归档汇总.xlsx"
 
     summary = dashboard_summary(config, batch_id)
-    progress = city_progress(config, batch_id)
+    progress = city_progress(config, batch_id, database=selected_database)
 
     wb = Workbook()
     ws = wb.active
@@ -160,18 +142,8 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
 
     ws = wb.create_sheet("风险等级分布")
     ws.append(["风险等级", "问题数量"])
-    with connect(config) as conn:
-        for row in conn.execute(
-            """
-            select severity, count(*) as count
-              from issues
-             where batch_id = ?
-             group by severity
-             order by count desc, severity
-            """,
-            (batch_id,),
-        ):
-            ws.append([_severity_label(row["severity"]), row["count"]])
+    for row in severity_counts:
+        ws.append([_severity_label(row["severity"]), row["count"]])
 
     ws = wb.create_sheet("地市整改进度")
     ws.append(["地市", "问题总数", "待整改", "已回传", "待人工复核", "仍异常", "已关闭", "无需整改", "完成率"])
@@ -192,17 +164,7 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
 
     ws = wb.create_sheet("问题清单")
     ws.append(["问题编号", "地市", "区县", "站址编码", "站址名称", "台账类型", "规则分类", "规则编号", "规则名称", "风险", "状态", "问题说明", "整改说明"])
-    with connect(config) as conn:
-        for issue in conn.execute(
-            """
-            select issue_code, coalesce(city, '未填地市') as city, district, telecom_site_code,
-                   telecom_site_name, ledger_type, rule_id, severity, status, message, correction_note
-              from issues
-             where batch_id = ?
-             order by city, issue_code
-            """,
-            (batch_id,),
-        ):
+    for issue in issues:
             metadata = rule_metadata(issue["rule_id"])
             ws.append(
                 [
@@ -222,8 +184,8 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
                 ]
             )
 
-        ws = wb.create_sheet("专题核查成果")
-        specialist_headers = [
+    ws = wb.create_sheet("专题核查成果")
+    specialist_headers = [
             "批次",
             "专题领域",
             "机会编号",
@@ -239,24 +201,9 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
             "实际落实金额",
             "核查说明",
             "更新时间",
-        ]
-        ws.append([excel_safe(value) for value in specialist_headers])
-        for review in conn.execute(
-            """
-            select r.batch_id, r.domain, r.opportunity_code, r.opportunity_type,
-                   r.source_issue_code, i.status as issue_status,
-                   coalesce(i.city, '未填地市') as city,
-                   i.telecom_site_code, i.telecom_site_name,
-                   r.estimated_recoverable_amount, r.estimated_saving_amount,
-                   r.verified_recoverable_amount, r.realized_saving_amount,
-                   r.review_note, r.updated_at
-              from analysis_opportunity_reviews r
-              join issues i on i.issue_code = r.source_issue_code
-             where r.batch_id = ?
-             order by r.domain, r.opportunity_code
-            """,
-            (batch_id,),
-        ):
+    ]
+    ws.append([excel_safe(value) for value in specialist_headers])
+    for review in specialist_reviews:
             ws.append(
                 [
                     review["batch_id"],
@@ -281,36 +228,19 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
                 ]
             )
 
-        ws = wb.create_sheet("操作日志")
-        ws.append(["操作", "说明", "时间"])
-        for log in conn.execute(
-            """
-            select operation, message, created_at
-              from operation_logs
-             where batch_id = ?
-             order by id
-            """,
-            (batch_id,),
-        ):
-            ws.append([log["operation"], log["message"], log["created_at"]])
+    ws = wb.create_sheet("操作日志")
+    ws.append(["操作", "说明", "时间"])
+    for log in operation_logs:
+        ws.append([log["operation"], log["message"], log["created_at"]])
 
-        ws = wb.create_sheet("版本与规则快照")
-        ws.append(["项目", "值"])
-        for key, value in version_payload().items():
-            ws.append([key, value])
-        ws.append([])
-        ws.append(["规则编号", "规则名称", "规则分类", "风险等级", "是否启用", "阈值配置"])
-        settings = load_rule_settings(config)
-        for row in conn.execute(
-            """
-            select rule_id, severity, count(*) as count
-              from issues
-             where batch_id = ?
-             group by rule_id, severity
-             order by rule_id
-            """,
-            (batch_id,),
-        ):
+    ws = wb.create_sheet("版本与规则快照")
+    ws.append(["项目", "值"])
+    for key, value in version_payload().items():
+        ws.append([key, value])
+    ws.append([])
+    ws.append(["规则编号", "规则名称", "规则分类", "风险等级", "是否启用", "阈值配置"])
+    settings = load_rule_settings(config)
+    for row in rule_counts:
             metadata = rule_metadata(row["rule_id"])
             setting = settings.get(row["rule_id"])
             ws.append(
@@ -324,19 +254,9 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
                 ]
             )
 
-        ws = wb.create_sheet("未闭环问题")
-        ws.append(["问题编号", "地市", "站址编码", "台账类型", "规则分类", "规则名称", "风险", "状态", "问题说明"])
-        for issue in conn.execute(
-            """
-            select issue_code, coalesce(city, '未填地市') as city, telecom_site_code,
-                   ledger_type, rule_id, severity, status, message
-              from issues
-             where batch_id = ?
-               and status not in ('closed', 'not_required', 'resolved_by_reaudit')
-             order by city, issue_code
-            """,
-            (batch_id,),
-        ):
+    ws = wb.create_sheet("未闭环问题")
+    ws.append(["问题编号", "地市", "站址编码", "台账类型", "规则分类", "规则名称", "风险", "状态", "问题说明"])
+    for issue in open_issues:
             metadata = rule_metadata(issue["rule_id"])
             ws.append(
                 [
@@ -352,16 +272,16 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
                 ]
             )
 
-        ws = wb.create_sheet("专项复盘")
-        ws.append(["复盘项", "值", "建议"])
-        ws.append(["闭环率", summary["closure_rate"], "低于100%时不得正式归档"])
-        ws.append(["未闭环问题数", summary["open_issue_count"], "优先处理高风险和仍异常问题"])
-        ws.append(["待复核问题数", summary["status_counts"].get("needs_review", 0), "复核通过后更新为已关闭或无需整改"])
-        ws.append(["仍异常问题数", summary["status_counts"].get("still_invalid", 0), "退回地市继续整改"])
-        ws.append([])
-        ws.append(["规则编号", "规则名称", "可信度", "命中数", "未闭环", "无需整改", "仍异常", "闭环率"])
-        for row in summary.get("rule_effectiveness", []):
-            ws.append(
+    ws = wb.create_sheet("专项复盘")
+    ws.append(["复盘项", "值", "建议"])
+    ws.append(["闭环率", summary["closure_rate"], "低于100%时不得正式归档"])
+    ws.append(["未闭环问题数", summary["open_issue_count"], "优先处理高风险和仍异常问题"])
+    ws.append(["待复核问题数", summary["status_counts"].get("needs_review", 0), "复核通过后更新为已关闭或无需整改"])
+    ws.append(["仍异常问题数", summary["status_counts"].get("still_invalid", 0), "退回地市继续整改"])
+    ws.append([])
+    ws.append(["规则编号", "规则名称", "可信度", "命中数", "未闭环", "无需整改", "仍异常", "闭环率"])
+    for row in summary.get("rule_effectiveness", []):
+        ws.append(
                 [
                     row["rule_id"],
                     row["rule_name"],
@@ -372,28 +292,40 @@ def archive_batch(config: AppConfig, batch_id: int) -> Path:
                     row["still_invalid_count"],
                     row["closure_rate"],
                 ]
-            )
+        )
 
     wb.save(path)
-    with connect(config) as conn:
+    with selected_database.unit_of_work() as unit_of_work:
+        latest = _archive_eligibility(unit_of_work, batch_id)
+        if latest.blockers and not latest.audited_reviewed_closure:
+            raise ValueError("batch must be ready for archive")
         if eligibility.audited_reviewed_closure:
-            conn.execute(
-                "update import_batches set status = 'returning' where id = ? and status = 'audited'",
-                (batch_id,),
-            )
-        transition_batch_in_conn(conn, batch_id, "archive")
-        conn.execute(
-            "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
-            (batch_id, "archive", f"生成归档汇总：{path.name}"),
+            unit_of_work.batches.update_status(batch_id, "returning")
+        transition_batch_in_unit_of_work(unit_of_work, batch_id, "archive")
+        unit_of_work.batches.add_operation(
+            batch_id,
+            "archive",
+            f"生成归档汇总：{path.name}",
         )
     return path
 
 
-def export_notice_report(config: AppConfig, batch_id: int) -> Path:
+def export_notice_report(
+    config: AppConfig,
+    batch_id: int,
+    *,
+    database: Database | None = None,
+) -> Path:
+    selected_database = database or database_for(config)
     config.export_dir.mkdir(parents=True, exist_ok=True)
     summary = dashboard_summary(config, batch_id)
-    progress = city_progress(config, batch_id)
-    batch_code = _batch_code(config, batch_id)
+    progress = city_progress(config, batch_id, database=selected_database)
+    with selected_database.unit_of_work() as unit_of_work:
+        batch = unit_of_work.batches.get(batch_id)
+        if batch is None:
+            raise ValueError("batch not found")
+        batch_code = batch["batch_code"] or f"批次{batch_id}"
+        issues = unit_of_work.archives.issue_snapshot(batch_id)
     path = config.export_dir / f"稽核问题通报_{batch_code}.xlsx"
 
     wb = Workbook()
@@ -443,19 +375,9 @@ def export_notice_report(config: AppConfig, batch_id: int) -> Path:
 
     ws = wb.create_sheet("问题明细")
     ws.append(["问题编号", "地市", "区县", "站址编码", "站址名称", "台账类型", "规则分类", "规则编号", "规则名称", "风险", "状态", "问题说明", "建议整改方向"])
-    with connect(config) as conn:
-        for issue in conn.execute(
-            """
-            select issue_code, coalesce(city, '未填地市') as city, district, telecom_site_code,
-                   telecom_site_name, ledger_type, rule_id, severity, status, message, suggestion
-              from issues
-             where batch_id = ?
-             order by city, rule_id, issue_code
-            """,
-            (batch_id,),
-        ):
-            metadata = rule_metadata(issue["rule_id"])
-            ws.append(
+    for issue in issues:
+        metadata = rule_metadata(issue["rule_id"])
+        ws.append(
                 [
                     issue["issue_code"],
                     issue["city"],
@@ -471,23 +393,16 @@ def export_notice_report(config: AppConfig, batch_id: int) -> Path:
                     issue["message"],
                     issue["suggestion"],
                 ]
-            )
+        )
 
     wb.save(path)
-    with connect(config) as conn:
-        conn.execute(
-            "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
-            (batch_id, "notice_report", f"导出稽核问题通报：{path.name}"),
+    with selected_database.unit_of_work() as unit_of_work:
+        unit_of_work.batches.add_operation(
+            batch_id,
+            "notice_report",
+            f"导出稽核问题通报：{path.name}",
         )
     return path
-
-
-def _batch_code(config: AppConfig, batch_id: int) -> str:
-    with connect(config) as conn:
-        row = conn.execute("select batch_code from import_batches where id = ?", (batch_id,)).fetchone()
-        if row is None:
-            raise ValueError("batch not found")
-        return row["batch_code"] or f"批次{batch_id}"
 
 
 def _ledger_label(value: str | None) -> str:
