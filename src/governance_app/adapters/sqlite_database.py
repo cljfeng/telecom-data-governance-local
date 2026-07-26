@@ -21,6 +21,7 @@ from sqlalchemy import (
     select,
     update,
 )
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import URL, Connection, Engine
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.pool import NullPool
@@ -36,6 +37,7 @@ from governance_app.ports.database import (
     BatchRecord,
     BatchRepository,
     CorrectionRepository,
+    DashboardRepository,
     ExportRepository,
     ImportedLedgerRow,
     IssueGroupQuery,
@@ -47,8 +49,10 @@ from governance_app.ports.database import (
     LedgerRecord,
     LedgerRepository,
     PersistenceError,
+    RecentFileRepository,
     ReviewRecord,
     ReviewRepository,
+    RuleSettingRepository,
     UnitOfWork,
 )
 
@@ -74,6 +78,26 @@ _settings = Table(
     _metadata,
     Column("key", String, primary_key=True),
     Column("value_json", String, nullable=False),
+)
+
+_recent_files = Table(
+    "recent_files",
+    _metadata,
+    Column("path", String, primary_key=True),
+    Column("kind", String, nullable=False),
+    Column("ok", Integer, nullable=False),
+    Column("ledger_counts_json", String, nullable=False),
+    Column("error_count", Integer, nullable=False),
+    Column("last_used_at", String, nullable=False),
+)
+
+_audit_rule_settings = Table(
+    "audit_rule_settings",
+    _metadata,
+    Column("rule_id", String, primary_key=True),
+    Column("enabled", Integer, nullable=False),
+    Column("config_json", String, nullable=False),
+    Column("updated_at", String, nullable=False),
 )
 
 _operation_logs = Table(
@@ -1584,6 +1608,282 @@ class SqliteArchiveRepository(ArchiveRepository):
         return [dict(row) for row in self._connection.execute(statement).mappings()]
 
 
+class SqliteDashboardRepository(DashboardRepository):
+    def __init__(self, connection: Connection) -> None:
+        self._connection = connection
+
+    def summary_rows(self, batch_id: int) -> dict[str, Any]:
+        issue_filter = _issues.c.batch_id == batch_id
+        return {
+            "ledger_counts": self._rows(
+                select(_ledger_rows.c.ledger_type, func.count().label("count"))
+                .where(_ledger_rows.c.batch_id == batch_id)
+                .group_by(_ledger_rows.c.ledger_type)
+            ),
+            "issues_by_city": self._rows(
+                select(_issues.c.city, func.count().label("count"))
+                .where(issue_filter)
+                .group_by(_issues.c.city)
+            ),
+            "issues_by_rule": self._rows(
+                select(_issues.c.rule_id, func.count().label("count"))
+                .where(issue_filter)
+                .group_by(_issues.c.rule_id)
+                .order_by(func.count().desc())
+            ),
+            "issues_by_severity": self._rows(
+                select(_issues.c.severity, func.count().label("count"))
+                .where(issue_filter)
+                .group_by(_issues.c.severity)
+                .order_by(func.count().desc(), _issues.c.severity)
+            ),
+            "issues_by_ledger_type": self._rows(
+                select(_issues.c.ledger_type, func.count().label("count"))
+                .where(issue_filter)
+                .group_by(_issues.c.ledger_type)
+                .order_by(func.count().desc(), _issues.c.ledger_type)
+            ),
+            "issue_categories": self._rows(
+                select(
+                    _issues.c.ledger_type,
+                    _issues.c.rule_id,
+                    _issues.c.severity,
+                    func.count().label("count"),
+                )
+                .where(issue_filter)
+                .group_by(
+                    _issues.c.ledger_type,
+                    _issues.c.rule_id,
+                    _issues.c.severity,
+                )
+                .order_by(
+                    func.count().desc(),
+                    _issues.c.ledger_type,
+                    _issues.c.rule_id,
+                )
+            ),
+            "city_rule_matrix": self._rows(
+                select(
+                    func.coalesce(_issues.c.city, "未填地市").label("city"),
+                    _issues.c.ledger_type,
+                    _issues.c.rule_id,
+                    func.count().label("count"),
+                )
+                .where(issue_filter)
+                .group_by(
+                    func.coalesce(_issues.c.city, "未填地市"),
+                    _issues.c.ledger_type,
+                    _issues.c.rule_id,
+                )
+                .order_by(
+                    func.coalesce(_issues.c.city, "未填地市"),
+                    _issues.c.ledger_type,
+                    func.count().desc(),
+                    _issues.c.rule_id,
+                )
+            ),
+            "city_ledger_matrix": self._rows(
+                select(
+                    func.coalesce(_issues.c.city, "未填地市").label("city"),
+                    _issues.c.ledger_type,
+                    func.count().label("count"),
+                )
+                .where(issue_filter)
+                .group_by(
+                    func.coalesce(_issues.c.city, "未填地市"),
+                    _issues.c.ledger_type,
+                )
+                .order_by(
+                    func.coalesce(_issues.c.city, "未填地市"),
+                    func.count().desc(),
+                    _issues.c.ledger_type,
+                )
+            ),
+            "city_severity_matrix": self._rows(
+                select(
+                    func.coalesce(_issues.c.city, "未填地市").label("city"),
+                    _issues.c.severity,
+                    func.count().label("count"),
+                )
+                .where(issue_filter)
+                .group_by(
+                    func.coalesce(_issues.c.city, "未填地市"),
+                    _issues.c.severity,
+                )
+                .order_by(
+                    func.coalesce(_issues.c.city, "未填地市"),
+                    func.count().desc(),
+                    _issues.c.severity,
+                )
+            ),
+            "status_counts": self._rows(
+                select(_issues.c.status, func.count().label("count"))
+                .where(issue_filter)
+                .group_by(_issues.c.status)
+            ),
+            "rule_effectiveness": self._rows(
+                select(
+                    _issues.c.rule_id,
+                    _issues.c.severity,
+                    func.count().label("total_count"),
+                    func.sum(
+                        case(
+                            (~_issues.c.status.in_(_CLOSED_ISSUE_STATUSES), 1),
+                            else_=0,
+                        )
+                    ).label("open_count"),
+                    func.sum(
+                        case(
+                            (_issues.c.status.in_(_CLOSED_ISSUE_STATUSES), 1),
+                            else_=0,
+                        )
+                    ).label("closed_count"),
+                    func.sum(
+                        case((_issues.c.status == "not_required", 1), else_=0)
+                    ).label("not_required_count"),
+                    func.sum(
+                        case((_issues.c.status == "still_invalid", 1), else_=0)
+                    ).label("still_invalid_count"),
+                )
+                .where(issue_filter)
+                .group_by(_issues.c.rule_id, _issues.c.severity)
+                .order_by(
+                    case(
+                        (_issues.c.severity == "high", 0),
+                        (_issues.c.severity == "medium", 1),
+                        else_=2,
+                    ),
+                    func.count().desc(),
+                    _issues.c.rule_id,
+                )
+            ),
+        }
+
+    def rule_effectiveness(self, batch_id: int) -> list[IssueRecord]:
+        statement = (
+            select(
+                _issues.c.rule_id,
+                func.count().label("total_count"),
+                func.sum(
+                    case(
+                        (~_issues.c.status.in_(_CLOSED_ISSUE_STATUSES), 1),
+                        else_=0,
+                    )
+                ).label("open_count"),
+                func.sum(
+                    case((_issues.c.status == "not_required", 1), else_=0)
+                ).label("not_required_count"),
+                func.sum(
+                    case((_issues.c.status == "still_invalid", 1), else_=0)
+                ).label("still_invalid_count"),
+            )
+            .where(_issues.c.batch_id == batch_id)
+            .group_by(_issues.c.rule_id)
+        )
+        return [
+            dict(row)
+            for row in self._connection.execute(statement).mappings()
+        ]
+
+    def _rows(self, statement: Any) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in self._connection.execute(statement).mappings()
+        ]
+
+
+class SqliteRecentFileRepository(RecentFileRepository):
+    def __init__(self, connection: Connection) -> None:
+        self._connection = connection
+
+    def record(
+        self,
+        *,
+        path: str,
+        kind: str,
+        ok: bool,
+        ledger_counts_json: str,
+        error_count: int,
+    ) -> None:
+        timestamp = func.strftime("%Y-%m-%d %H:%M:%f", "now")
+        statement = sqlite_insert(_recent_files).values(
+            path=path,
+            kind=kind,
+            ok=1 if ok else 0,
+            ledger_counts_json=ledger_counts_json,
+            error_count=error_count,
+            last_used_at=timestamp,
+        )
+        statement = statement.on_conflict_do_update(
+            index_elements=[_recent_files.c.path],
+            set_={
+                "kind": statement.excluded.kind,
+                "ok": statement.excluded.ok,
+                "ledger_counts_json": statement.excluded.ledger_counts_json,
+                "error_count": statement.excluded.error_count,
+                "last_used_at": timestamp,
+            },
+        )
+        self._connection.execute(statement)
+
+    def list(self, limit: int = 10) -> list[dict[str, Any]]:
+        statement = (
+            select(
+                _recent_files.c.path,
+                _recent_files.c.kind,
+                _recent_files.c.ok,
+                _recent_files.c.ledger_counts_json,
+                _recent_files.c.error_count,
+                _recent_files.c.last_used_at,
+            )
+            .order_by(_recent_files.c.last_used_at.desc())
+            .limit(limit)
+        )
+        return [
+            dict(row)
+            for row in self._connection.execute(statement).mappings()
+        ]
+
+
+class SqliteRuleSettingRepository(RuleSettingRepository):
+    def __init__(self, connection: Connection) -> None:
+        self._connection = connection
+
+    def upsert(
+        self,
+        rule_id: str,
+        *,
+        enabled: bool,
+        config_json: str,
+    ) -> None:
+        statement = sqlite_insert(_audit_rule_settings).values(
+            rule_id=rule_id,
+            enabled=1 if enabled else 0,
+            config_json=config_json,
+            updated_at=func.current_timestamp(),
+        )
+        statement = statement.on_conflict_do_update(
+            index_elements=[_audit_rule_settings.c.rule_id],
+            set_={
+                "enabled": statement.excluded.enabled,
+                "config_json": statement.excluded.config_json,
+                "updated_at": func.current_timestamp(),
+            },
+        )
+        self._connection.execute(statement)
+
+    def list(self) -> list[dict[str, Any]]:
+        statement = select(
+            _audit_rule_settings.c.rule_id,
+            _audit_rule_settings.c.enabled,
+            _audit_rule_settings.c.config_json,
+        )
+        return [
+            dict(row)
+            for row in self._connection.execute(statement).mappings()
+        ]
+
+
 class SqliteUnitOfWork(UnitOfWork):
     def __init__(self, connection: Connection) -> None:
         self.batches = SqliteBatchRepository(connection)
@@ -1595,6 +1895,9 @@ class SqliteUnitOfWork(UnitOfWork):
         self.exports = SqliteExportRepository(connection)
         self.analysis = SqliteAnalysisRepository(connection)
         self.archives = SqliteArchiveRepository(connection)
+        self.dashboards = SqliteDashboardRepository(connection)
+        self.recent_files = SqliteRecentFileRepository(connection)
+        self.rule_settings = SqliteRuleSettingRepository(connection)
 
 
 class SqliteDatabase:

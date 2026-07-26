@@ -4,7 +4,7 @@ from urllib.parse import ParseResult, parse_qs
 from governance_app.audit_engine import run_audit
 from governance_app.audit_rules import all_batch_rules, all_rules, rule_metadata
 from governance_app.config import AppConfig
-from governance_app.db import connect
+from governance_app.database_runtime import database_for
 from governance_app.models import IssueStatus
 from governance_app.operation_guard import OperationConflict, exclusive_operation
 from governance_app.routes.common import (
@@ -159,17 +159,8 @@ def _rule_settings_payload(config: AppConfig, batch_id: int | None = None) -> li
 def _rule_effectiveness_by_rule(config: AppConfig, batch_id: int | None) -> dict[str, dict]:
     if batch_id is None:
         return {}
-    with connect(config) as conn:
-        rows = conn.execute(
-            """
-            select rule_id, count(*) as total_count,
-                   sum(case when status not in ('closed', 'not_required', 'resolved_by_reaudit') then 1 else 0 end) as open_count,
-                   sum(case when status = 'not_required' then 1 else 0 end) as not_required_count,
-                   sum(case when status = 'still_invalid' then 1 else 0 end) as still_invalid_count
-              from issues where batch_id = ? group by rule_id
-            """,
-            (batch_id,),
-        ).fetchall()
+    with database_for(config).unit_of_work() as unit_of_work:
+        rows = unit_of_work.dashboards.rule_effectiveness(batch_id)
     result = {}
     for row in rows:
         total = int(row["total_count"] or 0)

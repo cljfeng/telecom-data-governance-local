@@ -1,6 +1,7 @@
 import pytest
 
 from governance_app.adapters.sqlite_database import SqliteDatabase
+from governance_app.analytics import dashboard_summary
 from governance_app.archive import archive_batch
 from governance_app.audit_engine import run_audit
 from governance_app.db import connect, initialize_database
@@ -10,6 +11,8 @@ from governance_app.electricity_analysis import (
 )
 from governance_app.exporter import export_city_issue_packages
 from governance_app.importer import import_workbook
+from governance_app.recent_files import list_recent_files
+from governance_app.rule_settings import load_rule_settings, upsert_rule_setting
 from governance_app.workflow import (
     city_progress,
     count_ledger_rows,
@@ -216,6 +219,26 @@ def test_import_audit_and_ledger_queries_share_database_port(
             imported.batch_id,
             database=database,
         )
+        dashboard = dashboard_summary(
+            app_config,
+            imported.batch_id,
+            database=database,
+        )
+        recent_files = list_recent_files(
+            app_config,
+            database=database,
+        )
+        upsert_rule_setting(
+            app_config,
+            "electricity_price_range",
+            enabled=True,
+            config_values={},
+            database=database,
+        )
+        rule_settings = load_rule_settings(
+            app_config,
+            database=database,
+        )
         workflow = get_batch_workflow(
             app_config,
             imported.batch_id,
@@ -268,6 +291,9 @@ def test_import_audit_and_ledger_queries_share_database_port(
     assert len(ledger_rows) == 3
     assert audit.audit_run_id > 0
     assert audit.issue_count == 2
+    assert dashboard["open_issue_count"] == 2
+    assert recent_files[0]["path"] == str(sample_workbook)
+    assert rule_settings["electricity_price_range"].enabled is True
     assert workflow["todo_summary"]["ledger_count"] == 4
     assert workflow["todo_summary"]["total_issue_count"] == 2
     assert progress[0]["total_count"] == 2

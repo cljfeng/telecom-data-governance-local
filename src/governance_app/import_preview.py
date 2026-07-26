@@ -9,6 +9,7 @@ from openpyxl import Workbook, load_workbook
 from governance_app.config import AppConfig
 from governance_app.importer import _data_rows, _headers
 from governance_app.models import LedgerType, ValidationErrorDetail
+from governance_app.ports.database import Database
 from governance_app.recent_files import (
     list_recent_files as list_recent_files,
     record_recent_file,
@@ -29,7 +30,12 @@ class ImportPreviewResult:
     errors: list[ValidationErrorDetail] = field(default_factory=list)
 
 
-def preview_workbook(config: AppConfig, workbook_path: Path) -> ImportPreviewResult:
+def preview_workbook(
+    config: AppConfig,
+    workbook_path: Path,
+    *,
+    database: Database | None = None,
+) -> ImportPreviewResult:
     wb = load_workbook(workbook_path, data_only=True)
     errors: list[ValidationErrorDetail] = []
     ledger_counts: dict[str, int] = {}
@@ -57,7 +63,15 @@ def preview_workbook(config: AppConfig, workbook_path: Path) -> ImportPreviewRes
         ledger_counts=_with_all_ledgers(ledger_counts),
         errors=errors,
     )
-    record_recent_file(config, workbook_path, "preview", result.ok, result.ledger_counts, len(result.errors))
+    record_recent_file(
+        config,
+        workbook_path,
+        "preview",
+        result.ok,
+        result.ledger_counts,
+        len(result.errors),
+        database=database,
+    )
     return result
 
 

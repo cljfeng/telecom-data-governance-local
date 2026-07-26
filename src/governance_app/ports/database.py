@@ -303,6 +303,38 @@ class ArchiveRepository(Protocol):
     def rule_counts(self, batch_id: int) -> list[IssueRecord]: ...
 
 
+class DashboardRepository(Protocol):
+    def summary_rows(self, batch_id: int) -> Mapping[str, Any]: ...
+
+    def rule_effectiveness(self, batch_id: int) -> list[IssueRecord]: ...
+
+
+class RecentFileRepository(Protocol):
+    def record(
+        self,
+        *,
+        path: str,
+        kind: str,
+        ok: bool,
+        ledger_counts_json: str,
+        error_count: int,
+    ) -> None: ...
+
+    def list(self, limit: int = 10) -> list[dict[str, Any]]: ...
+
+
+class RuleSettingRepository(Protocol):
+    def upsert(
+        self,
+        rule_id: str,
+        *,
+        enabled: bool,
+        config_json: str,
+    ) -> None: ...
+
+    def list(self) -> list[dict[str, Any]]: ...
+
+
 class UnitOfWork(Protocol):
     batches: BatchRepository
     issues: IssueRepository
@@ -313,6 +345,9 @@ class UnitOfWork(Protocol):
     exports: ExportRepository
     analysis: AnalysisRepository
     archives: ArchiveRepository
+    dashboards: DashboardRepository
+    recent_files: RecentFileRepository
+    rule_settings: RuleSettingRepository
 
 
 class Database(Protocol):

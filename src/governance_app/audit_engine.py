@@ -34,11 +34,11 @@ def run_audit(
     database: Database | None = None,
 ) -> AuditRunResult:
     started_at = perf_counter()
-    rule_settings = load_rule_settings(config)
+    selected_database = database or database_for(config)
+    rule_settings = load_rule_settings(config, database=selected_database)
     thresholds = _thresholds_from_settings(rule_settings)
     rules = _enabled_rules(all_rules(thresholds), rule_settings)
     batch_rules = _enabled_rules(all_batch_rules(thresholds), rule_settings)
-    selected_database = database or database_for(config)
     with selected_database.unit_of_work() as unit_of_work:
         batch = unit_of_work.batches.get(batch_id)
         if batch is None:

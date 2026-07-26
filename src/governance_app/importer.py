@@ -124,7 +124,15 @@ def import_workbook(
             operation,
             f"{message}；记录 {total_records} 条；耗时 {elapsed:.2f} 秒",
         )
-    record_recent_file(config, workbook_path, "import", True, ledger_counts, 0)
+    record_recent_file(
+        config,
+        workbook_path,
+        "import",
+        True,
+        ledger_counts,
+        0,
+        database=selected_database,
+    )
     return ImportResult(batch_id=batch_id, ledger_counts=ledger_counts)
 
 

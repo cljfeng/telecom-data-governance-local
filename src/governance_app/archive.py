@@ -117,7 +117,11 @@ def archive_batch(
     archive_dir.mkdir(parents=True, exist_ok=True)
     path = archive_dir / f"批次{batch_id}_专项治理归档汇总.xlsx"
 
-    summary = dashboard_summary(config, batch_id)
+    summary = dashboard_summary(
+        config,
+        batch_id,
+        database=selected_database,
+    )
     progress = city_progress(config, batch_id, database=selected_database)
 
     wb = Workbook()
@@ -239,7 +243,7 @@ def archive_batch(
         ws.append([key, value])
     ws.append([])
     ws.append(["规则编号", "规则名称", "规则分类", "风险等级", "是否启用", "阈值配置"])
-    settings = load_rule_settings(config)
+    settings = load_rule_settings(config, database=selected_database)
     for row in rule_counts:
             metadata = rule_metadata(row["rule_id"])
             setting = settings.get(row["rule_id"])
@@ -318,7 +322,11 @@ def export_notice_report(
 ) -> Path:
     selected_database = database or database_for(config)
     config.export_dir.mkdir(parents=True, exist_ok=True)
-    summary = dashboard_summary(config, batch_id)
+    summary = dashboard_summary(
+        config,
+        batch_id,
+        database=selected_database,
+    )
     progress = city_progress(config, batch_id, database=selected_database)
     with selected_database.unit_of_work() as unit_of_work:
         batch = unit_of_work.batches.get(batch_id)
