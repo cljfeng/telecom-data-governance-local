@@ -181,7 +181,7 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8765, type=int)
     args = parser.parse_args()
-    run_server(AppConfig.for_workspace(Path(args.workspace)), args.host, args.port)
+    run_server(AppConfig.from_environment(Path(args.workspace)), args.host, args.port)
 
 
 if __name__ == "__main__":
