@@ -102,7 +102,9 @@ def test_archive_api_accepts_initial_audited_batch_with_closed_review(app_config
     assert json.loads(precheck[2])["ready"] is True
     assert json.loads(precheck[2])["blockers"] == []
     assert archive[0] == 200
-    assert json.loads(archive[2])["path"].endswith("专项治理归档汇总.xlsx")
+    archive_payload = json.loads(archive[2])
+    assert archive_payload["path"].endswith("专项治理归档汇总.xlsx")
+    assert archive_payload["file"]["file_id"].startswith("exports:")
 
 
 def test_archive_api_rejects_post_review_reaudit_with_other_open_issue(app_config):

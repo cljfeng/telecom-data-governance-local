@@ -10,9 +10,12 @@ from governance_app.routes.common import (
     JsonResponse,
     batch_id_from_payload,
     batch_id_from_query,
+    file_location,
+    file_payload,
     json_body,
     json_response,
-    save_uploaded_workbook,
+    store_uploaded_workbook,
+    workbook_path_from_payload,
 )
 
 
@@ -31,7 +34,13 @@ def handle_report_route(config: AppConfig, method: str, parsed: ParseResult, bod
             paths = export_issue_packages(config, batch_id, mode=mode)
         except ValueError as exc:
             return json_response({"error": str(exc)}, status=400)
-        return json_response({"paths": [str(path) for path in paths]})
+        files = [file_payload(config, path) for path in paths]
+        return json_response(
+            {
+                "paths": [file_location(file) for file in files],
+                "files": files,
+            }
+        )
     if method == "POST" and parsed.path == "/api/reports/notice":
         payload, error = json_body(body)
         if error:
@@ -43,15 +52,17 @@ def handle_report_route(config: AppConfig, method: str, parsed: ParseResult, bod
             path = export_notice_report(config, batch_id)
         except ValueError as exc:
             return json_response({"error": str(exc)}, status=400)
-        return json_response({"path": str(path)})
+        file = file_payload(config, path)
+        return json_response({"path": file_location(file), "file": file})
     if method == "POST" and parsed.path == "/api/corrections":
         payload, error = json_body(body)
         if error:
             return error
-        path_value = payload.get("path")
-        if not isinstance(path_value, str) or not path_value:
-            return json_response({"error": "path is required"}, status=400)
-        return _correction_response(config, Path(path_value))
+        try:
+            workbook_path = workbook_path_from_payload(config, payload)
+        except (FileNotFoundError, ValueError) as exc:
+            return json_response({"error": str(exc)}, status=400)
+        return _correction_response(config, workbook_path)
     if method == "POST" and parsed.path == "/api/archive":
         payload, error = json_body(body)
         if error:
@@ -66,7 +77,8 @@ def handle_report_route(config: AppConfig, method: str, parsed: ParseResult, bod
             return json_response({"error": str(exc)}, status=409)
         except ValueError as exc:
             return json_response({"error": str(exc)}, status=400)
-        return json_response({"path": str(path)})
+        file = file_payload(config, path)
+        return json_response({"path": file_location(file), "file": file})
     if method == "GET" and parsed.path == "/api/archive/precheck":
         batch_id, error = batch_id_from_query(parsed.query)
         if error:
@@ -94,10 +106,10 @@ def handle_report_upload(
     if not content:
         return json_response({"error": "台账文件为空"}, status=400)
     try:
-        workbook_path = save_uploaded_workbook(config, filename, content)
+        stored_file = store_uploaded_workbook(config, filename, content)
     except ValueError as exc:
         return json_response({"error": str(exc)}, status=400)
-    return _correction_response(config, workbook_path)
+    return _correction_response(config, stored_file.local_path)
 
 
 def _correction_response(config: AppConfig, workbook_path: Path) -> JsonResponse:

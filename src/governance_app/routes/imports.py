@@ -1,4 +1,3 @@
-from pathlib import Path
 from urllib.parse import ParseResult
 from zipfile import BadZipFile
 
@@ -16,9 +15,12 @@ from governance_app.operation_guard import OperationConflict, exclusive_operatio
 from governance_app.recent_files import list_recent_files
 from governance_app.routes.common import (
     JsonResponse,
+    file_location,
+    file_payload,
     json_body,
     json_response,
-    save_uploaded_workbook,
+    store_uploaded_workbook,
+    workbook_path_from_payload,
 )
 
 _IMPORT_UPLOAD_PATHS = {"/api/import/upload", "/api/import/preview/upload"}
@@ -56,10 +58,13 @@ def handle_import_upload(
     if not content:
         return json_response({"error": "台账文件为空"}, status=400)
     try:
-        workbook_path = save_uploaded_workbook(config, filename, content)
+        stored_file = store_uploaded_workbook(config, filename, content)
     except ValueError as exc:
         return json_response({"error": str(exc)}, status=400)
-    payload: dict[str, object] = {"path": str(workbook_path)}
+    payload: dict[str, object] = {
+        "file_id": stored_file.file_id,
+        "path": str(stored_file.local_path),
+    }
     payload.update(fields)
     if path == "/api/import/upload":
         return _import_from_payload(config, payload)
@@ -67,17 +72,15 @@ def handle_import_upload(
 
 
 def _preview_from_payload(config: AppConfig, payload: dict) -> JsonResponse:
-    path_value = payload.get("path")
-    if not isinstance(path_value, str) or not path_value:
-        return json_response({"error": "path is required"}, status=400)
-    workbook_path = Path(path_value)
     try:
+        workbook_path = workbook_path_from_payload(config, payload)
         result = preview_workbook(config, workbook_path)
-    except (OSError, InvalidFileException, BadZipFile) as exc:
+    except (ValueError, OSError, InvalidFileException, BadZipFile) as exc:
         return json_response({"error": f"无法读取 Excel 文件：{exc}"}, status=400)
-    error_export_path = ""
+    error_file: dict[str, str] | None = None
     if result.errors:
-        error_export_path = str(export_preview_errors(config, workbook_path, result))
+        error_path = export_preview_errors(config, workbook_path, result)
+        error_file = file_payload(config, error_path)
     return json_response(
         {
             "error": "" if result.ok else "预检未通过，请按错误明细修正后重试",
@@ -86,25 +89,26 @@ def _preview_from_payload(config: AppConfig, payload: dict) -> JsonResponse:
             "ledger_counts": result.ledger_counts,
             "errors": [preview_error_payload(error) for error in result.errors],
             "error_summary": preview_error_summary(result.errors),
-            "error_export_path": error_export_path,
+            "error_export_path": (
+                "" if error_file is None else file_location(error_file)
+            ),
+            "error_file": error_file,
         },
         status=200 if result.ok else 400,
     )
 
 
 def _import_from_payload(config: AppConfig, payload: dict) -> JsonResponse:
-    path_value = payload.get("path")
-    if not isinstance(path_value, str) or not path_value:
-        return json_response({"error": "path is required"}, status=400)
     strategy = payload.get("strategy", "new")
     if not isinstance(strategy, str):
         return json_response({"error": "strategy must be string"}, status=400)
     batch_id = payload.get("batch_id")
     try:
+        workbook_path = workbook_path_from_payload(config, payload)
         with exclusive_operation(config, "import"):
             result = import_workbook(
                 config,
-                Path(path_value),
+                workbook_path,
                 strategy=strategy,
                 batch_id=int(batch_id) if batch_id not in (None, "") else None,
             )

@@ -15,6 +15,8 @@ from governance_app.electricity_analysis import (
 )
 from governance_app.routes.common import (
     JsonResponse,
+    file_location,
+    file_payload,
     json_response,
     pagination_from_query,
 )
@@ -123,9 +125,11 @@ def _electricity_response(config, method, parsed, batch_id, action) -> JsonRespo
             }
         )
     if method == "POST" and action == "export":
-        return json_response(
-            {"path": str(export_electricity_opportunities(config, batch_id))}
+        file = file_payload(
+            config,
+            export_electricity_opportunities(config, batch_id),
         )
+        return json_response({"path": file_location(file), "file": file})
     return json_response({"error": "not found"}, status=404)
 
 
@@ -155,7 +159,11 @@ def _tower_rent_response(config, method, parsed, batch_id, action) -> JsonRespon
             }
         )
     if method == "POST" and action == "export":
-        return json_response({"path": str(export_tower_rent_clues(config, batch_id))})
+        file = file_payload(
+            config,
+            export_tower_rent_clues(config, batch_id),
+        )
+        return json_response({"path": file_location(file), "file": file})
     return json_response({"error": "not found"}, status=404)
 
 

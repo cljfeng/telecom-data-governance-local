@@ -1,9 +1,10 @@
 import json
 from pathlib import Path
 from urllib.parse import parse_qs
-from uuid import uuid4
 
-from governance_app.config import AppConfig
+from governance_app.config import AppConfig, RuntimeMode
+from governance_app.file_storage_runtime import file_storage_for
+from governance_app.ports.file_storage import FileStorage, StoredFile
 
 JsonResponse = tuple[int, dict[str, str], str]
 
@@ -57,13 +58,80 @@ def pagination_from_query(query: dict[str, list[str]]) -> tuple[int | None, int]
     return limit, offset
 
 
-def save_uploaded_workbook(config: AppConfig, filename: str, content: bytes) -> Path:
+def store_uploaded_workbook(
+    config: AppConfig,
+    filename: str,
+    content: bytes,
+    *,
+    storage: FileStorage | None = None,
+) -> StoredFile:
     safe_name = Path(filename or "workbook.xlsx").name
     suffix = Path(safe_name).suffix.lower()
     if suffix not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
         raise ValueError("请选择 .xlsx 或 .xlsm 格式的 Excel 台账文件")
-    upload_dir = config.data_dir / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    target = upload_dir / f"{uuid4().hex}-{safe_name}"
-    target.write_bytes(content)
-    return target
+    return (storage or file_storage_for(config)).save_upload(safe_name, content)
+
+
+def save_uploaded_workbook(
+    config: AppConfig,
+    filename: str,
+    content: bytes,
+    *,
+    storage: FileStorage | None = None,
+) -> Path:
+    return store_uploaded_workbook(
+        config,
+        filename,
+        content,
+        storage=storage,
+    ).local_path
+
+
+def file_path_from_payload(
+    config: AppConfig,
+    payload: dict,
+    *,
+    storage: FileStorage | None = None,
+) -> Path:
+    selected_storage = storage or file_storage_for(config)
+    file_id = payload.get("file_id")
+    if isinstance(file_id, str) and file_id:
+        return selected_storage.resolve(file_id).local_path
+    path_value = payload.get("path")
+    if (
+        config.runtime_mode is RuntimeMode.LOCAL
+        and isinstance(path_value, str)
+        and path_value
+    ):
+        return Path(path_value)
+    raise ValueError("file_id is required")
+
+
+def workbook_path_from_payload(
+    config: AppConfig,
+    payload: dict,
+    *,
+    storage: FileStorage | None = None,
+) -> Path:
+    return file_path_from_payload(config, payload, storage=storage)
+
+
+def file_payload(
+    config: AppConfig,
+    path: Path,
+    *,
+    storage: FileStorage | None = None,
+) -> dict[str, str]:
+    stored_file = (storage or file_storage_for(config)).publish(path)
+    payload = {
+        "file_id": stored_file.file_id,
+        "name": stored_file.name,
+        "url": stored_file.url or "",
+    }
+    if config.runtime_mode is RuntimeMode.LOCAL:
+        payload["path"] = str(stored_file.local_path)
+    return payload
+
+
+def file_location(payload: dict[str, str]) -> str:
+    return payload.get("path") or payload.get("url", "")

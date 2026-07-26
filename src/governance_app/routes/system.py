@@ -1,4 +1,3 @@
-from pathlib import Path
 from urllib.parse import ParseResult
 
 from governance_app.backup import create_backup
@@ -6,7 +5,14 @@ from governance_app.config import AppConfig
 from governance_app.maintenance import compact_database
 from governance_app.operation_guard import OperationConflict, exclusive_operation
 from governance_app.reset import reset_system
-from governance_app.routes.common import JsonResponse, json_body, json_response
+from governance_app.routes.common import (
+    JsonResponse,
+    file_location,
+    file_path_from_payload,
+    file_payload,
+    json_body,
+    json_response,
+)
 from governance_app.settings_service import local_settings, restore_backup_safely
 from governance_app.version import version_payload
 
@@ -20,17 +26,19 @@ def handle_system_route(config: AppConfig, method: str, parsed: ParseResult, bod
         return json_response(local_settings(config))
     if method == "POST" and parsed.path == "/api/backup":
         path = create_backup(config)
-        return json_response({"path": str(path)})
+        file = file_payload(config, path)
+        return json_response({"path": file_location(file), "file": file})
     if method == "POST" and parsed.path == "/api/restore":
         payload, error = json_body(body)
         if error:
             return error
-        path_value = payload.get("path")
-        if not isinstance(path_value, str) or not path_value:
-            return json_response({"error": "path is required"}, status=400)
         try:
+            backup_path = file_path_from_payload(config, payload)
             with exclusive_operation(config, "restore"):
-                safety_backup_path, status_text = restore_backup_safely(config, Path(path_value))
+                safety_backup_path, status_text = restore_backup_safely(
+                    config,
+                    backup_path,
+                )
         except OperationConflict as exc:
             return json_response({"error": str(exc)}, status=409)
         except (FileNotFoundError, ValueError) as exc:
