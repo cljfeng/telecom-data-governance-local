@@ -17,7 +17,12 @@ from governance_app.database_runtime import database_for
 from governance_app.db import connect
 from governance_app.geo import normalize_city
 from governance_app.models import IssueStatus
-from governance_app.ports.database import Database
+from governance_app.ports.database import (
+    Database,
+    IssueGroupQuery,
+    IssueGroupSelector,
+    IssueQuery,
+)
 from governance_app.templates import FIELD_GROUPS
 
 ISSUE_STATUSES = {
@@ -326,83 +331,51 @@ def list_issues(
     filters: dict[str, str] | None = None,
     limit: int | None = None,
     offset: int = 0,
+    *,
+    database: Database | None = None,
 ) -> list[dict[str, Any]] | dict[str, Any]:
     filters = filters or {}
-    where = ["issues.batch_id = ?"]
-    params: list[Any] = [batch_id]
-    for key, column in {
-        "city": "coalesce(issues.city, '未填地市')",
-        "ledger_type": "issues.ledger_type",
-        "severity": "issues.severity",
-        "status": "issues.status",
-        "rule_id": "issues.rule_id",
-    }.items():
-        value = filters.get(key)
-        if value:
-            where.append(f"{column} = ?")
-            params.append(value)
-    closure = filters.get("closure")
-    if closure == "open":
-        where.append("issues.status not in ('closed', 'not_required', 'resolved_by_reaudit')")
-    elif closure == "closed":
-        where.append("issues.status in ('closed', 'not_required', 'resolved_by_reaudit')")
-    base_where = " and ".join(where)
-    sql = f"""
-        select issues.issue_code, coalesce(issues.city, '未填地市') as city, issues.district,
-               issues.telecom_site_code, issues.telecom_site_name, issues.ledger_type,
-               issues.rule_id, issues.severity, issues.status, issues.message, issues.suggestion,
-               issues.correction_value, issues.correction_note, issues.updated_at, ar.result_json
-          from issues
-          left join audit_results ar on ar.id = issues.audit_result_id
-         where {base_where}
-         order by updated_at desc, issue_code
-    """
     if limit is not None:
         safe_limit = max(1, min(int(limit), 500))
         safe_offset = max(0, int(offset))
-        sql = f"{sql} limit ? offset ?"
-        query_params = params + [safe_limit, safe_offset]
     else:
         safe_limit = 500
         safe_offset = 0
-        sql = f"{sql} limit 500"
-        query_params = params
-    with connect(config) as conn:
-        total = conn.execute(f"select count(*) as count from issues where {base_where}", params).fetchone()["count"]
+    query = IssueQuery(
+        batch_id=batch_id,
+        city=filters.get("city"),
+        ledger_type=filters.get("ledger_type"),
+        severity=filters.get("severity"),
+        status=filters.get("status"),
+        rule_id=filters.get("rule_id"),
+        closure=filters.get("closure"),
+        limit=safe_limit,
+        offset=safe_offset,
+    )
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        rows, total = unit_of_work.issues.query(query)
         issues = []
-        for row in conn.execute(sql, query_params):
+        for row in rows:
             item = dict(row)
             metadata = rule_metadata(item["rule_id"])
             result = parse_result_payload(item.pop("result_json", None))
+            same_site_rule_count = int(item.pop("same_site_rule_count", 0) or 0)
             confidence = result.get("confidence") or confidence_for(metadata.category, item["severity"])
             item["rule_name"] = metadata.name
             item["confidence"] = confidence
             item["confidence_label"] = result.get("confidence_label") or confidence_label(confidence)
             item["evidence"] = result.get("evidence") or _fallback_evidence(item)
-            item["group"] = _issue_group(conn, batch_id, item)
+            item["group"] = {
+                "same_site_rule_count": same_site_rule_count,
+                "label": "同站址同规则聚合" if same_site_rule_count > 1 else "单条问题",
+            }
             item["explanation"] = _issue_explanation(item, metadata)
             item["review_suggestion"] = _review_suggestion(item)
             issues.append(item)
         if limit is None:
             return issues
         return {"issues": issues, "total": total, "limit": safe_limit, "offset": safe_offset}
-
-
-def _issue_group(conn, batch_id: int, issue: dict[str, Any]) -> dict[str, Any]:
-    count = conn.execute(
-        """
-        select count(*) as count
-          from issues
-         where batch_id = ?
-           and rule_id = ?
-           and coalesce(telecom_site_code, '') = coalesce(?, '')
-        """,
-        (batch_id, issue["rule_id"], issue.get("telecom_site_code")),
-    ).fetchone()["count"]
-    return {
-        "same_site_rule_count": int(count or 0),
-        "label": "同站址同规则聚合" if int(count or 0) > 1 else "单条问题",
-    }
 
 
 def _fallback_evidence(issue: dict[str, Any]) -> dict[str, Any]:
@@ -418,18 +391,15 @@ def _fallback_evidence(issue: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def list_issue_rules(config: AppConfig, batch_id: int) -> list[dict[str, Any]]:
-    with connect(config) as conn:
-        rows = conn.execute(
-            """
-            select rule_id, count(*) as issue_count
-              from issues
-             where batch_id = ?
-             group by rule_id
-             order by issue_count desc, rule_id
-            """,
-            (batch_id,),
-        ).fetchall()
+def list_issue_rules(
+    config: AppConfig,
+    batch_id: int,
+    *,
+    database: Database | None = None,
+) -> list[dict[str, Any]]:
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        rows = unit_of_work.issues.rule_counts(batch_id)
     return [
         {
             "rule_id": row["rule_id"],
@@ -440,47 +410,24 @@ def list_issue_rules(config: AppConfig, batch_id: int) -> list[dict[str, Any]]:
     ]
 
 
-def list_issue_groups(config: AppConfig, batch_id: int, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
+def list_issue_groups(
+    config: AppConfig,
+    batch_id: int,
+    filters: dict[str, str] | None = None,
+    *,
+    database: Database | None = None,
+) -> list[dict[str, Any]]:
     filters = filters or {}
-    where = ["batch_id = ?"]
-    params: list[Any] = [batch_id]
-    for key, column in {
-        "city": "coalesce(city, '未填地市')",
-        "ledger_type": "ledger_type",
-        "rule_id": "rule_id",
-    }.items():
-        value = filters.get(key)
-        if value:
-            where.append(f"{column} = ?")
-            params.append(value)
-    closure = filters.get("closure")
-    if closure == "open":
-        where.append("status not in ('closed', 'not_required', 'resolved_by_reaudit')")
-    elif closure == "closed":
-        where.append("status in ('closed', 'not_required', 'resolved_by_reaudit')")
-    sql = f"""
-        select coalesce(city, '未填地市') as city,
-               ledger_type,
-               rule_id,
-               severity,
-               coalesce(telecom_site_code, '') as telecom_site_code,
-               max(telecom_site_name) as telecom_site_name,
-               count(*) as issue_count,
-               sum(case when status not in ('closed', 'not_required', 'resolved_by_reaudit') then 1 else 0 end) as open_count,
-               sum(case when status = 'needs_review' then 1 else 0 end) as review_count,
-               sum(case when status = 'still_invalid' then 1 else 0 end) as still_invalid_count,
-               sum(case when status = 'closed' then 1 else 0 end) as closed_count,
-               sum(case when status = 'not_required' then 1 else 0 end) as not_required_count,
-               min(issue_code) as representative_issue_code,
-               max(updated_at) as updated_at
-          from issues
-         where {" and ".join(where)}
-         group by coalesce(city, '未填地市'), ledger_type, rule_id, severity, coalesce(telecom_site_code, '')
-         order by open_count desc, issue_count desc, city, telecom_site_code, rule_id
-         limit 200
-    """
-    with connect(config) as conn:
-        rows = conn.execute(sql, params).fetchall()
+    query = IssueGroupQuery(
+        batch_id=batch_id,
+        city=filters.get("city"),
+        ledger_type=filters.get("ledger_type"),
+        rule_id=filters.get("rule_id"),
+        closure=filters.get("closure"),
+    )
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        rows = unit_of_work.issues.groups(query)
     groups = []
     for row in rows:
         metadata = rule_metadata(row["rule_id"])
@@ -506,47 +453,44 @@ def list_issue_groups(config: AppConfig, batch_id: int, filters: dict[str, str] 
     return groups
 
 
-def update_issue_group_status(config: AppConfig, batch_id: int, group: dict[str, Any], status: IssueStatus) -> int:
+def update_issue_group_status(
+    config: AppConfig,
+    batch_id: int,
+    group: dict[str, Any],
+    status: IssueStatus,
+    *,
+    database: Database | None = None,
+) -> int:
     if status not in ISSUE_STATUSES:
         raise ValueError("invalid issue status")
-    where = ["batch_id = ?", "rule_id = ?", "ledger_type = ?", "coalesce(city, '未填地市') = ?", "coalesce(telecom_site_code, '') = ?"]
-    params: list[Any] = [
-        batch_id,
-        group.get("rule_id", ""),
-        group.get("ledger_type", ""),
-        group.get("city", ""),
-        group.get("telecom_site_code", ""),
-    ]
-    with connect(config) as conn:
-        batch = conn.execute("select is_archived from import_batches where id = ?", (batch_id,)).fetchone()
+    selector = IssueGroupSelector(
+        batch_id=batch_id,
+        rule_id=str(group.get("rule_id", "")),
+        ledger_type=str(group.get("ledger_type", "")),
+        city=str(group.get("city", "")),
+        telecom_site_code=str(group.get("telecom_site_code", "")),
+    )
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        batch = unit_of_work.batches.get(batch_id)
         if batch is None:
             raise ValueError("batch not found")
         if batch["is_archived"]:
             raise ValueError("batch is archived")
-        affected = conn.execute(
-            f"select id, status from issues where {' and '.join(where)}",
-            params,
-        ).fetchall()
-        cursor = conn.execute(
-            f"update issues set status = ?, updated_at = current_timestamp where {' and '.join(where)}",
-            [status] + params,
+        event_note = f"批量更新问题组：{selector.rule_id}"
+        updated_count = unit_of_work.issues.update_group_status(
+            selector,
+            status,
+            source="manual_group",
+            event_note=event_note,
         )
-        if cursor.rowcount:
-            conn.executemany(
-                """
-                insert into issue_events(issue_id, from_status, to_status, source, note)
-                values (?, ?, ?, 'manual_group', ?)
-                """,
-                [
-                    (row["id"], row["status"], status, f"批量更新问题组：{group.get('rule_id')}")
-                    for row in affected
-                ],
+        if updated_count:
+            unit_of_work.batches.add_operation(
+                batch_id,
+                "update_issue_group_status",
+                f"批量更新问题组：{selector.rule_id} -> {status}，{updated_count} 条",
             )
-            conn.execute(
-                "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
-                (batch_id, "update_issue_group_status", f"批量更新问题组：{group.get('rule_id')} -> {status}，{cursor.rowcount} 条"),
-            )
-        return int(cursor.rowcount or 0)
+        return updated_count
 
 
 def city_progress(config: AppConfig, batch_id: int) -> list[dict[str, Any]]:
@@ -797,18 +741,32 @@ def update_issue_status_in_conn(
     return row
 
 
-def update_issue_status(config: AppConfig, issue_code: str, status: IssueStatus) -> None:
-    with connect(config) as conn:
-        row = update_issue_status_in_conn(
-            conn,
-            issue_code,
+def update_issue_status(
+    config: AppConfig,
+    issue_code: str,
+    status: IssueStatus,
+    *,
+    database: Database | None = None,
+) -> None:
+    if status not in ISSUE_STATUSES:
+        raise ValueError("invalid issue status")
+    selected_database = database or database_for(config)
+    with selected_database.unit_of_work() as unit_of_work:
+        issue = unit_of_work.issues.get_with_batch(issue_code)
+        if issue is None:
+            raise ValueError("issue not found")
+        if issue["is_archived"]:
+            raise ValueError("batch is archived")
+        unit_of_work.issues.update_status(
+            issue,
             status,
             source="manual",
             event_note=f"人工更新问题状态：{issue_code}",
         )
-        conn.execute(
-            "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
-            (row["batch_id"], "update_issue_status", f"更新问题状态：{issue_code} -> {status}"),
+        unit_of_work.batches.add_operation(
+            int(issue["batch_id"]),
+            "update_issue_status",
+            f"更新问题状态：{issue_code} -> {status}",
         )
 
 

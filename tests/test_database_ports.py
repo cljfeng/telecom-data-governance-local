@@ -1,12 +1,18 @@
 import pytest
 
 from governance_app.adapters.sqlite_database import SqliteDatabase
-from governance_app.db import initialize_database
+from governance_app.audit_engine import run_audit
+from governance_app.db import connect, initialize_database
+from governance_app.importer import import_workbook
 from governance_app.workflow import (
     create_batch,
     list_batches,
+    list_issue_groups,
+    list_issue_rules,
+    list_issues,
     set_current_batch,
     transition_batch,
+    update_issue_status,
 )
 
 
@@ -64,3 +70,102 @@ def test_batch_services_reject_unknown_batch_through_database_port(app_config):
             transition_batch(app_config, 999, "import", database=database)
     finally:
         database.dispose()
+
+
+def test_issue_services_query_and_update_through_database_port(
+    app_config,
+    sample_workbook,
+):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as connection:
+        connection.execute(
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') "
+            "where ledger_type = 'electricity'"
+        )
+    run_audit(app_config, imported.batch_id)
+    database = SqliteDatabase(app_config.database_path)
+
+    try:
+        page = list_issues(
+            app_config,
+            imported.batch_id,
+            {"city": "杭州", "closure": "open"},
+            limit=20,
+            database=database,
+        )
+        issues = page["issues"]
+        rules = list_issue_rules(app_config, imported.batch_id, database=database)
+        groups = list_issue_groups(app_config, imported.batch_id, database=database)
+        update_issue_status(
+            app_config,
+            issues[0]["issue_code"],
+            "closed",
+            database=database,
+        )
+        closed = list_issues(
+            app_config,
+            imported.batch_id,
+            {"closure": "closed"},
+            limit=20,
+            database=database,
+        )
+    finally:
+        database.dispose()
+
+    assert page["total"] == 2
+    assert issues[0]["group"]["same_site_rule_count"] == 1
+    assert rules[0]["issue_count"] == 1
+    assert groups
+    assert closed["total"] == 1
+    assert closed["issues"][0]["status"] == "closed"
+
+
+def test_issue_update_rolls_back_status_and_event_together(
+    app_config,
+    sample_workbook,
+):
+    initialize_database(app_config)
+    imported = import_workbook(app_config, sample_workbook)
+    with connect(app_config) as connection:
+        connection.execute(
+            "update raw_rows set row_json = replace(row_json, '0.8', '9.9') "
+            "where ledger_type = 'electricity'"
+        )
+    run_audit(app_config, imported.batch_id)
+    database = SqliteDatabase(app_config.database_path)
+
+    try:
+        issue_code = list_issues(
+            app_config,
+            imported.batch_id,
+            {},
+            database=database,
+        )[0]["issue_code"]
+        with pytest.raises(RuntimeError, match="force rollback"):
+            with database.unit_of_work() as unit_of_work:
+                issue = unit_of_work.issues.get_with_batch(issue_code)
+                assert issue is not None
+                unit_of_work.issues.update_status(
+                    issue,
+                    "closed",
+                    source="test",
+                    event_note="rollback",
+                )
+                raise RuntimeError("force rollback")
+    finally:
+        database.dispose()
+
+    with connect(app_config) as connection:
+        issue = connection.execute(
+            "select id, status from issues where issue_code = ?",
+            (issue_code,),
+        ).fetchone()
+        events = connection.execute(
+            "select count(*) as count from issue_events "
+            "where issue_id = ? and source = 'test'",
+            (issue["id"],),
+        ).fetchone()["count"]
+
+    assert issue["status"] != "closed"
+    assert events == 0
