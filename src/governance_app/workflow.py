@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 from datetime import datetime
 from typing import Any
 
@@ -145,25 +144,6 @@ def transition_batch_in_unit_of_work(
     )
     unit_of_work.batches.update_status(batch_id, target, archive=archive)
     return target
-
-
-def transition_batch_in_conn(conn, batch_id: int, event: str) -> str:
-    row = conn.execute("select status, is_archived from import_batches where id = ?", (batch_id,)).fetchone()
-    if row is None:
-        raise ValueError("batch not found")
-    target, archive = _batch_transition_target(
-        status=str(row["status"]),
-        is_archived=bool(row["is_archived"]),
-        event=event,
-    )
-    if archive:
-        conn.execute(
-            "update import_batches set status = ?, is_archived = 1, archived_at = current_timestamp where id = ?",
-            (target, batch_id),
-        )
-    else:
-        conn.execute("update import_batches set status = ? where id = ?", (target, batch_id))
-    return str(target)
 
 
 def _batch_transition_target(
@@ -693,57 +673,6 @@ def _review_suggestion(issue: dict[str, Any]) -> dict[str, str]:
 
 def _severity_label(value: str) -> str:
     return {"high": "高", "medium": "中", "low": "低"}.get(value, value)
-
-
-def update_issue_status_in_conn(
-    conn: sqlite3.Connection,
-    issue_code: str,
-    status: IssueStatus,
-    *,
-    source: str,
-    event_note: str,
-    correction_value: str | None = None,
-    correction_note: str | None = None,
-    update_correction_value: bool = False,
-    update_correction_note: bool = False,
-) -> sqlite3.Row:
-    if status not in ISSUE_STATUSES:
-        raise ValueError("invalid issue status")
-    row = conn.execute(
-        """
-        select i.id, i.batch_id, i.status, b.is_archived
-          from issues i
-          join import_batches b on b.id = i.batch_id
-         where i.issue_code = ?
-        """,
-        (issue_code,),
-    ).fetchone()
-    if row is None:
-        raise ValueError("issue not found")
-    if row["is_archived"]:
-        raise ValueError("batch is archived")
-    assignments = ["status = ?"]
-    params: list[object] = [status]
-    if update_correction_value:
-        assignments.append("correction_value = ?")
-        params.append(correction_value)
-    if update_correction_note:
-        assignments.append("correction_note = ?")
-        params.append(correction_note)
-    assignments.append("updated_at = current_timestamp")
-    params.append(issue_code)
-    conn.execute(
-        f"update issues set {', '.join(assignments)} where issue_code = ?",
-        params,
-    )
-    conn.execute(
-        """
-        insert into issue_events(issue_id, from_status, to_status, source, note)
-        values (?, ?, ?, ?, ?)
-        """,
-        (row["id"], row["status"], status, source, event_note),
-    )
-    return row
 
 
 def update_issue_status(

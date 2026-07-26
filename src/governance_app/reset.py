@@ -4,19 +4,9 @@ from typing import Any
 
 from governance_app.backup import create_backup
 from governance_app.config import AppConfig
-from governance_app.db import connect, initialize_database
-
-BUSINESS_TABLES = [
-    "correction_returns",
-    "issues",
-    "audit_results",
-    "audit_runs",
-    "ledger_rows",
-    "raw_rows",
-    "operation_logs",
-    "recent_files",
-    "import_batches",
-]
+from governance_app.database_admin_runtime import database_admin_for
+from governance_app.db import initialize_database
+from governance_app.ports.database_admin import DatabaseAdministration
 
 
 def reset_system(
@@ -24,19 +14,19 @@ def reset_system(
     confirmation: str,
     preserve_exports: bool = True,
     preserve_backups: bool = True,
+    *,
+    administration: DatabaseAdministration | None = None,
 ) -> dict[str, Any]:
     if confirmation != "复位":
         raise ValueError("请输入“复位”确认后再执行")
     initialize_database(config)
-    safety_backup_path = create_backup(config) if config.database_path.exists() else None
-    with connect(config) as conn:
-        for table_name in BUSINESS_TABLES:
-            conn.execute(f"delete from {table_name}")
-        conn.execute("delete from settings where key = 'current_batch_id'")
-        conn.execute(
-            "delete from sqlite_sequence where name in ({})".format(",".join("?" for _ in BUSINESS_TABLES)),
-            BUSINESS_TABLES,
-        )
+    selected_administration = administration or database_admin_for(config)
+    safety_backup_path = (
+        create_backup(config, administration=selected_administration)
+        if config.database_path.exists()
+        else None
+    )
+    selected_administration.reset_business_data()
     removed_exports = 0 if preserve_exports else _clear_directory(config.export_dir)
     removed_backups = 0
     if not preserve_backups:
