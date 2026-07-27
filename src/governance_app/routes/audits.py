@@ -16,6 +16,7 @@ from governance_app.routes.common import (
     pagination_from_query,
 )
 from governance_app.rule_settings import load_rule_settings, upsert_rule_setting
+from governance_app.task_runtime import enqueue_online_task
 from governance_app.workflow import (
     list_issue_groups,
     list_issue_rules,
@@ -85,6 +86,13 @@ def handle_audit_route(config: AppConfig, method: str, parsed: ParseResult, body
         batch_id, error = batch_id_from_payload(payload)
         if error:
             return error
+        queued = enqueue_online_task(
+            config,
+            kind="audit",
+            payload=payload,
+        )
+        if queued is not None:
+            return queued
         try:
             with exclusive_operation(config, "audit"):
                 result = run_audit(config, batch_id)

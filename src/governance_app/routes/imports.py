@@ -25,6 +25,8 @@ from governance_app.routes.common import (
     stored_file_payload,
     workbook_path_from_payload,
 )
+from governance_app.security import claim_batch_for_current_principal
+from governance_app.task_runtime import enqueue_online_task
 
 _IMPORT_UPLOAD_PATHS = {"/api/import/upload", "/api/import/preview/upload"}
 
@@ -109,6 +111,13 @@ def _import_from_payload(config: AppConfig, payload: dict) -> JsonResponse:
     strategy = payload.get("strategy", "new")
     if not isinstance(strategy, str):
         return json_response({"error": "strategy must be string"}, status=400)
+    queued = enqueue_online_task(
+        config,
+        kind="import",
+        payload=payload,
+    )
+    if queued is not None:
+        return queued
     batch_id = payload.get("batch_id")
     try:
         workbook_path = workbook_path_from_payload(config, payload)
@@ -120,6 +129,11 @@ def _import_from_payload(config: AppConfig, payload: dict) -> JsonResponse:
                 batch_id=int(batch_id) if batch_id not in (None, "") else None,
                 source_reference=_online_file_reference(config, payload),
             )
+            if result.batch_id is not None:
+                claim_batch_for_current_principal(
+                    config,
+                    result.batch_id,
+                )
     except OperationConflict as exc:
         return json_response({"error": str(exc)}, status=409)
     except (TypeError, ValueError, OSError, InvalidFileException, BadZipFile) as exc:

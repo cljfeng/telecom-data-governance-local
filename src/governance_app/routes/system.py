@@ -4,6 +4,7 @@ from urllib.parse import ParseResult, quote, unquote
 from governance_app.backup import create_backup
 from governance_app.config import AppConfig
 from governance_app.file_storage_runtime import file_storage_for
+from governance_app.identity_store import identity_store_for
 from governance_app.maintenance import compact_database
 from governance_app.operation_guard import OperationConflict, exclusive_operation
 from governance_app.reset import reset_system
@@ -21,7 +22,22 @@ from governance_app.version import version_payload
 
 def handle_system_route(config: AppConfig, method: str, parsed: ParseResult, body: str) -> JsonResponse | None:
     if method == "GET" and parsed.path == "/api/health":
-        return json_response({"status": "ok"})
+        return json_response(
+            {
+                "status": "ok",
+                "mode": config.runtime_mode.value,
+            }
+        )
+    if method == "GET" and parsed.path == "/api/ready":
+        try:
+            identity_store_for(config).ping()
+            file_storage_for(config).healthcheck()
+        except Exception:
+            return json_response(
+                {"status": "not_ready"},
+                status=503,
+            )
+        return json_response({"status": "ready"})
     if method == "GET" and parsed.path == "/api/version":
         return json_response(version_payload())
     if method == "GET" and parsed.path.startswith("/api/files/"):

@@ -13,6 +13,7 @@ from governance_app.config import AppConfig
 from governance_app.database_runtime import database_for
 from governance_app.models import IssueStatus
 from governance_app.ports.database import Database
+from governance_app.security import ensure_batch_access
 from governance_app.workflow import (
     transition_batch_in_unit_of_work,
 )
@@ -176,6 +177,7 @@ def import_correction_return(
             correction_value = None if corrected is None else str(corrected)
             correction_note = None if note is None else str(note or result or "")
             assert batch_row is not None
+            ensure_batch_access(config, int(batch_row["batch_id"]))
             unit_of_work.issues.update_status(
                 batch_row,
                 cast(IssueStatus, target_status),

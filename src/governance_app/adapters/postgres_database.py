@@ -1,7 +1,7 @@
 from contextlib import contextmanager
 from typing import Iterator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError
 
@@ -43,6 +43,28 @@ class PostgresDatabase:
 
     def dispose(self) -> None:
         self._engine.dispose()
+
+    @contextmanager
+    def operation_lock(self, key: str) -> Iterator[bool]:
+        with self._engine.connect() as connection:
+            acquired = bool(
+                connection.execute(
+                    text(
+                        "select pg_try_advisory_lock(hashtext(:key))"
+                    ),
+                    {"key": key},
+                ).scalar_one()
+            )
+            try:
+                yield acquired
+            finally:
+                if acquired:
+                    connection.execute(
+                        text(
+                            "select pg_advisory_unlock(hashtext(:key))"
+                        ),
+                        {"key": key},
+                    )
 
 
 def _psycopg_url(database_url: str) -> str:

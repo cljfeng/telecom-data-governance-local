@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from sqlalchemy import Connection, text
 
 from governance_app.adapters.sqlite_database import _metadata
+from governance_app.identity_store import identity_metadata
 
-POSTGRES_SCHEMA_VERSION = 1
+POSTGRES_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,28 @@ def _create_initial_schema(connection: Connection) -> None:
     _metadata.create_all(connection)
 
 
+def _add_identity_and_runtime_schema(connection: Connection) -> None:
+    identity_metadata.create_all(connection)
+    for statement in (
+        "alter table recent_files add column if not exists "
+        "organization_id integer",
+        "alter table operation_logs add column if not exists "
+        "user_id integer",
+        "alter table operation_logs add column if not exists "
+        "organization_id integer",
+        "alter table operation_logs add column if not exists "
+        "request_id varchar",
+        "alter table operation_logs add column if not exists "
+        "source_ip varchar",
+        "alter table operation_logs add column if not exists "
+        "task_id integer",
+        "create index if not exists idx_recent_files_organization "
+        "on recent_files(organization_id, last_used_at)",
+    ):
+        connection.execute(text(statement))
+
+
 POSTGRES_MIGRATIONS = (
     PostgresMigration(1, _create_initial_schema),
+    PostgresMigration(2, _add_identity_and_runtime_schema),
 )

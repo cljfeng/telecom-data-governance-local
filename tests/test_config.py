@@ -31,9 +31,30 @@ def test_environment_rejects_unknown_mode(tmp_path: Path):
         AppConfig.from_environment(tmp_path, {"APP_MODE": "desktop"})
 
 
-def test_online_mode_fails_closed_until_adapters_are_ready(tmp_path: Path):
-    with pytest.raises(ConfigurationError, match="online mode is not ready"):
+def test_online_mode_requires_secure_bootstrap_configuration(tmp_path: Path):
+    with pytest.raises(
+        ConfigurationError,
+        match="BOOTSTRAP_ADMIN_PASSWORD",
+    ):
         AppConfig.from_environment(tmp_path, {"APP_MODE": "online"})
+
+
+def test_online_environment_builds_complete_runtime_config(tmp_path: Path):
+    config = AppConfig.from_environment(
+        tmp_path,
+        {
+            "APP_MODE": "online",
+            "DATABASE_URL": "postgresql://db/governance",
+            "OBJECT_STORAGE_BUCKET": "governance",
+            "BOOTSTRAP_ADMIN_USERNAME": "root",
+            "BOOTSTRAP_ADMIN_PASSWORD": "a-strong-password",
+            "TASK_WORKERS": "3",
+        },
+    )
+
+    assert config.runtime_mode is RuntimeMode.ONLINE
+    assert config.bootstrap_admin_username == "root"
+    assert config.task_worker_count == 3
 
 
 def test_online_config_requires_postgres_and_object_storage(tmp_path: Path):

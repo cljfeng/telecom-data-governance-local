@@ -1,7 +1,7 @@
 # 在线基础设施配置
 
-在线数据库与文件存储适配器已经实现，但在线 HTTP 服务仍保持关闭，直到身份认证和
-数据授权完成。这样可以验证基础设施而不会把无鉴权接口暴露到网络。
+在线数据库、文件存储、身份权限与后台任务均已接入。生产部署必须置于 HTTPS 反向代理
+之后，不能直接把内置 HTTP 端口暴露到公网。
 
 ## PostgreSQL
 
@@ -22,5 +22,30 @@ region 和对象前缀。上传和生成文件写入对象元数据中的 SHA-25
 会重新校验。客户端只获得受管 `file_id` 和 `/api/files/{file_id}` 下载地址，不接触服务端
 绝对路径或对象存储凭据。
 
-当前在线组件可通过 `AppConfig.for_online_workspace(...)` 在集成测试或受控环境中装配。
-正式启动入口仍会拒绝 `APP_MODE=online`；完成登录、组织、角色和数据范围权限后再解除。
+## 身份与数据权限
+
+内置角色包括平台管理员、组织管理员、稽核人员和整改人员。服务端会话使用不落盘明文的
+随机令牌，浏览器使用 `HttpOnly + Secure + SameSite=Lax` Cookie，写请求同时校验 CSRF；
+手机端可使用登录接口返回的 Bearer Token。连续五次密码错误后账号锁定十五分钟。
+
+批次在创建或导入成功后绑定发起人的组织。普通角色只能访问本组织批次；平台管理员具有
+全域范围。对象存储 key 同样带组织域，不能通过猜测文件引用跨域下载。
+
+## 后台任务
+
+在线模式下，导入、稽核、专题分析、报表导出和归档会返回 `202` 与任务编号。任务状态、
+进度、重试次数、错误和结果均持久化；服务重启会恢复排队或中断任务。同一组织可以通过
+`idempotency_key` 避免重复提交。
+
+## 启动配置
+
+复制 `deploy/online.env.example` 到安全的密钥管理系统，不要提交真实值。最小配置包括：
+
+- `DATABASE_URL`
+- `OBJECT_STORAGE_BUCKET`、endpoint 与区域
+- 对象存储访问凭据
+- `BOOTSTRAP_ADMIN_USERNAME` 与至少 12 位随机密码
+- `SESSION_TTL_SECONDS` 和 `TASK_WORKERS`
+
+本地联调可运行 `docker compose --env-file <安全配置> -f docker-compose.online.yml up`。
+完整生产检查、迁移和恢复步骤见 `docs/online-operations-runbook.md`。

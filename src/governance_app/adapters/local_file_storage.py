@@ -25,6 +25,10 @@ class LocalFileStorage(FileStorage):
             "backups": backup_dir.resolve(),
         }
 
+    def healthcheck(self) -> None:
+        for root in self._roots.values():
+            root.mkdir(parents=True, exist_ok=True)
+
     def save_upload(self, filename: str, content: bytes) -> StoredFile:
         safe_name = Path(filename or "workbook.xlsx").name
         upload_root = self._roots["uploads"]

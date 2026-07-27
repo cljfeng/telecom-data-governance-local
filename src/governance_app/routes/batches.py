@@ -10,6 +10,10 @@ from governance_app.routes.common import (
     json_response,
     pagination_from_query,
 )
+from governance_app.security import (
+    claim_batch_for_current_principal,
+    filter_batches_for_current_principal,
+)
 from governance_app.workflow import (
     city_progress,
     count_ledger_rows,
@@ -33,7 +37,11 @@ def handle_batch_route(
             return error
         return json_response(dashboard_summary(config, batch_id))
     if method == "GET" and parsed.path == "/api/batches":
-        return json_response({"batches": list_batches(config)})
+        batches = filter_batches_for_current_principal(
+            config,
+            list_batches(config),
+        )
+        return json_response({"batches": batches})
     if method == "POST" and parsed.path == "/api/batches":
         payload, error = json_body(body)
         if error:
@@ -43,6 +51,7 @@ def handle_batch_route(
             return json_response({"error": "name is required"}, status=400)
         try:
             batch_id = create_batch(config, name)
+            claim_batch_for_current_principal(config, batch_id)
         except ValueError as exc:
             return json_response({"error": str(exc)}, status=400)
         return json_response({"batch_id": batch_id})

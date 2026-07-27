@@ -15,6 +15,7 @@ from governance_app.adapters.sqlite_database import (
     _import_batches,
     _metadata,
 )
+from governance_app.request_context import Principal, principal_context
 
 
 class FakeObjectClient:
@@ -79,7 +80,7 @@ def test_object_storage_upload_resolve_publish_and_clear(tmp_path):
     assert upload.file_id.startswith("uploads:")
     assert resolved.local_path.read_bytes() == b"workbook"
     assert upload.url.startswith("/api/files/")
-    assert report.file_id == "exports:reports/result.xlsx"
+    assert report.file_id == "exports:0/reports/result.xlsx"
     assert storage.resolve(report.file_id).local_path.read_bytes() == b"report"
     assert storage.clear(
         "uploads",
@@ -101,6 +102,32 @@ def test_object_storage_rejects_traversal_and_checksum_mismatch(tmp_path):
     client.objects[key] = (b"tampered", metadata)
     with pytest.raises(ValueError, match="校验失败"):
         storage.resolve(uploaded.file_id)
+
+
+def test_object_storage_file_ids_are_isolated_by_organization(tmp_path):
+    storage = _storage(tmp_path)
+    first = Principal(
+        user_id=1,
+        organization_id=10,
+        username="first",
+        permissions=frozenset({"dashboard.read"}),
+        data_scope="organization",
+    )
+    second = Principal(
+        user_id=2,
+        organization_id=20,
+        username="second",
+        permissions=frozenset({"dashboard.read"}),
+        data_scope="organization",
+    )
+
+    with principal_context(first):
+        uploaded = storage.save_upload("台账.xlsx", b"workbook")
+    with principal_context(second):
+        with pytest.raises(FileNotFoundError):
+            storage.resolve(uploaded.file_id)
+
+    assert uploaded.file_id.startswith("uploads:10/")
 
 
 def test_postgres_adapter_reuses_transactional_repository_contract():

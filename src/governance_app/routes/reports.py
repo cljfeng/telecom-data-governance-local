@@ -17,6 +17,7 @@ from governance_app.routes.common import (
     store_uploaded_workbook,
     workbook_path_from_payload,
 )
+from governance_app.task_runtime import enqueue_online_task
 
 
 def handle_report_route(config: AppConfig, method: str, parsed: ParseResult, body: str) -> JsonResponse | None:
@@ -31,6 +32,13 @@ def handle_report_route(config: AppConfig, method: str, parsed: ParseResult, bod
             mode = payload.get("mode", "city")
             if not isinstance(mode, str):
                 return json_response({"error": "mode must be string"}, status=400)
+            queued = enqueue_online_task(
+                config,
+                kind="export_issues",
+                payload={**payload, "batch_id": batch_id},
+            )
+            if queued is not None:
+                return queued
             paths = export_issue_packages(config, batch_id, mode=mode)
         except ValueError as exc:
             return json_response({"error": str(exc)}, status=400)
@@ -49,6 +57,13 @@ def handle_report_route(config: AppConfig, method: str, parsed: ParseResult, bod
         if error:
             return error
         try:
+            queued = enqueue_online_task(
+                config,
+                kind="notice_report",
+                payload={**payload, "batch_id": batch_id},
+            )
+            if queued is not None:
+                return queued
             path = export_notice_report(config, batch_id)
         except ValueError as exc:
             return json_response({"error": str(exc)}, status=400)
@@ -75,6 +90,13 @@ def handle_report_route(config: AppConfig, method: str, parsed: ParseResult, bod
         if error:
             return error
         try:
+            queued = enqueue_online_task(
+                config,
+                kind="archive",
+                payload={**payload, "batch_id": batch_id},
+            )
+            if queued is not None:
+                return queued
             with exclusive_operation(config, "archive"):
                 path = archive_batch(config, batch_id)
         except OperationConflict as exc:

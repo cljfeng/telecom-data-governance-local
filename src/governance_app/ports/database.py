@@ -352,3 +352,8 @@ class UnitOfWork(Protocol):
 
 class Database(Protocol):
     def unit_of_work(self) -> AbstractContextManager[UnitOfWork]: ...
+
+    def operation_lock(
+        self,
+        key: str,
+    ) -> AbstractContextManager[bool]: ...

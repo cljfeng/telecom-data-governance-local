@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>本地单机版基础数据治理工具</title>
-    <link rel="stylesheet" href="/styles.css?v=20260718-3">
+    <title>基础数据治理平台</title>
+    <link rel="stylesheet" href="/styles.css?v=20260727-1">
   </head>
   <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -32,7 +32,10 @@
         <button class="nav-button" type="button" data-view="electricityAnalysis"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m13 2-8 12h7l-1 8 8-12h-7l1-8Z"></path></svg><span>电费压降分析</span></button>
         <button class="nav-button" type="button" data-view="towerRentAnalysis"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 6v15M8 21h8M9 15h6M10 10h4"></path><path d="M7 4a7 7 0 0 0 0 8M17 4a7 7 0 0 1 0 8M4 2a11 11 0 0 0 0 12M20 2a11 11 0 0 1 0 12"></path></svg><span>租费异常分析</span></button>
         <button class="nav-button" type="button" data-view="reports"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"></path></svg><span>分析报表</span></button>
-        <button class="nav-button" type="button" data-view="settings"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"></path></svg><span>本地设置</span></button>
+        <button class="nav-button" type="button" data-view="settings" data-permission="system.admin"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"></path></svg><span>本地设置</span></button>
+        <span class="nav-group online-only" hidden>在线管理</span>
+        <button class="nav-button online-only" type="button" data-view="tasks" data-permission="task.manage" hidden><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 5h16v14H4zM8 9h8M8 13h5"></path></svg><span>任务中心</span></button>
+        <button class="nav-button online-only" type="button" data-view="accounts" data-permission="identity.manage" hidden><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="9" cy="8" r="3"></circle><path d="M3 19c0-3 2.4-5 6-5s6 2 6 5M17 8h4M19 6v4"></path></svg><span>账号与组织</span></button>
       </nav>
     </aside>
     <button id="nav-scrim" class="nav-scrim" type="button" aria-label="关闭导航" tabindex="-1"></button>
@@ -51,6 +54,8 @@
           <span id="header-batch" class="header-chip">暂无批次</span>
           <span id="last-sync" class="header-chip">最近同步 --:--</span>
           <span id="service-status" class="status status-pending">连接中</span>
+          <span id="current-user" class="header-chip online-only" hidden></span>
+          <button id="logout-button" class="header-link online-only" type="button" hidden>退出</button>
         </div>
       </header>
 
@@ -98,6 +103,6 @@
       <p id="global-status" class="sr-only" role="status" aria-live="polite"></p>
     </div>
 
-    <script type="module" src="/app.js?v=20260718-2"></script>
+    <script type="module" src="/app.js?v=20260727-1"></script>
   </body>
 </html>

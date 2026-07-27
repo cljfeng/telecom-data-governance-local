@@ -9,6 +9,7 @@ from governance_app.ports.file_storage import (
     StorageArea,
     StoredFile,
 )
+from governance_app.request_context import current_principal
 
 _FILE_AREAS: tuple[StorageArea, ...] = (
     "uploads",
@@ -51,14 +52,23 @@ class ObjectFileStorage(FileStorage):
             region_name=region_name,
         )
 
+    def healthcheck(self) -> None:
+        self._client.list_objects_v2(
+            Bucket=self._bucket,
+            Prefix=self._prefix,
+            MaxKeys=1,
+        )
+
     def save_upload(self, filename: str, content: bytes) -> StoredFile:
         safe_name = Path(filename or "workbook.xlsx").name
-        relative_path = f"{uuid4().hex}-{safe_name}"
+        relative_path = self._scoped_relative(
+            f"{uuid4().hex}-{safe_name}"
+        )
         path = self._stage("uploads", relative_path, content)
         return self._upload("uploads", relative_path, path)
 
     def prepare_export(self, relative_path: str) -> Path:
-        normalized = _normalized_relative_path(relative_path)
+        normalized = self._scoped_relative(relative_path)
         path = (self._roots["exports"] / normalized).resolve()
         if not path.is_relative_to(self._roots["exports"]):
             raise ValueError("导出路径越界")
@@ -80,6 +90,7 @@ class ObjectFileStorage(FileStorage):
 
     def resolve(self, file_id: str) -> StoredFile:
         area, relative_path = _parse_file_id(file_id)
+        self._validate_scope(relative_path)
         key = self._key(area, relative_path)
         try:
             metadata = self._client.head_object(
@@ -120,7 +131,8 @@ class ObjectFileStorage(FileStorage):
             self._key(*_parse_file_id(file_id))
             for file_id in (keep_file_ids or set())
         }
-        object_prefix = self._key(area, "")
+        scope_prefix = f"{self._scope_id()}/"
+        object_prefix = self._key(area, scope_prefix)
         continuation_token: str | None = None
         removed = 0
         while True:
@@ -209,12 +221,32 @@ class ObjectFileStorage(FileStorage):
             )
             if kept_area == area
         }
-        root = self._roots[area]
+        root = self._roots[area] / str(self._scope_id())
         if not root.exists():
             return
         for path in root.rglob("*"):
             if path.is_file() and path.resolve() not in keep_paths:
                 path.unlink()
+
+    def _scoped_relative(self, relative_path: str) -> str:
+        normalized = _normalized_relative_path(relative_path)
+        return f"{self._scope_id()}/{normalized}"
+
+    def _scope_id(self) -> int:
+        principal = current_principal()
+        return 0 if principal is None else principal.organization_id
+
+    def _validate_scope(self, relative_path: str) -> None:
+        principal = current_principal()
+        if principal is None or principal.data_scope == "all":
+            return
+        raw_scope, separator, _remainder = relative_path.partition("/")
+        if (
+            not separator
+            or not raw_scope.isdigit()
+            or int(raw_scope) != principal.organization_id
+        ):
+            raise FileNotFoundError("Stored file not found")
 
 
 def _normalized_relative_path(relative_path: str) -> str:

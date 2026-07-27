@@ -103,6 +103,7 @@ _recent_files = Table(
     Column("ok", Integer, nullable=False),
     Column("ledger_counts_json", String, nullable=False),
     Column("error_count", Integer, nullable=False),
+    Column("organization_id", Integer),
     Column(
         "last_used_at",
         String,
@@ -132,6 +133,11 @@ _operation_logs = Table(
     Column("batch_id", Integer, ForeignKey("import_batches.id", ondelete="CASCADE")),
     Column("operation", String, nullable=False),
     Column("message", String, nullable=False),
+    Column("user_id", Integer),
+    Column("organization_id", Integer),
+    Column("request_id", String),
+    Column("source_ip", String),
+    Column("task_id", Integer),
     Column(
         "created_at",
         String,
@@ -556,11 +562,31 @@ class SqliteBatchRepository(BatchRepository):
         )
 
     def add_operation(self, batch_id: int, operation: str, message: str) -> None:
+        from governance_app.request_context import (
+            current_principal,
+            current_request,
+        )
+
+        principal = current_principal()
+        request = current_request()
         self._connection.execute(
             insert(_operation_logs).values(
                 batch_id=batch_id,
                 operation=operation,
                 message=message,
+                user_id=None if principal is None else principal.user_id,
+                organization_id=(
+                    None
+                    if principal is None
+                    else principal.organization_id
+                ),
+                request_id=(
+                    None if request is None else request.request_id
+                ),
+                source_ip=(
+                    None if request is None else request.source_ip
+                ),
+                task_id=None if request is None else request.task_id,
             )
         )
 
@@ -1995,6 +2021,9 @@ class SqliteRecentFileRepository(RecentFileRepository):
         ledger_counts_json: str,
         error_count: int,
     ) -> None:
+        from governance_app.request_context import current_principal
+
+        principal = current_principal()
         timestamp = _current_timestamp(self._connection)
         statement = _dialect_insert(self._connection, _recent_files).values(
             path=path,
@@ -2002,6 +2031,11 @@ class SqliteRecentFileRepository(RecentFileRepository):
             ok=1 if ok else 0,
             ledger_counts_json=ledger_counts_json,
             error_count=error_count,
+            organization_id=(
+                None
+                if principal is None
+                else principal.organization_id
+            ),
             last_used_at=timestamp,
         )
         statement = statement.on_conflict_do_update(
@@ -2011,12 +2045,15 @@ class SqliteRecentFileRepository(RecentFileRepository):
                 "ok": statement.excluded.ok,
                 "ledger_counts_json": statement.excluded.ledger_counts_json,
                 "error_count": statement.excluded.error_count,
+                "organization_id": statement.excluded.organization_id,
                 "last_used_at": timestamp,
             },
         )
         self._connection.execute(statement)
 
     def list(self, limit: int = 10) -> list[dict[str, Any]]:
+        from governance_app.request_context import current_principal
+
         statement = (
             select(
                 _recent_files.c.path,
@@ -2029,6 +2066,12 @@ class SqliteRecentFileRepository(RecentFileRepository):
             .order_by(_recent_files.c.last_used_at.desc())
             .limit(limit)
         )
+        principal = current_principal()
+        if principal is not None and principal.data_scope != "all":
+            statement = statement.where(
+                _recent_files.c.organization_id
+                == principal.organization_id
+            )
         return [
             dict(row)
             for row in self._connection.execute(statement).mappings()
@@ -2113,6 +2156,11 @@ class SqliteDatabase:
 
     def dispose(self) -> None:
         self._engine.dispose()
+
+    @contextmanager
+    def operation_lock(self, key: str) -> Iterator[bool]:
+        del key
+        yield True
 
 
 def _configure_connection(dbapi_connection: Any, _connection_record: Any) -> None:
