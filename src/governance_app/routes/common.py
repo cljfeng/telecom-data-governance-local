@@ -6,7 +6,7 @@ from governance_app.config import AppConfig, RuntimeMode
 from governance_app.file_storage_runtime import file_storage_for
 from governance_app.ports.file_storage import FileStorage, StoredFile
 
-JsonResponse = tuple[int, dict[str, str], str]
+JsonResponse = tuple[int, dict[str, str], str | bytes]
 
 
 def json_response(payload: dict, status: int = 200) -> JsonResponse:

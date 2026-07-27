@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Mapping
@@ -22,6 +22,11 @@ class AppConfig:
     database_path: Path
     export_dir: Path
     static_dir: Path
+    database_url: str | None = None
+    object_store_bucket: str | None = None
+    object_store_endpoint: str | None = None
+    object_store_region: str | None = None
+    object_store_prefix: str = "governance"
 
     @classmethod
     def for_workspace(
@@ -42,6 +47,36 @@ class AppConfig:
         )
 
     @classmethod
+    def for_online_workspace(
+        cls,
+        workspace_dir: Path,
+        *,
+        database_url: str,
+        object_store_bucket: str,
+        object_store_endpoint: str | None = None,
+        object_store_region: str | None = None,
+        object_store_prefix: str = "governance",
+    ) -> "AppConfig":
+        local = cls.for_workspace(
+            workspace_dir,
+            runtime_mode=RuntimeMode.ONLINE,
+        )
+        if not database_url.startswith(
+            ("postgresql://", "postgresql+psycopg://")
+        ):
+            raise ConfigurationError("online database URL must use PostgreSQL")
+        if not object_store_bucket.strip():
+            raise ConfigurationError("online object storage bucket is required")
+        return replace(
+            local,
+            database_url=database_url,
+            object_store_bucket=object_store_bucket.strip(),
+            object_store_endpoint=object_store_endpoint,
+            object_store_region=object_store_region,
+            object_store_prefix=object_store_prefix.strip("/"),
+        )
+
+    @classmethod
     def from_environment(
         cls,
         workspace_dir: Path,
@@ -58,7 +93,7 @@ class AppConfig:
             ) from error
         if runtime_mode is RuntimeMode.ONLINE:
             raise ConfigurationError(
-                "online mode is not ready: PostgreSQL, server-side file storage, "
-                "authentication, and authorization adapters must be configured first"
+                "online mode is not ready: authentication and authorization "
+                "adapters must be configured"
             )
         return cls.for_workspace(workspace_dir, runtime_mode=runtime_mode)

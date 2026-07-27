@@ -2,7 +2,7 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Iterator
 
-from governance_app.config import AppConfig
+from governance_app.config import AppConfig, RuntimeMode
 from governance_app.migrations import (
     SCHEMA_VERSION,
     apply_migrations,
@@ -28,6 +28,15 @@ def connect(config: AppConfig) -> Iterator[sqlite3.Connection]:
 
 
 def initialize_database(config: AppConfig) -> None:
+    if config.runtime_mode is RuntimeMode.ONLINE:
+        from governance_app.adapters.postgres_database import PostgresDatabase
+        from governance_app.database_runtime import database_for
+
+        database = database_for(config)
+        if not isinstance(database, PostgresDatabase):
+            raise RuntimeError("PostgreSQL database adapter is required")
+        database.initialize()
+        return
     if _needs_pre_migration_backup(config):
         from governance_app.backup import create_backup
 

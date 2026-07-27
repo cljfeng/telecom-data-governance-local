@@ -8,11 +8,14 @@ from typing import Any, Iterator
 from sqlalchemy import (
     Column,
     Float,
+    ForeignKey,
+    Index,
     Integer,
     MetaData,
     String,
     Table,
     case,
+    cast,
     create_engine,
     delete,
     event,
@@ -21,6 +24,7 @@ from sqlalchemy import (
     select,
     update,
 )
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import URL, Connection, Engine
 from sqlalchemy.exc import DBAPIError
@@ -58,6 +62,7 @@ from governance_app.ports.database import (
 
 _metadata = MetaData()
 _CLOSED_ISSUE_STATUSES = ("closed", "not_required", "resolved_by_reaudit")
+_TIMESTAMP_DEFAULT = cast(func.current_timestamp(), String)
 
 _import_batches = Table(
     "import_batches",
@@ -66,10 +71,20 @@ _import_batches = Table(
     Column("source_file", String, nullable=False),
     Column("name", String),
     Column("batch_code", String),
-    Column("template_version", String, nullable=False),
-    Column("created_at", String, nullable=False),
-    Column("status", String, nullable=False),
-    Column("is_archived", Integer, nullable=False),
+    Column(
+        "template_version",
+        String,
+        nullable=False,
+        server_default="2026-05-05",
+    ),
+    Column(
+        "created_at",
+        String,
+        nullable=False,
+        server_default=_TIMESTAMP_DEFAULT,
+    ),
+    Column("status", String, nullable=False, server_default="imported"),
+    Column("is_archived", Integer, nullable=False, server_default="0"),
     Column("archived_at", String),
 )
 
@@ -88,34 +103,58 @@ _recent_files = Table(
     Column("ok", Integer, nullable=False),
     Column("ledger_counts_json", String, nullable=False),
     Column("error_count", Integer, nullable=False),
-    Column("last_used_at", String, nullable=False),
+    Column(
+        "last_used_at",
+        String,
+        nullable=False,
+        server_default=_TIMESTAMP_DEFAULT,
+    ),
 )
 
 _audit_rule_settings = Table(
     "audit_rule_settings",
     _metadata,
     Column("rule_id", String, primary_key=True),
-    Column("enabled", Integer, nullable=False),
-    Column("config_json", String, nullable=False),
-    Column("updated_at", String, nullable=False),
+    Column("enabled", Integer, nullable=False, server_default="1"),
+    Column("config_json", String, nullable=False, server_default="{}"),
+    Column(
+        "updated_at",
+        String,
+        nullable=False,
+        server_default=_TIMESTAMP_DEFAULT,
+    ),
 )
 
 _operation_logs = Table(
     "operation_logs",
     _metadata,
     Column("id", Integer, primary_key=True),
-    Column("batch_id", Integer),
+    Column("batch_id", Integer, ForeignKey("import_batches.id", ondelete="CASCADE")),
     Column("operation", String, nullable=False),
     Column("message", String, nullable=False),
-    Column("created_at", String, nullable=False),
+    Column(
+        "created_at",
+        String,
+        nullable=False,
+        server_default=_TIMESTAMP_DEFAULT,
+    ),
 )
 
 _audit_results = Table(
     "audit_results",
     _metadata,
     Column("id", Integer, primary_key=True),
-    Column("audit_run_id", Integer, nullable=False),
-    Column("ledger_row_id", Integer),
+    Column(
+        "audit_run_id",
+        Integer,
+        ForeignKey("audit_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "ledger_row_id",
+        Integer,
+        ForeignKey("ledger_rows.id", ondelete="CASCADE"),
+    ),
     Column("rule_id", String, nullable=False),
     Column("severity", String, nullable=False),
     Column("message", String, nullable=False),
@@ -127,9 +166,19 @@ _issues = Table(
     "issues",
     _metadata,
     Column("id", Integer, primary_key=True),
-    Column("issue_code", String, nullable=False),
-    Column("audit_result_id", Integer, nullable=False),
-    Column("batch_id", Integer, nullable=False),
+    Column("issue_code", String, nullable=False, unique=True),
+    Column(
+        "audit_result_id",
+        Integer,
+        ForeignKey("audit_results.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "batch_id",
+        Integer,
+        ForeignKey("import_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("city", String),
     Column("district", String),
     Column("telecom_site_code", String),
@@ -137,33 +186,53 @@ _issues = Table(
     Column("ledger_type", String, nullable=False),
     Column("rule_id", String, nullable=False),
     Column("severity", String, nullable=False),
-    Column("status", String, nullable=False),
+    Column("status", String, nullable=False, server_default="pending_export"),
     Column("message", String, nullable=False),
     Column("suggestion", String, nullable=False),
     Column("correction_value", String),
     Column("correction_note", String),
-    Column("last_seen_audit_run_id", Integer),
+    Column("last_seen_audit_run_id", Integer, ForeignKey("audit_runs.id")),
     Column("resolved_at", String),
-    Column("updated_at", String, nullable=False),
+    Column(
+        "updated_at",
+        String,
+        nullable=False,
+        server_default=_TIMESTAMP_DEFAULT,
+    ),
 )
 
 _issue_events = Table(
     "issue_events",
     _metadata,
     Column("id", Integer, primary_key=True),
-    Column("issue_id", Integer, nullable=False),
+    Column(
+        "issue_id",
+        Integer,
+        ForeignKey("issues.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("from_status", String),
     Column("to_status", String, nullable=False),
     Column("source", String, nullable=False),
     Column("note", String),
-    Column("created_at", String, nullable=False),
+    Column(
+        "created_at",
+        String,
+        nullable=False,
+        server_default=_TIMESTAMP_DEFAULT,
+    ),
 )
 
 _raw_rows = Table(
     "raw_rows",
     _metadata,
     Column("id", Integer, primary_key=True),
-    Column("batch_id", Integer, nullable=False),
+    Column(
+        "batch_id",
+        Integer,
+        ForeignKey("import_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("ledger_type", String, nullable=False),
     Column("sheet_name", String, nullable=False),
     Column("row_number", Integer, nullable=False),
@@ -174,7 +243,12 @@ _ledger_rows = Table(
     "ledger_rows",
     _metadata,
     Column("id", Integer, primary_key=True),
-    Column("batch_id", Integer, nullable=False),
+    Column(
+        "batch_id",
+        Integer,
+        ForeignKey("import_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("ledger_type", String, nullable=False),
     Column("city", String),
     Column("district", String),
@@ -182,7 +256,7 @@ _ledger_rows = Table(
     Column("telecom_site_name", String),
     Column("tower_site_code", String),
     Column("tower_site_name", String),
-    Column("raw_row_id", Integer),
+    Column("raw_row_id", Integer, ForeignKey("raw_rows.id", ondelete="CASCADE")),
     Column("row_json", String, nullable=False),
     Column("sheet_name", String),
     Column("row_number", Integer),
@@ -192,18 +266,38 @@ _audit_runs = Table(
     "audit_runs",
     _metadata,
     Column("id", Integer, primary_key=True),
-    Column("batch_id", Integer, nullable=False),
+    Column(
+        "batch_id",
+        Integer,
+        ForeignKey("import_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("rule_count", Integer, nullable=False),
+    Column(
+        "created_at",
+        String,
+        nullable=False,
+        server_default=_TIMESTAMP_DEFAULT,
+    ),
 )
 
 _analysis_opportunities = Table(
     "analysis_opportunities",
     _metadata,
     Column("id", Integer, primary_key=True),
-    Column("batch_id", Integer, nullable=False),
-    Column("ledger_row_id", Integer),
+    Column(
+        "batch_id",
+        Integer,
+        ForeignKey("import_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "ledger_row_id",
+        Integer,
+        ForeignKey("ledger_rows.id", ondelete="CASCADE"),
+    ),
     Column("domain", String, nullable=False),
-    Column("opportunity_code", String, nullable=False),
+    Column("opportunity_code", String, nullable=False, unique=True),
     Column("opportunity_type", String, nullable=False),
     Column("severity", String, nullable=False),
     Column("city", String),
@@ -217,27 +311,68 @@ _analysis_opportunities = Table(
     Column("recoverable_amount", Float, nullable=False),
     Column("saving_opportunity_amount", Float, nullable=False),
     Column("confidence", String, nullable=False),
-    Column("source_rule_ids_json", String, nullable=False),
+    Column("source_rule_ids_json", String, nullable=False, server_default="[]"),
     Column("message", String, nullable=False),
     Column("suggestion", String, nullable=False),
-    Column("source_issue_code", String),
+    Column(
+        "source_issue_code",
+        String,
+        ForeignKey("issues.issue_code", ondelete="CASCADE"),
+    ),
+    Column(
+        "created_at",
+        String,
+        nullable=False,
+        server_default=_TIMESTAMP_DEFAULT,
+    ),
 )
 
 _analysis_opportunity_reviews = Table(
     "analysis_opportunity_reviews",
     _metadata,
     Column("id", Integer, primary_key=True),
-    Column("batch_id", Integer, nullable=False),
+    Column(
+        "batch_id",
+        Integer,
+        ForeignKey("import_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("domain", String, nullable=False),
-    Column("opportunity_code", String, nullable=False),
+    Column("opportunity_code", String, nullable=False, unique=True),
     Column("opportunity_type", String, nullable=False),
-    Column("source_issue_code", String, nullable=False),
-    Column("estimated_recoverable_amount", Float, nullable=False),
-    Column("estimated_saving_amount", Float, nullable=False),
+    Column(
+        "source_issue_code",
+        String,
+        ForeignKey("issues.issue_code", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "estimated_recoverable_amount",
+        Float,
+        nullable=False,
+        server_default="0",
+    ),
+    Column(
+        "estimated_saving_amount",
+        Float,
+        nullable=False,
+        server_default="0",
+    ),
     Column("verified_recoverable_amount", Float),
     Column("realized_saving_amount", Float),
     Column("review_note", String),
-    Column("updated_at", String, nullable=False),
+    Column(
+        "created_at",
+        String,
+        nullable=False,
+        server_default=_TIMESTAMP_DEFAULT,
+    ),
+    Column(
+        "updated_at",
+        String,
+        nullable=False,
+        server_default=_TIMESTAMP_DEFAULT,
+    ),
 )
 
 _correction_returns = Table(
@@ -245,11 +380,66 @@ _correction_returns = Table(
     _metadata,
     Column("id", Integer, primary_key=True),
     Column("source_file", String, nullable=False),
+    Column(
+        "imported_at",
+        String,
+        nullable=False,
+        server_default=_TIMESTAMP_DEFAULT,
+    ),
     Column("matched_count", Integer, nullable=False),
     Column("error_count", Integer, nullable=False),
     Column("errors_json", String, nullable=False),
     Column("warning_count", Integer, nullable=False),
     Column("warnings_json", String, nullable=False),
+)
+
+Index(
+    "idx_ledger_rows_batch_type_city_site",
+    _ledger_rows.c.batch_id,
+    _ledger_rows.c.ledger_type,
+    _ledger_rows.c.city,
+    _ledger_rows.c.telecom_site_code,
+)
+Index(
+    "idx_issues_batch_city_status_rule",
+    _issues.c.batch_id,
+    _issues.c.city,
+    _issues.c.status,
+    _issues.c.rule_id,
+)
+Index(
+    "idx_issues_batch_status",
+    _issues.c.batch_id,
+    _issues.c.status,
+)
+Index(
+    "idx_issue_events_issue_created",
+    _issue_events.c.issue_id,
+    _issue_events.c.created_at,
+)
+Index(
+    "idx_analysis_opportunities_batch_domain_type",
+    _analysis_opportunities.c.batch_id,
+    _analysis_opportunities.c.domain,
+    _analysis_opportunities.c.opportunity_type,
+)
+Index(
+    "idx_analysis_opportunities_batch_city",
+    _analysis_opportunities.c.batch_id,
+    _analysis_opportunities.c.city,
+)
+Index(
+    "idx_analysis_opportunities_source_issue",
+    _analysis_opportunities.c.source_issue_code,
+)
+Index(
+    "idx_analysis_reviews_batch_domain",
+    _analysis_opportunity_reviews.c.batch_id,
+    _analysis_opportunity_reviews.c.domain,
+)
+Index(
+    "idx_analysis_reviews_source_issue",
+    _analysis_opportunity_reviews.c.source_issue_code,
 )
 
 
@@ -1805,8 +1995,8 @@ class SqliteRecentFileRepository(RecentFileRepository):
         ledger_counts_json: str,
         error_count: int,
     ) -> None:
-        timestamp = func.strftime("%Y-%m-%d %H:%M:%f", "now")
-        statement = sqlite_insert(_recent_files).values(
+        timestamp = _current_timestamp(self._connection)
+        statement = _dialect_insert(self._connection, _recent_files).values(
             path=path,
             kind=kind,
             ok=1 if ok else 0,
@@ -1856,7 +2046,10 @@ class SqliteRuleSettingRepository(RuleSettingRepository):
         enabled: bool,
         config_json: str,
     ) -> None:
-        statement = sqlite_insert(_audit_rule_settings).values(
+        statement = _dialect_insert(
+            self._connection,
+            _audit_rule_settings,
+        ).values(
             rule_id=rule_id,
             enabled=1 if enabled else 0,
             config_json=config_json,
@@ -1929,6 +2122,18 @@ def _configure_connection(dbapi_connection: Any, _connection_record: Any) -> Non
         cursor.execute("pragma busy_timeout = 5000")
     finally:
         cursor.close()
+
+
+def _dialect_insert(connection: Connection, table: Table) -> Any:
+    if connection.dialect.name == "postgresql":
+        return postgresql_insert(table)
+    return sqlite_insert(table)
+
+
+def _current_timestamp(connection: Connection) -> Any:
+    if connection.dialect.name == "sqlite":
+        return func.strftime("%Y-%m-%d %H:%M:%f", "now")
+    return func.current_timestamp()
 
 
 def _issue_conditions(query: IssueQuery) -> list[Any]:

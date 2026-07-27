@@ -163,7 +163,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
         for key, value in headers.items():
             self.send_header(key, value)
         self.end_headers()
-        self.wfile.write(body.encode("utf-8"))
+        self.wfile.write(body if isinstance(body, bytes) else body.encode("utf-8"))
 
 
 def run_server(config: AppConfig, host: str = "127.0.0.1", port: int = 8765) -> None:

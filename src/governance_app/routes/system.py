@@ -1,7 +1,9 @@
-from urllib.parse import ParseResult
+import mimetypes
+from urllib.parse import ParseResult, quote, unquote
 
 from governance_app.backup import create_backup
 from governance_app.config import AppConfig
+from governance_app.file_storage_runtime import file_storage_for
 from governance_app.maintenance import compact_database
 from governance_app.operation_guard import OperationConflict, exclusive_operation
 from governance_app.reset import reset_system
@@ -22,6 +24,30 @@ def handle_system_route(config: AppConfig, method: str, parsed: ParseResult, bod
         return json_response({"status": "ok"})
     if method == "GET" and parsed.path == "/api/version":
         return json_response(version_payload())
+    if method == "GET" and parsed.path.startswith("/api/files/"):
+        file_id = unquote(parsed.path.removeprefix("/api/files/"))
+        try:
+            stored_file = file_storage_for(config).resolve(file_id)
+            content = stored_file.local_path.read_bytes()
+        except (FileNotFoundError, ValueError):
+            return json_response({"error": "file not found"}, status=404)
+        content_type = (
+            mimetypes.guess_type(stored_file.name)[0]
+            or "application/octet-stream"
+        )
+        return (
+            200,
+            {
+                "content-type": content_type,
+                "content-length": str(len(content)),
+                "content-disposition": (
+                    "attachment; filename*=UTF-8''"
+                    f"{quote(stored_file.name)}"
+                ),
+                "x-content-type-options": "nosniff",
+            },
+            content,
+        )
     if method == "GET" and parsed.path == "/api/settings":
         return json_response(local_settings(config))
     if method == "POST" and parsed.path == "/api/backup":

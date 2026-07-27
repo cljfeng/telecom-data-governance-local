@@ -13,6 +13,18 @@ def file_storage_for(config: AppConfig) -> FileStorage:
             export_dir=config.export_dir,
             backup_dir=config.workspace_dir / "backups",
         )
+    if config.object_store_bucket:
+        from governance_app.adapters.object_file_storage import (
+            ObjectFileStorage,
+        )
+
+        return ObjectFileStorage(
+            bucket=config.object_store_bucket,
+            staging_dir=config.data_dir / "object-staging",
+            prefix=config.object_store_prefix,
+            endpoint_url=config.object_store_endpoint,
+            region_name=config.object_store_region,
+        )
     raise RuntimeError(
         f"file storage is not configured for {config.runtime_mode.value} mode"
     )
