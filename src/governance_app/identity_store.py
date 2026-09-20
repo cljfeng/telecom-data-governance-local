@@ -922,7 +922,58 @@ class IdentityStore:
                     batch_organizations.c.batch_id == batch_id
                 )
             ).scalar_one_or_none()
-        return owner == principal.organization_id
+        if owner == principal.organization_id:
+            return True
+        with self._engine.connect() as connection:
+            province_id = connection.execute(select(organizations.c.id).where(
+                organizations.c.code == "province"
+            )).scalar_one_or_none()
+            path = self._organization_path(connection, principal.organization_id)
+        return owner == province_id and path.startswith("/province/")
+
+    def site_jurisdictions(self, principal: Principal) -> tuple[tuple[str, str], ...]:
+        """Only unambiguous, active city/county pairs may leave the province queue."""
+        if principal.data_scope == "all":
+            return ()
+        with self._engine.connect() as connection:
+            own_path = self._organization_path(connection, principal.organization_id)
+            if not own_path.startswith("/province/"):
+                return ()
+            rows = connection.execute(select(
+                organizations.c.name, organizations.c.domain_path,
+            ).where(organizations.c.active == 1,
+                    func.substr(organizations.c.domain_path, 1, 10) == "/province/")
+            ).mappings().all()
+        cities = [(str(row["name"]), str(row["domain_path"])) for row in rows
+                  if str(row["domain_path"]).count("/") == 3]
+        counties = [(str(row["name"]), str(row["domain_path"])) for row in rows
+                    if str(row["domain_path"]).count("/") == 4]
+        pairs: list[tuple[str, str]] = []
+        for city_name, city_path in cities:
+            if sum(name == city_name for name, _ in cities) != 1:
+                continue
+            for county_name, county_path in counties:
+                if not county_path.startswith(city_path):
+                    continue
+                if sum(name == county_name and path.startswith(city_path)
+                       for name, path in counties) != 1:
+                    continue
+                if city_path.startswith(own_path) or county_path == own_path:
+                    pairs.append((city_name, county_name))
+        return tuple(pairs)
+
+    def is_valid_site_jurisdiction(self, city: str, district: str) -> bool:
+        with self._engine.connect() as connection:
+            matches = connection.execute(select(organizations.c.domain_path)
+                .where(organizations.c.name == city, organizations.c.active == 1)).scalars().all()
+            city_paths = [str(path) for path in matches
+                          if str(path).startswith("/province/") and str(path).count("/") == 3]
+            if len(city_paths) != 1:
+                return False
+            county_paths = connection.execute(select(organizations.c.domain_path)
+                .where(organizations.c.name == district, organizations.c.active == 1)).scalars().all()
+            return sum(str(path).startswith(city_paths[0]) and str(path).count("/") == 4
+                       for path in county_paths) == 1
 
     def can_access_issue(
         self,
@@ -932,16 +983,18 @@ class IdentityStore:
         if principal.data_scope == "all":
             return True
         with self._engine.connect() as connection:
-            batch_id = connection.execute(
+            issue = connection.execute(
                 text(
-                    "select batch_id from issues "
+                    "select batch_id, ledger_type, city, district from issues "
                     "where issue_code = :issue_code"
                 ),
                 {"issue_code": issue_code},
-            ).scalar_one_or_none()
+            ).mappings().one_or_none()
         return bool(
-            batch_id is not None
-            and self.can_access_batch(principal, int(batch_id))
+            issue is not None
+            and issue["ledger_type"] == "site"
+            and (issue["city"], issue["district"]) in self.site_jurisdictions(principal)
+            and self.can_access_batch(principal, int(issue["batch_id"]))
         )
 
     def allowed_batch_ids(
@@ -951,12 +1004,19 @@ class IdentityStore:
         if principal.data_scope == "all":
             return None
         with self._engine.connect() as connection:
+            path = self._organization_path(connection, principal.organization_id)
+            province_id = connection.execute(select(organizations.c.id).where(
+                organizations.c.code == "province"
+            )).scalar_one_or_none()
+            owners = [principal.organization_id]
+            if path.startswith("/province/") and province_id is not None:
+                owners.append(province_id)
             return {
                 int(value)
                 for value in connection.execute(
                     select(batch_organizations.c.batch_id).where(
                         batch_organizations.c.organization_id
-                        == principal.organization_id
+                        .in_(owners)
                     )
                 ).scalars()
             }

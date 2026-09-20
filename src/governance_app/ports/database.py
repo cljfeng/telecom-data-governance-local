@@ -27,6 +27,7 @@ class IssueQuery:
     closure: str | None = None
     limit: int = 500
     offset: int = 0
+    jurisdictions: tuple[tuple[str, str], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class IssueGroupQuery:
     rule_id: str | None = None
     closure: str | None = None
     limit: int = 200
+    jurisdictions: tuple[tuple[str, str], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -55,8 +57,10 @@ class LedgerQuery:
     city: str | None = None
     district: str | None = None
     site_code: str | None = None
+    row_id: int | None = None
     limit: int = 500
     offset: int = 0
+    jurisdictions: tuple[tuple[str, str], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -155,7 +159,7 @@ class BatchRepository(Protocol):
 class IssueRepository(Protocol):
     def query(self, query: IssueQuery) -> tuple[list[IssueRecord], int]: ...
 
-    def rule_counts(self, batch_id: int) -> list[IssueRecord]: ...
+    def rule_counts(self, batch_id: int, jurisdictions: tuple[tuple[str, str], ...] | None = None) -> list[IssueRecord]: ...
 
     def groups(self, query: IssueGroupQuery) -> list[IssueRecord]: ...
 
@@ -200,6 +204,14 @@ class LedgerRepository(Protocol):
     def clear_batch_data(self, batch_id: int) -> None: ...
 
     def audit_rows(self, batch_id: int) -> list[LedgerRecord]: ...
+
+    def reassign_site(self, batch_id: int, row_id: int, city: str, district: str,
+                      reason: str, actor_user_id: int) -> bool: ...
+
+    def attach_site_evidence(self, batch_id: int, row_id: int, file_id: str,
+                             actor_user_id: int) -> int: ...
+
+    def site_evidence_file(self, batch_id: int, row_id: int, evidence_id: int) -> str | None: ...
 
 
 class AuditRepository(Protocol):
