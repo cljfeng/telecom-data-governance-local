@@ -2,6 +2,8 @@ import json
 import sys
 from contextlib import nullcontext
 from dataclasses import replace
+from email.message import Message
+from io import BytesIO
 from urllib.parse import urlparse
 
 from governance_app import desktop, online_admin, server
@@ -32,7 +34,7 @@ from governance_app.security import (
     permission_for,
     security_headers,
 )
-from governance_app.server import create_app, run_server
+from governance_app.server import RequestHandler, create_app, run_server
 from governance_app.task_runtime import (
     TaskManager,
     _execute_task,
@@ -491,52 +493,79 @@ def test_online_organization_roles_block_cross_city_requests_and_escalation(
     })[0] == 403
 
     city_ids = {}
-    for code in ("city-a", "city-b"):
+    for code in ("city_a", "cityXa"):
         created = request(province, "POST", "/api/identity/organizations", {
             "code": code, "name": code,
         })
         assert created[0] == 201
         city_ids[code] = json.loads(created[2])["organization_id"]
+    root_id = next(item["id"] for item in json.loads(
+        request(province, "GET", "/api/identity/organizations")[2]
+    )["organizations"] if item["code"] == "province")
+    assert request(province, "PATCH", f"/api/identity/organizations/{city_ids['city_a']}", {
+        "name": "市州 A", "parent_id": root_id,
+    })[0] == 200
+    all_organizations = json.loads(request(
+        province, "GET", "/api/identity/organizations"
+    )[2])["organizations"]
+    assert next(item for item in all_organizations if item["code"] == "cityXa")["domain_path"] == "/province/cityXa/"
     assert request(province, "POST", "/api/identity/organizations", {
-        "code": "city-a", "name": "重复",
+        "code": "city_a", "name": "重复",
     })[0] == 400
     assert request(province, "POST", "/api/identity/organizations", {
         "code": "bad/code", "name": "非法",
     })[0] == 400
     county = request(province, "POST", "/api/identity/organizations", {
-        "code": "county-a", "name": "区县 A", "parent_id": city_ids["city-a"],
+        "code": "county-a", "name": "区县 A", "parent_id": city_ids["city_a"],
     })
     assert county[0] == 201
     county_id = json.loads(county[2])["organization_id"]
     renamed = request(province, "PATCH", f"/api/identity/organizations/{county_id}", {
-        "name": "更正后的区县", "parent_id": city_ids["city-a"],
+        "name": "更正后的区县", "parent_id": city_ids["city_a"],
     })
     assert renamed[0] == 200
+    body = json.dumps({"name": "HTTP 修改", "parent_id": city_ids["city_a"]})
+    handler = object.__new__(RequestHandler)
+    handler.config = _online_config(app_config)
+    handler.path = f"/api/identity/organizations/{county_id}"
+    handler.client_address = ("127.0.0.1", 0)
+    handler.rfile = BytesIO(body.encode())
+    handler.headers = Message()
+    handler.headers["Content-Length"] = str(len(body.encode()))
+    handler.headers["Authorization"] = province["Authorization"]
+    captured = []
+    handler._write_response = captured.append
+    handler.do_PATCH()
+    assert captured[0][0] == 200
 
     user_ids = {}
-    for code in ("city-a", "city-b"):
+    for code in ("city_a", "cityXa"):
         created = request(province, "POST", "/api/identity/users", {
             "organization_id": city_ids[code], "username": code,
-            "display_name": code, "password": "city-admin-password",
+            "display_name": code, "password": "city_admin-password",
             "roles": ["city_admin"],
         })
         assert created[0] == 201
         user_ids[code] = json.loads(created[2])["user_id"]
-    city_a = login("city-a", "city-admin-password")
+    city_a = login("city_a", "city_admin-password")
+    own_organizations = json.loads(request(
+        city_a, "GET", "/api/identity/organizations"
+    )[2])["organizations"]
+    assert {item["code"] for item in own_organizations} == {"city_a", "county-a"}
     visible = json.loads(request(city_a, "GET", "/api/identity/users")[2])["users"]
-    assert {row["username"] for row in visible} == {"city-a"}
-    assert request(city_a, "POST", f"/api/identity/users/{user_ids['city-b']}/status", {
+    assert {row["username"] for row in visible} == {"city_a"}
+    assert request(city_a, "POST", f"/api/identity/users/{user_ids['cityXa']}/status", {
         "active": False,
     })[0] == 403
     assert request(city_a, "POST", "/api/identity/users", {
-        "organization_id": city_ids["city-b"], "username": "intruder",
-        "password": "city-admin-password", "roles": ["operator"],
+        "organization_id": city_ids["cityXa"], "username": "intruder",
+        "password": "city_admin-password", "roles": ["operator"],
     })[0] == 403
     assert request(city_a, "POST", "/api/identity/users", {
         "organization_id": county_id, "username": "elevated",
-        "password": "city-admin-password", "roles": ["province_admin"],
+        "password": "city_admin-password", "roles": ["province_admin"],
     })[0] in (400, 403)
-    assert request(city_a, "POST", f"/api/identity/users/{user_ids['city-a']}/status", {
+    assert request(city_a, "POST", f"/api/identity/users/{user_ids['city_a']}/status", {
         "active": False,
     })[0] == 403
     county_user = request(province, "POST", "/api/identity/users", {
@@ -545,7 +574,7 @@ def test_online_organization_roles_block_cross_city_requests_and_escalation(
     })
     assert county_user[0] == 201
     visible = json.loads(request(city_a, "GET", "/api/identity/users")[2])["users"]
-    assert {row["username"] for row in visible} == {"city-a", "county-a"}
+    assert {row["username"] for row in visible} == {"city_a", "county-a"}
     assert request(city_a, "POST", "/api/identity/users", {
         "organization_id": county_id, "username": "county-colleague",
         "password": "county-user-password", "roles": ["operator"],

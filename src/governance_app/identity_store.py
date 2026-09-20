@@ -22,6 +22,7 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     delete,
+    func,
     insert,
     select,
     text,
@@ -201,6 +202,10 @@ ALL_PERMISSIONS = frozenset(
     }
 )
 
+CITY_ADMIN_PERMISSIONS = frozenset({
+    "dashboard.read", "identity.manage", "issue.manage", "report.export",
+})
+
 ROLE_DEFINITIONS = {
     "platform_admin": ("平台管理员", "organization", {"system.admin"}),
     "province_admin": (
@@ -208,11 +213,11 @@ ROLE_DEFINITIONS = {
     ),
     "organization_admin": (
         "市州管理员（兼容）", "organization",
-        ALL_PERMISSIONS - {"system.admin"},
+        CITY_ADMIN_PERMISSIONS,
     ),
     "city_admin": (
         "市州管理员", "organization",
-        {"dashboard.read", "identity.manage", "issue.manage", "report.export"},
+        CITY_ADMIN_PERMISSIONS,
     ),
     "auditor": (
         "稽核人员",
@@ -331,7 +336,7 @@ class IdentityStore:
                 old_path = str(root["domain_path"])
                 descendants = connection.execute(select(
                     organizations.c.id, organizations.c.domain_path,
-                ).where(organizations.c.domain_path.like(f"{old_path}%"))).mappings().all()
+                ).where(func.substr(organizations.c.domain_path, 1, len(old_path)) == old_path)).mappings().all()
                 for descendant in descendants:
                     connection.execute(update(organizations).where(
                         organizations.c.id == descendant["id"]
@@ -524,7 +529,7 @@ class IdentityStore:
             new_path = f"{parent_path}{target['code']}/"
             descendants = connection.execute(select(
                 organizations.c.id, organizations.c.domain_path,
-            ).where(organizations.c.domain_path.like(f"{old_path}%"))).mappings()
+            ).where(func.substr(organizations.c.domain_path, 1, len(old_path)) == old_path)).mappings()
             for descendant in descendants:
                 connection.execute(update(organizations).where(
                     organizations.c.id == descendant["id"]
@@ -610,11 +615,11 @@ class IdentityStore:
         ).order_by(organizations.c.domain_path)
         with self._engine.connect() as connection:
             if principal.data_scope == "all":
-                statement = statement.where(organizations.c.domain_path.like("/province/%"))
+                statement = statement.where(func.substr(organizations.c.domain_path, 1, 10) == "/province/")
             else:
                 own_path = self._organization_path(connection, principal.organization_id)
                 statement = statement.where(
-                    organizations.c.domain_path.like(f"{own_path}%")
+                    func.substr(organizations.c.domain_path, 1, len(own_path)) == own_path
                 )
             return [
                 dict(row)
@@ -644,10 +649,10 @@ class IdentityStore:
         )
         with self._engine.connect() as connection:
             if principal.data_scope == "all":
-                statement = statement.where(organizations.c.domain_path.like("/province/%"))
+                statement = statement.where(func.substr(organizations.c.domain_path, 1, 10) == "/province/")
             else:
                 own_path = self._organization_path(connection, principal.organization_id)
-                statement = statement.where(organizations.c.domain_path.like(f"{own_path}%"))
+                statement = statement.where(func.substr(organizations.c.domain_path, 1, len(own_path)) == own_path)
             payloads = [
                 dict(row)
                 for row in connection.execute(statement).mappings()
