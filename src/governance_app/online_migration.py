@@ -154,25 +154,21 @@ def _row_count(connection, table: Table) -> int:
 
 
 def _reset_postgres_sequence(connection, table_name: str) -> None:
-    connection.execute(
-        text(
-            """
-            do $$
-            declare sequence_name text;
-            begin
-                sequence_name := pg_get_serial_sequence(:table_name, 'id');
-                if sequence_name is not null then
-                    execute format(
-                        'select setval(%L, coalesce((select max(id) from %I), 1), '
-                        '(select count(*) > 0 from %I))',
-                        sequence_name,
-                        :table_name,
-                        :table_name
-                    );
-                end if;
-            end
-            $$
-            """
-        ),
+    sequence_name = connection.execute(
+        text("select pg_get_serial_sequence(:table_name, 'id')"),
         {"table_name": table_name},
+    ).scalar_one()
+    if sequence_name is None:
+        return
+    quoted_table = connection.dialect.identifier_preparer.quote(table_name)
+    maximum_id = connection.execute(
+        text(f"select max(id) from {quoted_table}")
+    ).scalar_one()
+    connection.execute(
+        text("select setval(cast(:sequence_name as regclass), :value, :is_called)"),
+        {
+            "sequence_name": sequence_name,
+            "value": maximum_id if maximum_id is not None else 1,
+            "is_called": maximum_id is not None,
+        },
     )

@@ -10,6 +10,8 @@ from time import perf_counter
 from urllib.parse import urlparse
 from uuid import uuid4
 
+from sqlalchemy.exc import DBAPIError
+
 from governance_app.config import (
     AppConfig,
     ConfigurationError,
@@ -113,14 +115,19 @@ def _route(
     headers: dict[str, str] | None = None,
     source_ip: str = "127.0.0.1",
 ) -> JsonResponse:
-    return _authorized_dispatch(
-        config,
-        method,
-        path,
-        body,
-        headers=headers or {},
-        source_ip=source_ip,
-    )
+    try:
+        return _authorized_dispatch(
+            config,
+            method,
+            path,
+            body,
+            headers=headers or {},
+            source_ip=source_ip,
+        )
+    except Exception as exc:
+        if not _is_online_dependency_failure(config, exc):
+            raise
+        return _dependency_unavailable_response()
 
 
 def _authorized_dispatch(
@@ -200,6 +207,25 @@ def _route_upload(
     headers: dict[str, str] | None = None,
     source_ip: str = "127.0.0.1",
 ) -> JsonResponse:
+    try:
+        return _authorized_upload(
+            config, path, fields, files, headers=headers, source_ip=source_ip
+        )
+    except Exception as exc:
+        if not _is_online_dependency_failure(config, exc):
+            raise
+        return _dependency_unavailable_response()
+
+
+def _authorized_upload(
+    config: AppConfig,
+    path: str,
+    fields: dict[str, str],
+    files: dict[str, tuple[str, bytes]],
+    *,
+    headers: dict[str, str] | None = None,
+    source_ip: str = "127.0.0.1",
+) -> JsonResponse:
     authorization_body = json.dumps(fields, ensure_ascii=False)
     parsed = urlparse(path)
     normalized_headers = {
@@ -246,6 +272,21 @@ def _route_upload(
         except Exception:
             pass
     return response
+
+
+def _is_online_dependency_failure(config: AppConfig, error: Exception) -> bool:
+    if config.runtime_mode is not RuntimeMode.ONLINE:
+        return False
+    return isinstance(error, DBAPIError) or type(error).__module__.startswith(
+        ("psycopg.", "botocore.")
+    )
+
+
+def _dependency_unavailable_response() -> JsonResponse:
+    return security_headers(
+        json_response({"error": "online storage dependency unavailable"}, status=503),
+        online=True,
+    )
 
 
 def _dispatch_uploads(
