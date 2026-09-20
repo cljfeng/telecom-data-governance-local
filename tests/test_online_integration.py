@@ -154,14 +154,17 @@ def test_province_account_import_audit_export_survives_restart(
         ttl_seconds=3600,
     ).principal
     unique = uuid4().hex[:10]
-    province_id = store.create_organization(code=f"province-{unique}", name="省公司")
+    province_id = next(
+        organization["id"] for organization in store.list_organizations(admin)
+        if organization["code"] == "province"
+    )
     store.create_user(
         actor=admin,
         organization_id=province_id,
         username=f"province-{unique}",
         display_name="省级业务人员",
         password="province-test-password",
-        role_codes=["organization_admin"],
+        role_codes=["province_admin"],
     )
     app = create_app(config)
     status, _, body = app.handle_test_request(

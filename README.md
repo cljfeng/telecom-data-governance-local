@@ -17,7 +17,7 @@
 
 默认的 `APP_MODE=local` 使用当前工作区的 SQLite 数据库和本机文件，可完整离线运行。也可显式设置 `APP_MODE=local`；其他模式不会因为配置了在线环境变量而自动启用。
 
-在线模式必须显式设置 `APP_MODE=online`，安装 `.[online]` 依赖，并配置 `DATABASE_URL`（PostgreSQL）、`OBJECT_STORAGE_BUCKET`（S3 兼容存储桶）和至少 12 个字符的 `BOOTSTRAP_ADMIN_PASSWORD`。按需设置 `OBJECT_STORAGE_ENDPOINT`、`OBJECT_STORAGE_REGION` 和 `ONLINE_STAGING_DIR`。服务启动前检查数据库与文件存储是否可用；在线暂存目录独立于本地工作区。在线基础流程支持账号登录、全省批次、四类台账导入、稽核、结果查看和导出。两种模式的数据默认独立，不自动同步。
+在线模式必须显式设置 `APP_MODE=online`，安装 `.[online]` 依赖，并配置 `DATABASE_URL`（PostgreSQL）、`OBJECT_STORAGE_BUCKET`（S3 兼容存储桶）和至少 12 个字符的 `BOOTSTRAP_ADMIN_PASSWORD`。该启动账号为省级业务管理员；平台配置管理员需单独创建，操作见 [在线基础设施配置](docs/online-infrastructure.md)。按需设置 `OBJECT_STORAGE_ENDPOINT`、`OBJECT_STORAGE_REGION` 和 `ONLINE_STAGING_DIR`。服务启动前检查数据库与文件存储是否可用；在线暂存目录独立于本地工作区。在线基础流程支持账号登录、全省批次、四类台账导入、稽核、结果查看和导出。两种模式的数据默认独立，不自动同步。
 
 ## 独立可执行程序打包
 

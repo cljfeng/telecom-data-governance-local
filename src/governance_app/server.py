@@ -424,6 +424,21 @@ class RequestHandler(SimpleHTTPRequestHandler):
             )
         self._write_response(response)
 
+    def do_PATCH(self) -> None:
+        if not self.path.startswith("/api/"):
+            self._write_response(json_response({"error": "not found"}, status=404))
+            return
+        length, error = _content_length(self.headers.get("content-length"))
+        if error is not None:
+            self._write_response(error)
+            return
+        self._write_response(_route(
+            self.config, "PATCH", self.path,
+            self.rfile.read(length).decode("utf-8"),
+            headers=dict(self.headers.items()),
+            source_ip=self.client_address[0],
+        ))
+
     def _write_response(self, response: JsonResponse) -> None:
         status, headers, body = response
         self.send_response(status)
