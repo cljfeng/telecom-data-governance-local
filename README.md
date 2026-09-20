@@ -6,6 +6,12 @@
 
 业务人员推荐使用独立可执行程序。开发人员或临时调试可以继续使用本地源码方式运行。
 
+## 运行模式
+
+默认的 `APP_MODE=local` 使用当前工作区的 SQLite 数据库和本机文件，可完整离线运行。也可显式设置 `APP_MODE=local`；其他模式不会因为配置了在线环境变量而自动启用。
+
+在线模式必须显式设置 `APP_MODE=online`，安装 `.[online]` 依赖，并配置 `DATABASE_URL`（PostgreSQL）和 `OBJECT_STORAGE_BUCKET`（S3 兼容存储桶）。按需设置 `OBJECT_STORAGE_ENDPOINT` 和 `OBJECT_STORAGE_REGION`。服务启动前会检查两个存储是否可用；缺少配置、驱动或连接失败时拒绝启动。在线服务目前只提供 `/api/health`，业务接口将在后续议题中接入。在线服务不读取本地工作区，也不提供本地业务接口。两种模式的数据默认独立，不自动同步。
+
 ## 独立可执行程序打包
 
 macOS/Linux 开发电脑上运行：

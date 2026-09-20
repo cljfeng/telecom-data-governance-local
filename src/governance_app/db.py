@@ -12,6 +12,7 @@ from governance_app.migrations import (
 
 @contextmanager
 def connect(config: AppConfig) -> Iterator[sqlite3.Connection]:
+    config.require_local_runtime()
     config.data_dir.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(config.database_path)
     conn.row_factory = sqlite3.Row
@@ -28,6 +29,7 @@ def connect(config: AppConfig) -> Iterator[sqlite3.Connection]:
 
 
 def initialize_database(config: AppConfig) -> None:
+    config.require_local_runtime()
     if _needs_pre_migration_backup(config):
         from governance_app.backup import create_backup
 

@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 
@@ -6,12 +7,27 @@ import pytest
 
 import governance_app.server as server_module
 from governance_app.audit_engine import run_audit
-from governance_app.config import AppConfig
+from governance_app.config import AppConfig, ConfigurationError, RuntimeMode
 from governance_app.db import SCHEMA_VERSION, connect, initialize_database
 from governance_app.importer import import_workbook
 from governance_app.operation_guard import exclusive_operation
 from governance_app.server import create_app
 from governance_app.workflow import list_issues, update_issue_status
+
+
+def test_online_mode_cannot_serve_local_workspace(tmp_path):
+    config = replace(
+        AppConfig.for_workspace(tmp_path), runtime_mode=RuntimeMode.ONLINE
+    )
+
+    with pytest.raises(ConfigurationError, match="local workspace storage"):
+        create_app(config)
+    with pytest.raises(ConfigurationError, match="local workspace storage"):
+        server_module.run_server(config)
+    with pytest.raises(ConfigurationError, match="local workspace storage"):
+        initialize_database(config)
+
+    assert not (tmp_path / "data").exists()
 
 
 def _multipart_upload_body(
