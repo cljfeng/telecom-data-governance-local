@@ -65,6 +65,8 @@ def authorize_request(
             {"error": "permission denied"},
             status=403,
         )
+    if principal.data_scope != "all" and not _scoped_route(method, parsed.path):
+        return principal, json_response({"error": "resource not found"}, status=404)
     batch_id, issue_code = _resource_selector(parsed, body)
     if batch_id is not None and not store.can_access_batch(
         principal,
@@ -80,6 +82,15 @@ def authorize_request(
             status=404,
         )
     return principal, None
+
+
+def _scoped_route(method: str, path: str) -> bool:
+    if path.startswith("/api/auth/") or path.startswith("/api/identity/"):
+        return True
+    if method == "GET":
+        return path in {"/api/batches", "/api/ledger-rows", "/api/issues",
+                        "/api/sites/summary", "/api/sites/export"} or path.startswith("/api/tasks")
+    return method == "POST" and path == "/api/issues/status"
 
 
 def permission_for(method: str, path: str) -> str | None:
@@ -102,6 +113,8 @@ def permission_for(method: str, path: str) -> str | None:
     if path.startswith("/api/issues") or path.startswith(
         "/api/corrections"
     ):
+        return "issue.manage"
+    if path == "/api/sites/jurisdiction":
         return "issue.manage"
     if path.startswith("/api/batches/") and "analysis" in path:
         return (

@@ -11,9 +11,10 @@ from governance_app.audit_quality import (
     parse_result_payload,
 )
 from governance_app.audit_rules import rule_metadata
-from governance_app.config import AppConfig
+from governance_app.config import AppConfig, RuntimeMode
 from governance_app.database_runtime import database_for
 from governance_app.geo import normalize_city
+from governance_app.identity_store import identity_store_for
 from governance_app.models import IssueStatus
 from governance_app.ports.database import (
     Database,
@@ -23,6 +24,7 @@ from governance_app.ports.database import (
     LedgerQuery,
     UnitOfWork,
 )
+from governance_app.request_context import current_principal
 from governance_app.templates import FIELD_GROUPS
 
 ISSUE_STATUSES = {
@@ -352,6 +354,7 @@ def list_issues(
         closure=filters.get("closure"),
         limit=safe_limit,
         offset=safe_offset,
+        jurisdictions=_site_jurisdictions(config),
     )
     selected_database = database or database_for(config)
     with selected_database.unit_of_work() as unit_of_work:
@@ -400,7 +403,7 @@ def list_issue_rules(
 ) -> list[dict[str, Any]]:
     selected_database = database or database_for(config)
     with selected_database.unit_of_work() as unit_of_work:
-        rows = unit_of_work.issues.rule_counts(batch_id)
+        rows = unit_of_work.issues.rule_counts(batch_id, _site_jurisdictions(config))
     return [
         {
             "rule_id": row["rule_id"],
@@ -425,6 +428,7 @@ def list_issue_groups(
         ledger_type=filters.get("ledger_type"),
         rule_id=filters.get("rule_id"),
         closure=filters.get("closure"),
+        jurisdictions=_site_jurisdictions(config),
     )
     selected_database = database or database_for(config)
     with selected_database.unit_of_work() as unit_of_work:
@@ -587,6 +591,7 @@ def list_ledger_rows(
     database: Database | None = None,
 ) -> list[dict[str, Any]]:
     filters = filters or {}
+    jurisdictions = _site_jurisdictions(config)
     query = LedgerQuery(
         batch_id=batch_id,
         ledger_type=filters.get("ledger_type"),
@@ -595,6 +600,7 @@ def list_ledger_rows(
         site_code=filters.get("site_code"),
         limit=max(1, min(limit, 500)),
         offset=max(offset, 0),
+        jurisdictions=jurisdictions,
     )
     selected_database = database or database_for(config)
     with selected_database.unit_of_work() as unit_of_work:
@@ -628,16 +634,29 @@ def count_ledger_rows(
     database: Database | None = None,
 ) -> int:
     filters = filters or {}
+    jurisdictions = _site_jurisdictions(config)
     query = LedgerQuery(
         batch_id=batch_id,
         ledger_type=filters.get("ledger_type"),
         city=filters.get("city"),
         district=filters.get("district"),
         site_code=filters.get("site_code"),
+        jurisdictions=jurisdictions,
     )
     selected_database = database or database_for(config)
     with selected_database.unit_of_work() as unit_of_work:
         return unit_of_work.ledgers.count(query)
+
+
+def _site_jurisdictions(config: AppConfig) -> tuple[tuple[str, str], ...] | None:
+    if config.runtime_mode is RuntimeMode.LOCAL:
+        return None
+    principal = current_principal()
+    if principal is None:
+        return ()
+    if principal.data_scope == "all":
+        return None
+    return identity_store_for(config).site_jurisdictions(principal)
 
 
 def _issue_explanation(issue: dict[str, Any], metadata) -> dict[str, str]:
