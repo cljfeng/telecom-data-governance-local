@@ -1,0 +1,51 @@
+name: Online platform gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  online:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: governance
+          POSTGRES_USER: governance
+          POSTGRES_PASSWORD: governance-test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U governance -d governance"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TEST_POSTGRES_URL: postgresql+psycopg://governance:governance-test@127.0.0.1:5432/governance
+      TEST_OBJECT_STORAGE_BUCKET: governance-test
+      TEST_OBJECT_STORAGE_ENDPOINT: http://127.0.0.1:9000
+      TEST_OBJECT_STORAGE_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: minio-test
+      AWS_SECRET_ACCESS_KEY: minio-test-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Start MinIO
+        run: |
+          docker run --detach --rm --name governance-minio \
+            --publish 9000:9000 \
+            --env MINIO_ROOT_USER=minio-test \
+            --env MINIO_ROOT_PASSWORD=minio-test-secret \
+            quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+          for attempt in $(seq 1 30); do
+            curl --fail http://127.0.0.1:9000/minio/health/live && exit 0
+            sleep 2
+          done
+          exit 1
+      - run: python -m venv .venv
+      - run: .venv/bin/python -m pip install -e ".[test,online]"
+      - run: scripts/check.sh

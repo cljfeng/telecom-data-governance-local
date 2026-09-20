@@ -4,6 +4,7 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 import governance_app.server as server_module
 from governance_app.audit_engine import run_audit
@@ -20,14 +21,37 @@ def test_online_mode_cannot_serve_local_workspace(tmp_path):
         AppConfig.for_workspace(tmp_path), runtime_mode=RuntimeMode.ONLINE
     )
 
-    with pytest.raises(ConfigurationError, match="local workspace storage"):
+    with pytest.raises(ConfigurationError, match="online storage adapters"):
         create_app(config)
-    with pytest.raises(ConfigurationError, match="local workspace storage"):
+    with pytest.raises(ConfigurationError, match="online storage adapters"):
         server_module.run_server(config)
-    with pytest.raises(ConfigurationError, match="local workspace storage"):
+    with pytest.raises(RuntimeError, match="database adapter is not configured"):
         initialize_database(config)
 
     assert not (tmp_path / "data").exists()
+
+
+def test_online_dependency_outage_returns_explicit_service_error(tmp_path, monkeypatch):
+    config = AppConfig.for_online_workspace(
+        tmp_path / "online-staging",
+        database_url="postgresql://unused/governance",
+        object_store_bucket="test",
+    )
+    app = create_app(config)
+
+    def unavailable(*_args, **_kwargs):
+        raise OperationalError("SELECT 1", {}, OSError("database down"))
+
+    monkeypatch.setattr(server_module, "authorize_request", unavailable)
+    status, headers, body = app.handle_test_request("GET", "/api/dashboard")
+    upload_status, _, upload_body = server_module._route_upload(
+        config, "/api/import/upload", {}, {},
+    )
+
+    assert status == upload_status == 503
+    assert json.loads(body)["error"] == json.loads(upload_body)["error"]
+    assert headers["cache-control"] == "no-store"
+    assert not (tmp_path / "online-staging").exists()
 
 
 def _multipart_upload_body(

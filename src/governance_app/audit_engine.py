@@ -15,9 +15,10 @@ from governance_app.audit_rules import (
     rule_metadata,
 )
 from governance_app.config import AppConfig
-from governance_app.db import connect
+from governance_app.database_runtime import database_for
+from governance_app.ports.database import AuditFindingRecord, Database, UnitOfWork
 from governance_app.rule_settings import RuleSetting, load_rule_settings
-from governance_app.workflow import transition_batch_in_conn
+from governance_app.workflow import transition_batch_in_unit_of_work
 
 
 @dataclass(frozen=True)
@@ -26,42 +27,31 @@ class AuditRunResult:
     issue_count: int
 
 
-def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
+def run_audit(
+    config: AppConfig,
+    batch_id: int,
+    *,
+    database: Database | None = None,
+) -> AuditRunResult:
     started_at = perf_counter()
-    rule_settings = load_rule_settings(config)
+    selected_database = database or database_for(config)
+    rule_settings = load_rule_settings(config, database=selected_database)
     thresholds = _thresholds_from_settings(rule_settings)
     rules = _enabled_rules(all_rules(thresholds), rule_settings)
     batch_rules = _enabled_rules(all_batch_rules(thresholds), rule_settings)
-    with connect(config) as conn:
-        batch = conn.execute("select is_archived from import_batches where id = ?", (batch_id,)).fetchone()
+    with selected_database.unit_of_work() as unit_of_work:
+        batch = unit_of_work.batches.get(batch_id)
         if batch is None:
             raise ValueError("batch not found")
         if batch["is_archived"]:
             raise ValueError("batch is archived")
-        ledger_count = conn.execute(
-            "select count(*) as c from ledger_rows where batch_id = ?",
-            (batch_id,),
-        ).fetchone()["c"]
-        if not ledger_count:
+        rows = unit_of_work.ledgers.audit_rows(batch_id)
+        if not rows:
             raise ValueError("当前批次没有台账数据，请先导入台账再执行稽核")
-        audit_run_id = conn.execute(
-            "insert into audit_runs(batch_id, rule_count) values (?, ?)",
-            (batch_id, len(rules) + len(batch_rules)),
-        ).lastrowid
-        rows = conn.execute(
-            """
-            select lr.*,
-                   case
-                       when lr.row_json is not null and lr.row_json <> '{}' then lr.row_json
-                       else coalesce(rr.row_json, lr.row_json)
-                   end as effective_row_json
-              from ledger_rows lr
-              left join raw_rows rr on rr.id = lr.raw_row_id
-             where lr.batch_id = ?
-             order by lr.id
-            """,
-            (batch_id,),
-        ).fetchall()
+        audit_run_id = unit_of_work.audits.create_run(
+            batch_id,
+            len(rules) + len(batch_rules),
+        )
         issue_count = 0
         seen_issue_codes: set[str] = set()
         audit_rows = [
@@ -84,8 +74,8 @@ def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
                 finding = rule.evaluate(row_data)
                 if finding is None:
                     continue
-                issue_code = _insert_finding(
-                    conn,
+                issue_code = _save_finding(
+                    unit_of_work,
                     audit_run_id,
                     batch_id,
                     ledger_row,
@@ -100,8 +90,8 @@ def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
             matching_rows = audit_rows if rule.ledger_type == "all" else [row for row in audit_rows if row.ledger_type == rule.ledger_type]
             for finding in rule.evaluate(matching_rows):
                 ledger_row = ledger_rows_by_id[finding.ledger_row_id]
-                issue_code = _insert_finding(
-                    conn,
+                issue_code = _save_finding(
+                    unit_of_work,
                     audit_run_id,
                     batch_id,
                     ledger_row,
@@ -111,13 +101,18 @@ def run_audit(config: AppConfig, batch_id: int) -> AuditRunResult:
                 )
                 seen_issue_codes.add(issue_code)
                 issue_count += 1
-        _resolve_missing_issues(conn, batch_id, audit_run_id, seen_issue_codes)
-        conn.execute("delete from analysis_opportunities where batch_id = ?", (batch_id,))
-        transition_batch_in_conn(conn, batch_id, "audit")
+        unit_of_work.audits.resolve_missing(
+            batch_id,
+            audit_run_id,
+            seen_issue_codes,
+        )
+        unit_of_work.audits.clear_analysis_opportunities(batch_id)
+        transition_batch_in_unit_of_work(unit_of_work, batch_id, "audit")
         elapsed = perf_counter() - started_at
-        conn.execute(
-            "insert into operation_logs(batch_id, operation, message) values (?, ?, ?)",
-            (batch_id, "audit", f"执行稽核，生成问题 {issue_count} 条，规则 {len(rules) + len(batch_rules)} 条，耗时 {elapsed:.2f} 秒"),
+        unit_of_work.batches.add_operation(
+            batch_id,
+            "audit",
+            f"执行稽核，生成问题 {issue_count} 条，规则 {len(rules) + len(batch_rules)} 条，耗时 {elapsed:.2f} 秒",
         )
         return AuditRunResult(audit_run_id=audit_run_id, issue_count=issue_count)
 
@@ -163,8 +158,8 @@ def _issue_code(batch_id: int, ledger_row_id: int, rule_id: str) -> str:
     return f"ISS-{batch_id}-{digest}"
 
 
-def _insert_finding(
-    conn,
+def _save_finding(
+    unit_of_work: UnitOfWork,
     audit_run_id: int,
     batch_id: int,
     ledger_row,
@@ -191,145 +186,24 @@ def _insert_finding(
         ),
         ensure_ascii=False,
     )
-    audit_result_id = conn.execute(
-        """
-        insert into audit_results(audit_run_id, ledger_row_id, rule_id, severity, message, field_name, result_json)
-        values (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
+    issue_code = _issue_code(batch_id, ledger_row["id"], rule_id)
+    unit_of_work.audits.save_finding(
+        AuditFindingRecord(
             audit_run_id,
+            batch_id,
             ledger_row["id"],
+            ledger_row["ledger_type"],
+            ledger_row["city"],
+            ledger_row["district"],
+            ledger_row["telecom_site_code"],
+            ledger_row["telecom_site_name"],
             rule_id,
             severity,
             finding.message,
+            finding.suggestion,
             finding.field_name,
             result_json,
-        ),
-    ).lastrowid
-    issue_code = _issue_code(batch_id, ledger_row["id"], rule_id)
-    _sync_issue(
-        conn,
-        issue_code=issue_code,
-        audit_result_id=audit_result_id,
-        audit_run_id=audit_run_id,
-        batch_id=batch_id,
-        ledger_row=ledger_row,
-        rule_id=rule_id,
-        severity=severity,
-        finding=finding,
+            issue_code,
+        )
     )
     return issue_code
-
-
-def _sync_issue(
-    conn,
-    *,
-    issue_code: str,
-    audit_result_id: int,
-    audit_run_id: int,
-    batch_id: int,
-    ledger_row,
-    rule_id: str,
-    severity: str,
-    finding: RuleFinding | BatchRuleFinding,
-) -> str:
-    existing = conn.execute("select id, status from issues where issue_code = ?", (issue_code,)).fetchone()
-    values = (
-        audit_result_id,
-        audit_run_id,
-        ledger_row["city"],
-        ledger_row["district"],
-        ledger_row["telecom_site_code"],
-        ledger_row["telecom_site_name"],
-        severity,
-        finding.message,
-        finding.suggestion,
-    )
-    if existing is None:
-        issue_id = conn.execute(
-            """
-            insert into issues(
-                issue_code, audit_result_id, last_seen_audit_run_id, batch_id,
-                city, district, telecom_site_code, telecom_site_name,
-                ledger_type, rule_id, severity, message, suggestion
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                issue_code,
-                audit_result_id,
-                audit_run_id,
-                batch_id,
-                ledger_row["city"],
-                ledger_row["district"],
-                ledger_row["telecom_site_code"],
-                ledger_row["telecom_site_name"],
-                ledger_row["ledger_type"],
-                rule_id,
-                severity,
-                finding.message,
-                finding.suggestion,
-            ),
-        ).lastrowid
-        _record_issue_event(conn, issue_id, None, "pending_export", "audit", "首次命中稽核规则")
-        return "created"
-
-    reopened = existing["status"] == "resolved_by_reaudit"
-    target_status = "pending_export" if reopened else existing["status"]
-    conn.execute(
-        """
-        update issues
-           set audit_result_id = ?, last_seen_audit_run_id = ?, city = ?, district = ?,
-               telecom_site_code = ?, telecom_site_name = ?, severity = ?, message = ?, suggestion = ?,
-               status = ?, resolved_at = null, updated_at = current_timestamp
-         where id = ?
-        """,
-        values + (target_status, existing["id"]),
-    )
-    if reopened:
-        _record_issue_event(
-            conn,
-            existing["id"],
-            "resolved_by_reaudit",
-            "pending_export",
-            "reaudit_reopen",
-            "重复稽核再次命中",
-        )
-        return "reopened"
-    return "updated"
-
-
-def _resolve_missing_issues(conn, batch_id: int, audit_run_id: int, seen_codes: set[str]) -> int:
-    rows = conn.execute(
-        "select id, issue_code, status from issues where batch_id = ? and status <> 'resolved_by_reaudit'",
-        (batch_id,),
-    ).fetchall()
-    missing = [row for row in rows if row["issue_code"] not in seen_codes]
-    for row in missing:
-        conn.execute(
-            """
-            update issues
-               set status = 'resolved_by_reaudit', resolved_at = current_timestamp,
-                   updated_at = current_timestamp
-             where id = ?
-            """,
-            (row["id"],),
-        )
-        _record_issue_event(
-            conn,
-            row["id"],
-            row["status"],
-            "resolved_by_reaudit",
-            "reaudit_resolve",
-            f"稽核运行 {audit_run_id} 未再次命中",
-        )
-    return len(missing)
-
-
-def _record_issue_event(conn, issue_id: int, from_status: str | None, to_status: str, source: str, note: str) -> None:
-    conn.execute(
-        """
-        insert into issue_events(issue_id, from_status, to_status, source, note)
-        values (?, ?, ?, ?, ?)
-        """,
-        (issue_id, from_status, to_status, source, note),
-    )

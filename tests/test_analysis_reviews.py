@@ -4,16 +4,10 @@ import sqlite3
 import pytest
 
 from governance_app.analysis_reviews import (
-    load_review_payload_in_conn,
-    match_opportunity_in_conn,
     optional_nonnegative_amount,
     preview_batch_opportunity_reviews,
-    review_payload_fields,
-    review_summary_in_conn,
     save_batch_opportunity_reviews,
     save_opportunity_review,
-    sync_existing_review_note_in_conn,
-    upsert_review_in_conn,
 )
 from governance_app.audit_engine import run_audit
 from governance_app.db import connect, initialize_database
@@ -387,44 +381,6 @@ def test_save_opportunity_review_rejects_wrong_domain(
         )
 
 
-def test_match_opportunity_validates_batch_legacy_issue_and_ledger_domain(
-    app_config, sample_workbook
-):
-    batch_id, opportunity_code, issue_code = _electricity_opportunity(app_config, sample_workbook)
-    with connect(app_config) as conn:
-        matched = match_opportunity_in_conn(
-            conn,
-            opportunity_code,
-            batch_id=batch_id,
-            route_domain="electricity-analysis",
-            expected_issue_code=issue_code,
-        )
-        assert matched["source_issue_code"] == issue_code
-
-        with pytest.raises(ValueError, match="机会不存在或不属于当前批次专题"):
-            match_opportunity_in_conn(conn, opportunity_code, batch_id=batch_id + 1)
-        with pytest.raises(ValueError, match="专题机会与问题编号不匹配"):
-            match_opportunity_in_conn(
-                conn, opportunity_code, expected_issue_code="ISSUE-NOT-MATCHED"
-            )
-
-        conn.execute(
-            "update issues set ledger_type = 'tower_rent' where issue_code = ?", (issue_code,)
-        )
-        with pytest.raises(ValueError, match="专题机会领域与来源问题不匹配"):
-            match_opportunity_in_conn(conn, opportunity_code, expected_issue_code=issue_code)
-
-        conn.execute(
-            "update issues set ledger_type = 'electricity' where issue_code = ?", (issue_code,)
-        )
-        conn.execute(
-            "update analysis_opportunities set source_issue_code = null where opportunity_code = ?",
-            (opportunity_code,),
-        )
-        with pytest.raises(ValueError, match="旧版专题机会缺少来源问题，请先重新运行专题分析"):
-            match_opportunity_in_conn(conn, opportunity_code)
-
-
 def test_save_opportunity_review_rejects_archived_batch(app_config, sample_workbook):
     batch_id, opportunity_code, issue_code = _electricity_opportunity(app_config, sample_workbook)
     with connect(app_config) as conn:
@@ -481,95 +437,3 @@ def test_review_write_failure_rolls_back_status_event_and_review(
         ).fetchone()[0] == original_status
         assert conn.execute("select count(*) from issue_events").fetchone()[0] == original_event_count
         assert conn.execute("select count(*) from analysis_opportunity_reviews").fetchone()[0] == 0
-
-
-def test_upsert_and_sync_note_only_update_existing_reviews(app_config, sample_workbook):
-    batch_id, opportunity_code, issue_code = _electricity_opportunity(app_config, sample_workbook)
-    with connect(app_config) as conn:
-        sync_existing_review_note_in_conn(conn, issue_code, "不应创建")
-        assert conn.execute("select count(*) from analysis_opportunity_reviews").fetchone()[0] == 0
-
-        opportunity = match_opportunity_in_conn(
-            conn,
-            opportunity_code,
-            batch_id=batch_id,
-            route_domain="electricity-analysis",
-        )
-        upsert_review_in_conn(conn, opportunity, 100, 200, "初始说明")
-        upsert_review_in_conn(conn, opportunity, None, 0, "更新说明")
-        sync_existing_review_note_in_conn(conn, issue_code, "普通回传说明")
-        review = conn.execute(
-            """
-            select verified_recoverable_amount, realized_saving_amount, review_note
-              from analysis_opportunity_reviews
-             where opportunity_code = ?
-            """,
-            (opportunity_code,),
-        ).fetchone()
-    assert tuple(review) == (100.0, 0.0, "普通回传说明")
-
-
-def test_load_review_payload_and_review_payload_fields(app_config, sample_workbook):
-    batch_id, opportunity_code, issue_code = _electricity_opportunity(app_config, sample_workbook)
-    with connect(app_config) as conn:
-        before = load_review_payload_in_conn(conn, opportunity_code)
-    assert before == {
-        "opportunity_code": opportunity_code,
-        "issue_code": issue_code,
-        "issue_status": "pending_export",
-        "correction_value": None,
-        "correction_note": None,
-        "verified_recoverable_amount": None,
-        "realized_saving_amount": None,
-        "review_note": None,
-        "reviewed_at": None,
-    }
-    assert review_payload_fields(before) == {
-        "issue_code": issue_code,
-        "issue_status": "pending_export",
-        "correction_value": None,
-        "correction_note": None,
-        "verified_recoverable_amount": None,
-        "realized_saving_amount": None,
-        "review_note": None,
-        "reviewed_at": None,
-    }
-
-
-@pytest.mark.parametrize(
-    ("status", "count_field", "detail_field"),
-    [
-        ("pending_export", "pending_count", None),
-        ("pending_correction", "pending_count", None),
-        ("still_invalid", "pending_count", None),
-        ("returned", "review_count", "returned_count"),
-        ("needs_review", "review_count", "needs_review_count"),
-        ("closed", "closed_count", None),
-        ("not_required", "closed_count", None),
-        ("resolved_by_reaudit", "closed_count", None),
-    ],
-)
-def test_review_summary_groups_issue_statuses_and_sums_review_amounts(
-    app_config, sample_workbook, status, count_field, detail_field
-):
-    batch_id, opportunity_code, issue_code = _electricity_opportunity(app_config, sample_workbook)
-    with connect(app_config) as conn:
-        opportunity = match_opportunity_in_conn(conn, opportunity_code)
-        upsert_review_in_conn(conn, opportunity, 1200.556, 800.444, "核查完成")
-        conn.execute("update issues set status = ? where issue_code = ?", (status, issue_code))
-
-        summary = review_summary_in_conn(conn, batch_id, "electricity")
-
-    expected = {
-        "pending_count": 0,
-        "returned_count": 0,
-        "needs_review_count": 0,
-        "review_count": 0,
-        "closed_count": 0,
-        "verified_recoverable_amount": 1200.56,
-        "realized_saving_amount": 800.44,
-        count_field: 1,
-    }
-    if detail_field:
-        expected[detail_field] = 1
-    assert summary == expected

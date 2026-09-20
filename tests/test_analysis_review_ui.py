@@ -144,8 +144,8 @@ def test_visual_polish_uses_consistent_navigation_icons_and_layering():
     index = _read("index.html")
     styles = _read("styles.css")
 
-    assert index.count('class="nav-icon"') == 12
-    assert index.count('aria-hidden="true" focusable="false"') >= 12
+    assert index.count('class="nav-icon"') == 14
+    assert index.count('aria-hidden="true" focusable="false"') >= 14
     assert ".nav-icon" in styles
     assert ".next-action .todo-strip span" in styles
     assert "@keyframes surface-enter" in styles

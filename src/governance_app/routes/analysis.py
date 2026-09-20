@@ -15,9 +15,12 @@ from governance_app.electricity_analysis import (
 )
 from governance_app.routes.common import (
     JsonResponse,
+    file_location,
+    file_payload,
     json_response,
     pagination_from_query,
 )
+from governance_app.task_runtime import enqueue_online_task
 from governance_app.tower_rent_analysis import (
     export_tower_rent_clues,
     get_tower_rent_clues,
@@ -99,6 +102,13 @@ def handle_analysis_route(
 
 def _electricity_response(config, method, parsed, batch_id, action) -> JsonResponse:
     if method == "POST" and action == "run":
+        queued = enqueue_online_task(
+            config,
+            kind="electricity_analysis",
+            payload={"batch_id": batch_id},
+        )
+        if queued is not None:
+            return queued
         return json_response(run_electricity_analysis(config, batch_id))
     if method == "GET" and action == "summary":
         return json_response(get_electricity_summary(config, batch_id))
@@ -123,14 +133,30 @@ def _electricity_response(config, method, parsed, batch_id, action) -> JsonRespo
             }
         )
     if method == "POST" and action == "export":
-        return json_response(
-            {"path": str(export_electricity_opportunities(config, batch_id))}
+        queued = enqueue_online_task(
+            config,
+            kind="electricity_export",
+            payload={"batch_id": batch_id},
         )
+        if queued is not None:
+            return queued
+        file = file_payload(
+            config,
+            export_electricity_opportunities(config, batch_id),
+        )
+        return json_response({"path": file_location(file), "file": file})
     return json_response({"error": "not found"}, status=404)
 
 
 def _tower_rent_response(config, method, parsed, batch_id, action) -> JsonResponse:
     if method == "POST" and action == "run":
+        queued = enqueue_online_task(
+            config,
+            kind="tower_rent_analysis",
+            payload={"batch_id": batch_id},
+        )
+        if queued is not None:
+            return queued
         return json_response(run_tower_rent_analysis(config, batch_id))
     if method == "GET" and action == "summary":
         return json_response(get_tower_rent_summary(config, batch_id))
@@ -155,7 +181,18 @@ def _tower_rent_response(config, method, parsed, batch_id, action) -> JsonRespon
             }
         )
     if method == "POST" and action == "export":
-        return json_response({"path": str(export_tower_rent_clues(config, batch_id))})
+        queued = enqueue_online_task(
+            config,
+            kind="tower_rent_export",
+            payload={"batch_id": batch_id},
+        )
+        if queued is not None:
+            return queued
+        file = file_payload(
+            config,
+            export_tower_rent_clues(config, batch_id),
+        )
+        return json_response({"path": file_location(file), "file": file})
     return json_response({"error": "not found"}, status=404)
 
 

@@ -43,6 +43,7 @@ def test_online_server_checks_dependencies_before_binding(tmp_path, monkeypatch)
             "APP_MODE": "online",
             "DATABASE_URL": "postgresql://example/db",
             "OBJECT_STORAGE_BUCKET": "governance",
+            "BOOTSTRAP_ADMIN_PASSWORD": "administrator-password",
         },
     )
     checked = []
@@ -62,22 +63,38 @@ def test_online_server_checks_dependencies_before_binding(tmp_path, monkeypatch)
     assert not (tmp_path / "data").exists()
 
 
-def test_online_server_exposes_only_health(tmp_path, monkeypatch):
+def test_online_server_exposes_authenticated_business_routes(tmp_path, monkeypatch):
     config = server_module.load_runtime_config(
         tmp_path,
         {
             "APP_MODE": "online",
             "DATABASE_URL": "postgresql://example/db",
             "OBJECT_STORAGE_BUCKET": "governance",
+            "BOOTSTRAP_ADMIN_PASSWORD": "administrator-password",
         },
     )
     monkeypatch.setattr(server_module, "check_online_dependencies", lambda _config: None)
     app = server_module.create_app(config)
     assert app.handle_test_request("GET", "/api/health")[0] == 200
-    assert app.handle_test_request("GET", "/api/dashboard")[0] == 503
-    assert app.handle_test_request("POST", "/api/import", "{}")[0] == 503
+    assert app.handle_test_request("GET", "/api/dashboard")[0] == 401
+    assert app.handle_test_request("POST", "/api/import", "{}")[0] == 401
 
     observed = []
+
+    class FakeIdentityStore:
+        def initialize(self):
+            observed.append("identity initialized")
+
+        def bootstrap(self, **_kwargs):
+            observed.append("admin bootstrapped")
+
+    class FakeTaskManager:
+        def recover(self):
+            observed.append("tasks recovered")
+
+    monkeypatch.setattr(server_module, "initialize_database", lambda _config: observed.append("database initialized"))
+    monkeypatch.setattr(server_module, "identity_store_for", lambda _config: FakeIdentityStore())
+    monkeypatch.setattr("governance_app.task_runtime.task_manager_for", lambda _config: FakeTaskManager())
 
     class FakeServer:
         def __init__(self, address, handler):
@@ -88,5 +105,11 @@ def test_online_server_exposes_only_health(tmp_path, monkeypatch):
 
     monkeypatch.setattr(server_module, "ThreadingHTTPServer", FakeServer)
     server_module.run_server(config, port=0)
+    assert observed[:4] == [
+        "database initialized",
+        "identity initialized",
+        "admin bootstrapped",
+        "tasks recovered",
+    ]
     assert observed[-1] == "served"
     assert not (tmp_path / "data").exists()

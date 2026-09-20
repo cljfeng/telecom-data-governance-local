@@ -1,4 +1,6 @@
 import sys
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -8,7 +10,12 @@ from governance_app.online_runtime import check_online_dependencies
 
 
 def _config() -> OnlineConfig:
-    return OnlineConfig("postgresql://db.example/governance", "governance")
+    return OnlineConfig(
+        "postgresql://db.example/governance",
+        "governance",
+        Path(tempfile.gettempdir()) / "governance-online-test",
+        "administrator-password",
+    )
 
 
 def test_online_dependency_check_reaches_both_stores(monkeypatch):
@@ -42,6 +49,42 @@ def test_online_dependency_check_reaches_both_stores(monkeypatch):
         "SELECT 1",
         {"Bucket": "governance"},
     ]
+
+
+def test_online_dependency_check_accepts_sqlalchemy_postgres_url(monkeypatch):
+    calls = []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def execute(self, _statement):
+            pass
+
+    def connect(url, **_kwargs):
+        calls.append(url)
+        return Connection()
+
+    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=connect))
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        SimpleNamespace(client=lambda *_args, **_kwargs: SimpleNamespace(head_bucket=lambda **_kwargs: None)),
+    )
+    config = OnlineConfig.from_environment(
+        {
+            "DATABASE_URL": "postgresql+psycopg://db.example/governance",
+            "OBJECT_STORAGE_BUCKET": "governance",
+            "BOOTSTRAP_ADMIN_PASSWORD": "administrator-password",
+        }
+    )
+
+    check_online_dependencies(config)
+
+    assert calls == ["postgresql://db.example/governance"]
 
 
 @pytest.mark.parametrize("failed_store", ["database", "object storage"])
