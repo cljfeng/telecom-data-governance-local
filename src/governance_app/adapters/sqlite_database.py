@@ -1014,8 +1014,13 @@ class SqliteLedgerRepository(LedgerRepository):
                     _ledger_rows.c.id == _authoritative_site_sources.c.ledger_row_id))
                 .where(_authoritative_site_sources.c.site_id == site_id)
                 .order_by(_ledger_rows.c.id).limit(1)).first()
-            if source_location is not None and source_location != (row.city, row.district):
-                return  # The same code with conflicting location needs manual identity resolution.
+            current = json.loads(existing["current_json"])
+            verified_location = (
+                current.get("地市"), current.get("区县")
+            ) if existing["current_version"] else None
+            if (source_location is not None and source_location != (row.city, row.district)
+                    and verified_location != (row.city, row.district)):
+                return  # A conflicting identity needs province verification.
         already = self._connection.execute(select(_ledger_rows.c.id).where(
             _ledger_rows.c.batch_id == batch_id, _ledger_rows.c.ledger_type == "site",
             _ledger_rows.c.telecom_site_code == code, _ledger_rows.c.id != row_id)).scalars().all()
@@ -1069,10 +1074,9 @@ class SqliteLedgerRepository(LedgerRepository):
         return {"row_id": row_id, "source": source,
                 "current": json.loads(row["current_json"]) if site_id is not None else None,
                 "version": row["current_version"], "versions": versions,
-                "verified": bool(row["current_version"]),
                 "identity_conflict": site_id is None}
 
-    def revise_site(self, batch_id: int, row_id: int, request: Mapping[str, Any]) -> int:
+    def revise_site(self, batch_id: int, row_id: int, request: Mapping[str, Any]) -> tuple[int, bool]:
         detail = self.site_authority(batch_id, row_id)
         if detail is None:
             raise ValueError("site record not found")
@@ -1088,12 +1092,12 @@ class SqliteLedgerRepository(LedgerRepository):
         if existing is not None:
             if existing["request_json"] != request_json:
                 raise ValueError("idempotency key was used with different changes")
-            return int(existing["version"])
+            return int(existing["version"]), False
         current = detail["current"]
         revised = dict(current)
         revised.update(request["changes"])
         if revised == current:
-            return int(detail["version"])
+            return int(detail["version"]), False
         next_version = int(detail["version"]) + 1
         self._connection.execute(insert(_authoritative_site_versions).values(
             site_id=site_id, version=next_version,
@@ -1106,7 +1110,7 @@ class SqliteLedgerRepository(LedgerRepository):
             _authoritative_sites.c.id == site_id).values(
                 current_json=json.dumps(revised, ensure_ascii=False, sort_keys=True),
                 current_version=next_version))
-        return next_version
+        return next_version, True
 
     def clear_batch_data(self, batch_id: int) -> None:
         run_ids = select(_audit_runs.c.id).where(_audit_runs.c.batch_id == batch_id)

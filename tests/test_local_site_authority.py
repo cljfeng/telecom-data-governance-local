@@ -1,5 +1,7 @@
 import json
 
+from openpyxl import load_workbook
+
 from governance_app.db import connect, initialize_database
 from governance_app.migrations import apply_migrations
 from governance_app.server import create_app
@@ -29,6 +31,8 @@ def test_local_site_source_authority_versions_and_reaudit(app_config, sample_wor
     repeated = app.handle_test_request("POST", f"/api/local/sites/{row_id}/corrections",
                                        json.dumps(payload, ensure_ascii=False))
     assert json.loads(repeated[2])["version"] == 1
+    with connect(app_config) as db:
+        assert db.execute("select count(*) from operation_logs where operation = 'revise_authoritative_site'").fetchone()[0] == 1
     conflicting_replay = app.handle_test_request("POST", f"/api/local/sites/{row_id}/corrections",
         json.dumps({**payload, "changes": {"地市": "宁波"}}, ensure_ascii=False))
     assert conflicting_replay[0] == 409
@@ -72,3 +76,28 @@ def test_existing_site_sources_are_backfilled_without_rewriting_history(app_conf
     assert detail["source"] == detail["current"]
     assert detail["version"] == 0
     assert detail["versions"] == []
+
+
+def test_reimport_after_verified_site_move_reuses_authority(app_config, sample_workbook, tmp_path):
+    initialize_database(app_config)
+    app = create_app(app_config)
+    first_id = json.loads(app.handle_test_request("POST", "/api/import",
+        json.dumps({"path": str(sample_workbook)}))[2])["batch_id"]
+    first_row = json.loads(app.handle_test_request("GET", f"/api/local/sites?batch_id={first_id}")[2])["sites"][0]["row_id"]
+    correction = {"batch_id": first_id, "changes": {"区县": "滨江"},
+                  "evidence": "辖区确认函", "operator": "省公司", "error_cause": "归属错填",
+                  "source": "现场核实", "idempotency_key": "move-site"}
+    assert app.handle_test_request("POST", f"/api/local/sites/{first_row}/corrections",
+        json.dumps(correction, ensure_ascii=False))[0] == 200
+    workbook = load_workbook(sample_workbook)
+    workbook["站址台账"]["C2"] = "滨江"
+    corrected_source = tmp_path / "corrected.xlsx"
+    workbook.save(corrected_source)
+    second_id = json.loads(app.handle_test_request("POST", "/api/import",
+        json.dumps({"path": str(corrected_source)}))[2])["batch_id"]
+    second_row = json.loads(app.handle_test_request("GET", f"/api/local/sites?batch_id={second_id}")[2])["sites"][0]["row_id"]
+    detail = json.loads(app.handle_test_request("GET", f"/api/local/sites/{second_row}?batch_id={second_id}")[2])
+    assert detail["identity_conflict"] is False
+    assert detail["source"]["区县"] == "滨江"
+    assert detail["current"]["区县"] == "滨江"
+    assert detail["version"] == 1

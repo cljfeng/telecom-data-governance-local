@@ -59,9 +59,10 @@ def handle_local_site_route(config: AppConfig, method: str, parsed: ParseResult,
                 batch = unit.batches.get(batch_id)
                 if batch is None or batch["is_archived"]:
                     raise ValueError("batch not found or archived")
-                version = unit.ledgers.revise_site(batch_id, row_id, request)
-                unit.batches.add_operation(batch_id, "revise_authoritative_site",
-                                           f"站址记录 {row_id} 生效版本 {version}，操作者：{request['operator']}")
+                version, created = unit.ledgers.revise_site(batch_id, row_id, request)
+                if created:
+                    unit.batches.add_operation(batch_id, "revise_authoritative_site",
+                                               f"站址记录 {row_id} 生效版本 {version}，操作者：{request['operator']}")
         except ValueError as exc:
             return json_response({"error": str(exc)}, status=409)
         return json_response({"version": version})
