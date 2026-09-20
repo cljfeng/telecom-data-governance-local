@@ -21,9 +21,18 @@ def test_common_upload_helper_sanitizes_name_and_rejects_extension(app_config):
     assert importlib.util.find_spec("governance_app.routes.common") is not None
     common = importlib.import_module("governance_app.routes.common")
 
-    path = common.save_uploaded_workbook(app_config, "../台账.xlsx", b"workbook")
-    assert path.parent == app_config.data_dir / "uploads"
+    stored_file = common.store_uploaded_workbook(
+        app_config,
+        "../台账.xlsx",
+        b"workbook",
+    )
+    path = stored_file.local_path
+    assert path.parent == (app_config.data_dir / "uploads").resolve()
     assert path.name.endswith("-台账.xlsx")
+    assert common.workbook_path_from_payload(
+        app_config,
+        {"file_id": stored_file.file_id},
+    ) == path
 
     try:
         common.save_uploaded_workbook(app_config, "台账.txt", b"bad")

@@ -1,0 +1,49 @@
+# 本地版与在线平台协同开发方式
+
+## 分支与工作树
+
+- `main` 始终保持本地版可运行、可测试、可打包。
+- 在线平台使用短生命周期 `feat/*` 分支开发，经完整质量检查后合并回 `main`。
+- 工作树只解决并行目录问题，不代替分支。
+- 不建立长期分叉的 `local` 和 `online` 分支。
+
+当前在线基础工作树：
+
+```text
+主工作树：仓库根目录                         main
+在线工作树：.worktrees/online-platform       feat/online-foundation
+```
+
+常用检查：
+
+```bash
+git worktree list
+git -C .worktrees/online-platform status --short --branch
+```
+
+后续功能建议按以下短分支拆分：
+
+```text
+feat/runtime-profiles
+feat/postgres-storage
+feat/server-file-storage
+feat/login-and-rbac
+feat/online-deployment
+feat/mobile-responsive
+```
+
+一个功能完成后先运行 `scripts/check.sh`，再合并回 `main`。线上能力未完整交付前，
+必须通过配置边界保持关闭，不允许把本地 SQLite 服务直接暴露到公网。
+
+## 未跟踪成果
+
+主工作树当前的 `audit-next-batch/`、`deliverables/` 和 `tools/` 是既有本地成果。
+创建工作树不会复制未提交文件。处理这些目录时应单独决定提交、归档或忽略，
+不得为了清理工作区而直接删除。
+
+## 发布方式
+
+- 本地稳定节点使用 `local-vX.Y.Z` 标签。
+- `main` 上每次合并都必须继续通过本地模式测试。
+- 在线版使用相同业务核心，通过运行适配层选择数据库、文件存储和身份权限实现。
+- 紧急修复可以临时创建独立工作树和 `fix/*` 分支，修复合并后移除工作树。

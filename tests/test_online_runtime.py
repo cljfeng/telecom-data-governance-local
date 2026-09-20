@@ -1,4 +1,6 @@
 import sys
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -8,7 +10,12 @@ from governance_app.online_runtime import check_online_dependencies
 
 
 def _config() -> OnlineConfig:
-    return OnlineConfig("postgresql://db.example/governance", "governance")
+    return OnlineConfig(
+        "postgresql://db.example/governance",
+        "governance",
+        Path(tempfile.gettempdir()) / "governance-online-test",
+        "administrator-password",
+    )
 
 
 def test_online_dependency_check_reaches_both_stores(monkeypatch):

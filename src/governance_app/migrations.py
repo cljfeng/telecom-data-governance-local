@@ -9,7 +9,7 @@ class Migration:
     apply: Callable[[sqlite3.Connection], None]
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def current_schema_version(conn: sqlite3.Connection) -> int:
@@ -246,6 +246,115 @@ def _upgrade_to_version_3(conn: sqlite3.Connection) -> None:
     )
 
 
+def _upgrade_to_version_4(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "recent_files", "organization_id", "integer")
+    _ensure_column(conn, "operation_logs", "user_id", "integer")
+    _ensure_column(conn, "operation_logs", "organization_id", "integer")
+    _ensure_column(conn, "operation_logs", "request_id", "text")
+    _ensure_column(conn, "operation_logs", "source_ip", "text")
+    _ensure_column(conn, "operation_logs", "task_id", "integer")
+    _execute_script(
+        conn,
+        """
+        create table if not exists organizations (
+            id integer primary key autoincrement,
+            parent_id integer references organizations(id),
+            code text not null unique,
+            name text not null,
+            domain_path text not null,
+            active integer not null default 1,
+            created_at integer not null
+        );
+        create table if not exists users (
+            id integer primary key autoincrement,
+            organization_id integer not null references organizations(id),
+            username text not null unique,
+            display_name text not null,
+            password_hash text not null,
+            active integer not null default 1,
+            failed_attempts integer not null default 0,
+            locked_until integer,
+            created_at integer not null
+        );
+        create table if not exists roles (
+            id integer primary key autoincrement,
+            code text not null unique,
+            name text not null,
+            data_scope text not null
+        );
+        create table if not exists role_permissions (
+            role_id integer not null references roles(id) on delete cascade,
+            permission text not null,
+            primary key(role_id, permission)
+        );
+        create table if not exists user_roles (
+            user_id integer not null references users(id) on delete cascade,
+            role_id integer not null references roles(id) on delete cascade,
+            primary key(user_id, role_id)
+        );
+        create table if not exists sessions (
+            id integer primary key autoincrement,
+            user_id integer not null references users(id) on delete cascade,
+            token_hash text not null unique,
+            csrf_hash text not null,
+            expires_at integer not null,
+            last_seen_at integer not null,
+            source_ip text not null,
+            user_agent text not null,
+            created_at integer not null
+        );
+        create table if not exists batch_organizations (
+            batch_id integer primary key references import_batches(id) on delete cascade,
+            organization_id integer not null references organizations(id),
+            created_by integer not null references users(id),
+            created_at integer not null
+        );
+        create table if not exists request_audit_logs (
+            id integer primary key autoincrement,
+            request_id text not null unique,
+            user_id integer,
+            organization_id integer,
+            method text not null,
+            path text not null,
+            status integer not null,
+            source_ip text not null,
+            user_agent text not null,
+            task_id integer,
+            duration_ms integer not null,
+            created_at integer not null
+        );
+        create table if not exists background_tasks (
+            id integer primary key autoincrement,
+            organization_id integer not null references organizations(id),
+            user_id integer not null references users(id),
+            kind text not null,
+            status text not null,
+            payload_json text not null,
+            result_json text,
+            error text,
+            progress integer not null default 0,
+            attempts integer not null default 0,
+            max_attempts integer not null default 3,
+            idempotency_key text not null,
+            created_at integer not null,
+            started_at integer,
+            finished_at integer,
+            unique(organization_id, kind, idempotency_key)
+        );
+        create index if not exists idx_users_organization
+            on users(organization_id, active);
+        create index if not exists idx_sessions_expiry
+            on sessions(expires_at);
+        create index if not exists idx_request_audit_created
+            on request_audit_logs(created_at);
+        create index if not exists idx_tasks_org_status
+            on background_tasks(organization_id, status, created_at);
+        create index if not exists idx_recent_files_organization
+            on recent_files(organization_id, last_used_at);
+        """,
+    )
+
+
 def _execute_script(conn: sqlite3.Connection, script: str) -> None:
     statement = ""
     for line in script.splitlines():
@@ -269,4 +378,5 @@ MIGRATIONS = (
     Migration(1, _create_version_1_schema),
     Migration(2, _upgrade_to_version_2),
     Migration(3, _upgrade_to_version_3),
+    Migration(4, _upgrade_to_version_4),
 )

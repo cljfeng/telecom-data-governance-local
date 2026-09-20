@@ -20,11 +20,11 @@ def test_online_mode_cannot_serve_local_workspace(tmp_path):
         AppConfig.for_workspace(tmp_path), runtime_mode=RuntimeMode.ONLINE
     )
 
-    with pytest.raises(ConfigurationError, match="local workspace storage"):
+    with pytest.raises(ConfigurationError, match="online storage adapters"):
         create_app(config)
-    with pytest.raises(ConfigurationError, match="local workspace storage"):
+    with pytest.raises(ConfigurationError, match="online storage adapters"):
         server_module.run_server(config)
-    with pytest.raises(ConfigurationError, match="local workspace storage"):
+    with pytest.raises(RuntimeError, match="database adapter is not configured"):
         initialize_database(config)
 
     assert not (tmp_path / "data").exists()

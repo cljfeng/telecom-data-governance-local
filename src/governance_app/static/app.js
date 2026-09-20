@@ -1,4 +1,4 @@
-import { fetchJson, postJson, postFormData } from "/api.js?v=20260517-1";
+import { fetchJson, postJson, postFormData, setAccessToken, setCsrfToken } from "/api.js?v=20260727-1";
 import { state } from "/state.js?v=20260517-1";
 import { escapeHtml, formatNumber, withBusy } from "/ui.js?v=20260517-1";
 import { renderLedgerData } from "/ledger-data.js?v=20260718-1";
@@ -22,6 +22,8 @@ const views = {
   towerRentAnalysis: "租费异常分析",
   reports: "分析报表",
   settings: "本地设置",
+  tasks: "任务中心",
+  accounts: "账号与组织",
 };
 
 const pageTitle = document.querySelector("#page-title");
@@ -33,7 +35,103 @@ const navButtons = Array.from(document.querySelectorAll(".nav-button"));
 const mobileNavToggle = document.querySelector("#mobile-nav-toggle");
 const navScrim = document.querySelector("#nav-scrim");
 const globalStatus = document.querySelector("#global-status");
+const currentUser = document.querySelector("#current-user");
+const logoutButton = document.querySelector("#logout-button");
 let activeView = "dashboard";
+
+function hasPermission(permission) {
+  const permissions = state.user?.permissions || [];
+  return permissions.includes("*") || permissions.includes(permission);
+}
+
+function applyOnlineShell() {
+  const online = state.runtimeMode === "online";
+  document.querySelector(".brand-subtitle").textContent = online ? "在线分域工作台" : "本地专项工作台";
+  document.querySelector(".header-title .eyebrow").textContent = online ? "在线协同平台" : "本地单机版";
+  document.querySelector('[data-view="settings"] span:last-child').textContent = online ? "系统设置" : "本地设置";
+  document.querySelectorAll(".online-only").forEach((element) => {
+    const permission = element.dataset.permission;
+    element.hidden = !online || (permission && !hasPermission(permission));
+  });
+  document.querySelectorAll("[data-permission]").forEach((element) => {
+    if (online) element.hidden = !hasPermission(element.dataset.permission);
+  });
+  if (online && state.user) {
+    currentUser.textContent = `${state.user.username} · 组织 ${state.user.organization_id}`;
+  }
+}
+
+function showLogin() {
+  const existing = document.querySelector("#login-gate");
+  if (existing) return existing.loginPromise;
+  let resolveLogin;
+  const loginPromise = new Promise((resolve) => {
+    resolveLogin = resolve;
+  });
+  const gate = document.createElement("div");
+  gate.id = "login-gate";
+  gate.className = "login-gate";
+  gate.loginPromise = loginPromise;
+  gate.innerHTML = `
+    <section class="login-panel" aria-labelledby="login-title">
+      <div class="login-signal" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <p class="eyebrow">Governance Network / Secure Access</p>
+      <h1 id="login-title">进入分域治理工作台</h1>
+      <p class="login-intro">账号权限与组织数据域会随本次会话生效。请使用平台分配的账号登录。</p>
+      <form id="login-form" class="login-form">
+        <label>账号<input name="username" autocomplete="username" required></label>
+        <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
+        <button class="primary-button" type="submit">安全登录</button>
+        <p id="login-error" class="form-error" role="alert"></p>
+      </form>
+      <p class="login-footnote">会话采用 HttpOnly Cookie；App 客户端可使用同一接口返回的 Bearer Token。</p>
+    </section>
+  `;
+  document.body.appendChild(gate);
+  gate.querySelector("input").focus();
+  gate.querySelector("#login-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("button");
+    const errorNode = form.querySelector("#login-error");
+    const values = new FormData(form);
+    button.disabled = true;
+    errorNode.textContent = "";
+    try {
+      const data = await postJson("/api/auth/login", {
+        username: values.get("username"),
+        password: values.get("password"),
+      });
+      if (window.location.protocol !== "https:") setAccessToken(data.access_token);
+      setCsrfToken(data.csrf_token);
+      state.user = data.user;
+      applyOnlineShell();
+      gate.classList.add("is-leaving");
+      window.setTimeout(() => gate.remove(), 180);
+      resolveLogin(true);
+    } catch (error) {
+      errorNode.textContent = error.message || "登录失败";
+    } finally {
+      button.disabled = false;
+    }
+  });
+  return loginPromise;
+}
+
+async function ensureOnlineSession() {
+  if (state.runtimeMode !== "online") return true;
+  try {
+    const data = await fetchJson("/api/auth/me");
+    state.user = data.user;
+    applyOnlineShell();
+    return true;
+  } catch {
+    await showLogin();
+    return true;
+  }
+}
 
 function announce(message) {
   if (!globalStatus) return;
@@ -1483,14 +1581,127 @@ async function renderReports() {
   });
 }
 
+function taskStatusLabel(status) {
+  return {
+    queued: "排队中",
+    running: "执行中",
+    retry: "等待重试",
+    completed: "已完成",
+    failed: "失败",
+  }[status] || status;
+}
+
+async function renderTasks() {
+  const data = await fetchJson("/api/tasks");
+  const tasks = data.tasks || [];
+  mainContent.innerHTML = `
+    <section class="card">
+      ${shellHeader("后台任务", "持久化执行队列", '<button id="refresh-tasks" class="secondary-button" type="button">刷新</button>')}
+      <p class="section-note">导入、稽核、专题分析与导出在服务端执行；页面关闭后任务仍会继续。</p>
+      <div class="task-stack">
+        ${tasks.length ? tasks.map((task) => `
+          <article class="task-row">
+            <div>
+              <span class="status status-${task.status === "completed" ? "success" : task.status === "failed" ? "danger" : "pending"}">${escapeHtml(taskStatusLabel(task.status))}</span>
+              <strong>#${task.id} ${escapeHtml(task.kind)}</strong>
+              <p>${task.error ? escapeHtml(task.error) : `已尝试 ${task.attempts}/${task.max_attempts} 次`}</p>
+            </div>
+            <div class="task-progress" aria-label="进度 ${task.progress}%"><span style="width:${percentValue(task.progress)}%"></span></div>
+            ${task.status === "failed" ? `<button class="secondary-button retry-task" data-task-id="${task.id}" type="button">重试</button>` : ""}
+          </article>
+        `).join("") : '<div class="empty-state"><strong>暂无后台任务</strong><p>发起导入、稽核或导出后可在这里跟踪。</p></div>'}
+      </div>
+    </section>
+  `;
+  document.querySelector("#refresh-tasks")?.addEventListener("click", () => activateView("tasks", { updateHistory: false }));
+  document.querySelectorAll(".retry-task").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await postJson(`/api/tasks/${button.dataset.taskId}/retry`, {});
+      await activateView("tasks", { updateHistory: false });
+    });
+  });
+}
+
+async function renderAccounts() {
+  const [organizationData, userData] = await Promise.all([
+    fetchJson("/api/identity/organizations"),
+    fetchJson("/api/identity/users"),
+  ]);
+  const organizations = organizationData.organizations || [];
+  const users = userData.users || [];
+  mainContent.innerHTML = `
+    <section class="card">
+      ${shellHeader("账号与组织", "分权分域")}
+      <div class="account-grid">
+        <form id="organization-form" class="operation-panel compact-form" ${state.user?.data_scope === "all" ? "" : "hidden"}>
+          <h3>新增组织</h3>
+          <label>组织编码<input name="code" required placeholder="hangzhou"></label>
+          <label>组织名称<input name="name" required placeholder="杭州分公司"></label>
+          <label>上级组织<select name="parent_id"><option value="">平台根组织</option>${organizations.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}</select></label>
+          <button class="primary-button" type="submit">创建组织</button>
+        </form>
+        ${state.user?.data_scope === "all" ? "" : '<div class="operation-panel"><h3>当前组织域</h3><p>组织管理员可以维护本组织账号；新增组织由平台管理员完成。</p></div>'}
+        <form id="user-form" class="operation-panel compact-form">
+          <h3>新增账号</h3>
+          <label>所属组织<select name="organization_id" required>${organizations.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}</select></label>
+          <label>登录账号<input name="username" autocomplete="off" required></label>
+          <label>显示名称<input name="display_name" required></label>
+          <label>初始密码<input name="password" type="password" minlength="12" autocomplete="new-password" required></label>
+          <label>角色<select name="role"><option value="organization_admin">组织管理员</option><option value="auditor">稽核人员</option><option value="operator">整改人员</option></select></label>
+          <button class="primary-button" type="submit">创建账号</button>
+        </form>
+      </div>
+    </section>
+    <section class="card">
+      ${shellHeader("账号清单", `${users.length} 个账号`)}
+      <div class="table-wrap"><table><thead><tr><th>账号</th><th>姓名</th><th>组织</th><th>角色</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody>${users.map((user) => `<tr><td>${escapeHtml(user.username)}</td><td>${escapeHtml(user.display_name)}</td><td>${escapeHtml(user.organization_name)}</td><td>${(user.roles || []).map(escapeHtml).join("、")}</td><td>${user.active ? "启用" : "停用"}</td><td><button class="text-button toggle-user" data-user-id="${user.id}" data-active="${user.active ? "false" : "true"}" type="button">${user.active ? "停用" : "启用"}</button></td></tr>`).join("") || '<tr><td colspan="6">暂无账号</td></tr>'}</tbody></table></div>
+    </section>
+  `;
+  document.querySelector("#organization-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    await postJson("/api/identity/organizations", {
+      code: values.get("code"),
+      name: values.get("name"),
+      parent_id: values.get("parent_id") || null,
+    });
+    await activateView("accounts", { updateHistory: false });
+  });
+  document.querySelector("#user-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    await postJson("/api/identity/users", {
+      organization_id: Number(values.get("organization_id")),
+      username: values.get("username"),
+      display_name: values.get("display_name"),
+      password: values.get("password"),
+      roles: [values.get("role")],
+    });
+    await activateView("accounts", { updateHistory: false });
+  });
+  document.querySelectorAll(".toggle-user").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await postJson(`/api/identity/users/${button.dataset.userId}/status`, {
+        active: button.dataset.active === "true",
+      });
+      await activateView("accounts", { updateHistory: false });
+    });
+  });
+}
+
 async function checkHealth() {
   setStatus("pending", "连接中");
   try {
-    await fetchJson("/api/health");
-    setStatus("online", "本地服务正常");
+    const data = await fetchJson("/api/health");
+    state.runtimeMode = data.mode || "local";
+    setStatus("online", state.runtimeMode === "online" ? "在线服务正常" : "本地服务正常");
+    applyOnlineShell();
+    return data;
   } catch {
     setStatus("offline", "本地服务异常");
   }
+  return null;
 }
 
 function viewFromLocation() {
@@ -1559,6 +1770,8 @@ async function renderView(view) {
     });
   if (view === "reports") return renderReports();
   if (view === "settings") return renderSettings({ mainContent, shellHeader });
+  if (view === "tasks") return renderTasks();
+  if (view === "accounts") return renderAccounts();
 }
 
 async function activateView(view, options = {}) {
@@ -1611,7 +1824,35 @@ window.addEventListener("unhandledrejection", (event) => {
   showGlobalError(event.reason?.message || String(event.reason || "未知错误"));
 });
 window.addEventListener("error", (event) => showGlobalError(event.message));
+window.addEventListener("governance:auth-required", () => {
+  if (state.runtimeMode === "online") showLogin();
+});
+window.addEventListener("governance:task-queued", (event) => {
+  const task = event.detail;
+  announce(`后台任务 #${task.id} 已进入队列`);
+});
+logoutButton?.addEventListener("click", async () => {
+  try {
+    await postJson("/api/auth/logout", {});
+  } finally {
+    setCsrfToken("");
+    setAccessToken("");
+    state.user = null;
+    await showLogin();
+    await activateView("dashboard", { updateHistory: false });
+  }
+});
 
-checkHealth();
+async function bootstrapApplication() {
+  const health = await checkHealth();
+  if (!health) return;
+  await ensureOnlineSession();
+  await activateView(viewFromLocation(), {
+    updateHistory: false,
+    replaceHistory: true,
+    focus: false,
+  });
+}
+
 window.setInterval(checkHealth, 60_000);
-activateView(viewFromLocation(), { updateHistory: false, replaceHistory: true, focus: false });
+bootstrapApplication();

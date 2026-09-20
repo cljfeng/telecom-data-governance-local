@@ -1,36 +1,86 @@
-from pathlib import Path
-from urllib.parse import ParseResult
+import mimetypes
+from urllib.parse import ParseResult, quote, unquote
 
 from governance_app.backup import create_backup
 from governance_app.config import AppConfig
+from governance_app.file_storage_runtime import file_storage_for
+from governance_app.identity_store import identity_store_for
 from governance_app.maintenance import compact_database
 from governance_app.operation_guard import OperationConflict, exclusive_operation
 from governance_app.reset import reset_system
-from governance_app.routes.common import JsonResponse, json_body, json_response
+from governance_app.routes.common import (
+    JsonResponse,
+    file_location,
+    file_path_from_payload,
+    file_payload,
+    json_body,
+    json_response,
+)
 from governance_app.settings_service import local_settings, restore_backup_safely
 from governance_app.version import version_payload
 
 
 def handle_system_route(config: AppConfig, method: str, parsed: ParseResult, body: str) -> JsonResponse | None:
     if method == "GET" and parsed.path == "/api/health":
-        return json_response({"status": "ok"})
+        return json_response(
+            {
+                "status": "ok",
+                "mode": config.runtime_mode.value,
+            }
+        )
+    if method == "GET" and parsed.path == "/api/ready":
+        try:
+            identity_store_for(config).ping()
+            file_storage_for(config).healthcheck()
+        except Exception:
+            return json_response(
+                {"status": "not_ready"},
+                status=503,
+            )
+        return json_response({"status": "ready"})
     if method == "GET" and parsed.path == "/api/version":
         return json_response(version_payload())
+    if method == "GET" and parsed.path.startswith("/api/files/"):
+        file_id = unquote(parsed.path.removeprefix("/api/files/"))
+        try:
+            stored_file = file_storage_for(config).resolve(file_id)
+            content = stored_file.local_path.read_bytes()
+        except (FileNotFoundError, ValueError):
+            return json_response({"error": "file not found"}, status=404)
+        content_type = (
+            mimetypes.guess_type(stored_file.name)[0]
+            or "application/octet-stream"
+        )
+        return (
+            200,
+            {
+                "content-type": content_type,
+                "content-length": str(len(content)),
+                "content-disposition": (
+                    "attachment; filename*=UTF-8''"
+                    f"{quote(stored_file.name)}"
+                ),
+                "x-content-type-options": "nosniff",
+            },
+            content,
+        )
     if method == "GET" and parsed.path == "/api/settings":
         return json_response(local_settings(config))
     if method == "POST" and parsed.path == "/api/backup":
         path = create_backup(config)
-        return json_response({"path": str(path)})
+        file = file_payload(config, path)
+        return json_response({"path": file_location(file), "file": file})
     if method == "POST" and parsed.path == "/api/restore":
         payload, error = json_body(body)
         if error:
             return error
-        path_value = payload.get("path")
-        if not isinstance(path_value, str) or not path_value:
-            return json_response({"error": "path is required"}, status=400)
         try:
+            backup_path = file_path_from_payload(config, payload)
             with exclusive_operation(config, "restore"):
-                safety_backup_path, status_text = restore_backup_safely(config, Path(path_value))
+                safety_backup_path, status_text = restore_backup_safely(
+                    config,
+                    backup_path,
+                )
         except OperationConflict as exc:
             return json_response({"error": str(exc)}, status=409)
         except (FileNotFoundError, ValueError) as exc:

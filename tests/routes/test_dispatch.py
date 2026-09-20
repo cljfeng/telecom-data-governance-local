@@ -24,6 +24,8 @@ def test_server_contains_only_protocol_and_route_imports():
 
 def test_route_handler_order_is_explicit():
     assert [handler.__name__ for handler in server.ROUTE_HANDLERS] == [
+        "handle_auth_route",
+        "handle_task_route",
         "handle_system_route",
         "handle_batch_route",
         "handle_import_route",

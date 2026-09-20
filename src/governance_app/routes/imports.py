@@ -4,7 +4,8 @@ from zipfile import BadZipFile
 
 from openpyxl.utils.exceptions import InvalidFileException
 
-from governance_app.config import AppConfig
+from governance_app.config import AppConfig, RuntimeMode
+from governance_app.file_storage_runtime import file_storage_for
 from governance_app.import_preview import (
     export_preview_errors,
     preview_error_payload,
@@ -16,10 +17,16 @@ from governance_app.operation_guard import OperationConflict, exclusive_operatio
 from governance_app.recent_files import list_recent_files
 from governance_app.routes.common import (
     JsonResponse,
+    file_location,
+    file_payload,
     json_body,
     json_response,
-    save_uploaded_workbook,
+    store_uploaded_workbook,
+    stored_file_payload,
+    workbook_path_from_payload,
 )
+from governance_app.security import claim_batch_for_current_principal
+from governance_app.task_runtime import enqueue_online_task
 
 _IMPORT_UPLOAD_PATHS = {"/api/import/upload", "/api/import/preview/upload"}
 
@@ -37,7 +44,7 @@ def handle_import_route(
         payload, error = json_body(body)
         return error or _preview_from_payload(config, payload)
     if method == "GET" and parsed.path == "/api/import/recent":
-        return json_response({"files": list_recent_files(config)})
+        return json_response({"files": _recent_file_payloads(config)})
     return None
 
 
@@ -56,10 +63,13 @@ def handle_import_upload(
     if not content:
         return json_response({"error": "台账文件为空"}, status=400)
     try:
-        workbook_path = save_uploaded_workbook(config, filename, content)
+        stored_file = store_uploaded_workbook(config, filename, content)
     except ValueError as exc:
         return json_response({"error": str(exc)}, status=400)
-    payload: dict[str, object] = {"path": str(workbook_path)}
+    payload: dict[str, object] = {
+        "file_id": stored_file.file_id,
+        "path": str(stored_file.local_path),
+    }
     payload.update(fields)
     if path == "/api/import/upload":
         return _import_from_payload(config, payload)
@@ -67,17 +77,19 @@ def handle_import_upload(
 
 
 def _preview_from_payload(config: AppConfig, payload: dict) -> JsonResponse:
-    path_value = payload.get("path")
-    if not isinstance(path_value, str) or not path_value:
-        return json_response({"error": "path is required"}, status=400)
-    workbook_path = Path(path_value)
     try:
-        result = preview_workbook(config, workbook_path)
-    except (OSError, InvalidFileException, BadZipFile) as exc:
+        workbook_path = workbook_path_from_payload(config, payload)
+        result = preview_workbook(
+            config,
+            workbook_path,
+            source_reference=_online_file_reference(config, payload),
+        )
+    except (ValueError, OSError, InvalidFileException, BadZipFile) as exc:
         return json_response({"error": f"无法读取 Excel 文件：{exc}"}, status=400)
-    error_export_path = ""
+    error_file: dict[str, str] | None = None
     if result.errors:
-        error_export_path = str(export_preview_errors(config, workbook_path, result))
+        error_path = export_preview_errors(config, workbook_path, result)
+        error_file = file_payload(config, error_path)
     return json_response(
         {
             "error": "" if result.ok else "预检未通过，请按错误明细修正后重试",
@@ -86,28 +98,42 @@ def _preview_from_payload(config: AppConfig, payload: dict) -> JsonResponse:
             "ledger_counts": result.ledger_counts,
             "errors": [preview_error_payload(error) for error in result.errors],
             "error_summary": preview_error_summary(result.errors),
-            "error_export_path": error_export_path,
+            "error_export_path": (
+                "" if error_file is None else file_location(error_file)
+            ),
+            "error_file": error_file,
         },
         status=200 if result.ok else 400,
     )
 
 
 def _import_from_payload(config: AppConfig, payload: dict) -> JsonResponse:
-    path_value = payload.get("path")
-    if not isinstance(path_value, str) or not path_value:
-        return json_response({"error": "path is required"}, status=400)
     strategy = payload.get("strategy", "new")
     if not isinstance(strategy, str):
         return json_response({"error": "strategy must be string"}, status=400)
+    queued = enqueue_online_task(
+        config,
+        kind="import",
+        payload=payload,
+    )
+    if queued is not None:
+        return queued
     batch_id = payload.get("batch_id")
     try:
+        workbook_path = workbook_path_from_payload(config, payload)
         with exclusive_operation(config, "import"):
             result = import_workbook(
                 config,
-                Path(path_value),
+                workbook_path,
                 strategy=strategy,
                 batch_id=int(batch_id) if batch_id not in (None, "") else None,
+                source_reference=_online_file_reference(config, payload),
             )
+            if result.batch_id is not None:
+                claim_batch_for_current_principal(
+                    config,
+                    result.batch_id,
+                )
     except OperationConflict as exc:
         return json_response({"error": str(exc)}, status=409)
     except (TypeError, ValueError, OSError, InvalidFileException, BadZipFile) as exc:
@@ -121,3 +147,35 @@ def _import_from_payload(config: AppConfig, payload: dict) -> JsonResponse:
         },
         status=200 if result.batch_id is not None else 400,
     )
+
+
+def _online_file_reference(config: AppConfig, payload: dict) -> str | None:
+    file_id = payload.get("file_id")
+    if (
+        config.runtime_mode is RuntimeMode.ONLINE
+        and isinstance(file_id, str)
+        and file_id
+    ):
+        return file_id
+    return None
+
+
+def _recent_file_payloads(config: AppConfig) -> list[dict]:
+    storage = file_storage_for(config)
+    payloads = []
+    for item in list_recent_files(config):
+        value = str(item["path"])
+        try:
+            stored_file = (
+                storage.resolve(value)
+                if ":" in value
+                else storage.publish(Path(value))
+            )
+            file = stored_file_payload(config, stored_file)
+        except (FileNotFoundError, ValueError):
+            file = None
+        payload = {**item, "file": file}
+        if config.runtime_mode is RuntimeMode.ONLINE:
+            payload["path"] = "" if file is None else file_location(file)
+        payloads.append(payload)
+    return payloads
