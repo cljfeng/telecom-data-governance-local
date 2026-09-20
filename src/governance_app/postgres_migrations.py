@@ -6,7 +6,7 @@ from sqlalchemy import Connection, text
 from governance_app.adapters.sqlite_database import _metadata
 from governance_app.identity_store import identity_metadata
 
-POSTGRES_SCHEMA_VERSION = 3
+POSTGRES_SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -79,6 +79,11 @@ def _add_identity_and_runtime_schema(connection: Connection) -> None:
         connection.execute(text(statement))
 
 
+def _add_site_jurisdiction_events(connection: Connection) -> None:
+    _metadata.tables["site_jurisdiction_events"].create(connection, checkfirst=True)
+    _metadata.tables["site_evidence_files"].create(connection, checkfirst=True)
+
+
 def _add_authoritative_site_schema(connection: Connection) -> None:
     for name in ("authoritative_sites", "authoritative_site_sources", "authoritative_site_versions"):
         _metadata.tables[name].create(connection, checkfirst=True)
@@ -87,5 +92,6 @@ def _add_authoritative_site_schema(connection: Connection) -> None:
 POSTGRES_MIGRATIONS = (
     PostgresMigration(1, _create_initial_schema),
     PostgresMigration(2, _add_identity_and_runtime_schema),
-    PostgresMigration(3, _add_authoritative_site_schema),
+    PostgresMigration(3, _add_site_jurisdiction_events),
+    PostgresMigration(4, _add_authoritative_site_schema),
 )

@@ -2,6 +2,7 @@ import json
 
 from openpyxl import load_workbook
 
+from governance_app.database_runtime import database_for
 from governance_app.db import connect, initialize_database
 from governance_app.migrations import apply_migrations
 from governance_app.server import create_app
@@ -68,7 +69,7 @@ def test_existing_site_sources_are_backfilled_without_rewriting_history(app_conf
         db.execute("drop table authoritative_site_versions")
         db.execute("drop table authoritative_site_sources")
         db.execute("drop table authoritative_sites")
-        db.execute("delete from schema_migrations where version = 5")
+        db.execute("delete from schema_migrations where version = 6")
     with connect(app_config) as db:
         apply_migrations(db)
     rows = json.loads(app.handle_test_request("GET", f"/api/local/sites?batch_id={batch_id}")[2])["sites"]
@@ -101,3 +102,18 @@ def test_reimport_after_verified_site_move_reuses_authority(app_config, sample_w
     assert detail["source"]["区县"] == "滨江"
     assert detail["current"]["区县"] == "滨江"
     assert detail["version"] == 1
+
+
+def test_online_jurisdiction_override_takes_precedence_in_combined_audit(app_config, sample_workbook):
+    initialize_database(app_config)
+    app = create_app(app_config)
+    batch_id = json.loads(app.handle_test_request("POST", "/api/import",
+        json.dumps({"path": str(sample_workbook)}))[2])["batch_id"]
+    row_id = json.loads(app.handle_test_request("GET", f"/api/local/sites?batch_id={batch_id}")[2])["sites"][0]["row_id"]
+    with database_for(app_config).unit_of_work() as unit:
+        assert unit.ledgers.reassign_site(batch_id, row_id, "杭州", "滨江", "归属确认", 1)
+        site_row = next(row for row in unit.ledgers.audit_rows(batch_id) if row["id"] == row_id)
+    assert site_row["district"] == "滨江"
+    assert json.loads(site_row["effective_row_json"])["区县"] == "滨江"
+    detail = json.loads(app.handle_test_request("GET", f"/api/local/sites/{row_id}?batch_id={batch_id}")[2])
+    assert detail["source"]["区县"] == "西湖"

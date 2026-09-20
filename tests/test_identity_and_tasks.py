@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import sys
 from contextlib import nullcontext
 from dataclasses import replace
@@ -189,6 +190,112 @@ def test_roles_enforce_permissions_and_organization_batch_scope(
     assert not store.can_access_batch(operator, ningbo_batch)
     assert store.allowed_batch_ids(operator) == {hangzhou_batch}
     assert store.allowed_batch_ids(admin_grant.principal) is None
+
+
+def test_province_batch_site_records_are_scoped_by_verified_organization_pairs(app_config, monkeypatch):
+    store = _prepared_store(app_config)
+    _patch_identity_store(monkeypatch, store)
+    monkeypatch.setattr("governance_app.workflow.identity_store_for", lambda _config: store)
+    from governance_app.database_runtime import database_for
+    monkeypatch.setattr("governance_app.workflow.database_for", lambda _config: database_for(app_config))
+    monkeypatch.setattr("governance_app.routes.sites.database_for", lambda _config: database_for(app_config))
+    monkeypatch.setattr("governance_app.routes.sites.identity_store_for", lambda _config: store)
+    from governance_app.file_storage_runtime import file_storage_for
+    storage = file_storage_for(app_config)
+    monkeypatch.setattr("governance_app.routes.sites.file_storage_for", lambda _config: storage)
+    province = store.authenticate(username="admin", password="administrator-password",
+                                  source_ip="", user_agent="", ttl_seconds=3600)
+    hz = store.create_organization(code="hz", name="杭州")
+    xihu = store.create_organization(code="xihu", name="西湖", parent_id=hz)
+    binjiang = store.create_organization(code="binjiang", name="滨江", parent_id=hz)
+    nb = store.create_organization(code="nb", name="宁波")
+    store.create_organization(code="yinzhou", name="鄞州", parent_id=nb)
+    grants = {}
+    for name, org in (("hz", hz), ("xihu", xihu), ("binjiang", binjiang), ("nb", nb)):
+        store.create_user(actor=province.principal, organization_id=org,
+                          username=name, display_name=name, password="operator-password",
+                          role_codes=["operator"])
+        grants[name] = store.authenticate(username=name, password="operator-password",
+                                          source_ip="", user_agent="", ttl_seconds=3600)
+    batch = create_batch(app_config, "全省站址")
+    store.claim_batch(batch, province.principal)
+    rows = (("杭州", "西湖", "A"), ("杭州", "滨江", "B"),
+            ("宁波", "鄞州", "C"), ("杭州", None, "D"),
+            ("杭州", "鄞州", "E"))
+    with sqlite3.connect(app_config.database_path) as db:
+        db.executemany("insert into ledger_rows(batch_id, ledger_type, city, district, telecom_site_code, row_json) values (?, 'site', ?, ?, ?, '{}')",
+                       ((batch, city, district, code) for city, district, code in rows))
+        run_id = db.execute("insert into audit_runs(batch_id, rule_count) values (?, 1)", (batch,)).lastrowid
+        for row_id, city, district, code in db.execute(
+                "select id, city, district, telecom_site_code from ledger_rows where batch_id = ?", (batch,)).fetchall():
+            result_id = db.execute("insert into audit_results(audit_run_id, ledger_row_id, rule_id, severity, message, result_json) values (?, ?, 'site_code_required', 'high', 'test', '{}')",
+                                   (run_id, row_id)).lastrowid
+            db.execute("insert into issues(issue_code, audit_result_id, batch_id, city, district, telecom_site_code, ledger_type, rule_id, severity, message, suggestion) values (?, ?, ?, ?, ?, ?, 'site', 'site_code_required', 'high', 'test', 'test')",
+                       (f"I-{code}", result_id, batch, city, district, code))
+    app = create_app(_online_config(app_config))
+    def request(grant, path):
+        response = app.handle_test_request("GET", path,
+                                           headers={"Authorization": f"Bearer {grant.token}"})
+        return response[0], json.loads(response[2])
+    assert request(province, f"/api/ledger-rows?batch_id={batch}")[1]["total"] == 5
+    for name, expected in (("hz", {"A", "B"}), ("xihu", {"A"}),
+                           ("binjiang", {"B"}), ("nb", {"C"})):
+        status, payload = request(grants[name], f"/api/ledger-rows?batch_id={batch}")
+        assert status == 200
+        assert {row["telecom_site_code"] for row in payload["rows"]} == expected
+        assert payload["total"] == len(expected)
+        assert batch in {entry["id"] for entry in request(grants[name], "/api/batches")[1]["batches"]}
+        status, issue_page = request(grants[name], f"/api/issues?batch_id={batch}&limit=20")
+        assert status == 200
+        assert {issue["telecom_site_code"] for issue in issue_page["issues"]} == expected
+        assert issue_page["total"] == len(expected)
+        assert {group["telecom_site_code"] for group in request(
+            grants[name], f"/api/issue-groups?batch_id={batch}")[1]["groups"]} == expected
+    assert request(grants["xihu"], f"/api/ledger-rows?batch_id={batch}&city=宁波")[1]["total"] == 0
+    for path in (f"/api/dashboard?batch_id={batch}", "/api/files/private", f"/api/city-progress?batch_id={batch}"):
+        assert request(grants["xihu"], path)[0] == 404
+    assert request(grants["xihu"], f"/api/sites/1?batch_id={batch}")[1]["site"]["telecom_site_code"] == "A"
+    assert request(grants["xihu"], f"/api/sites/2?batch_id={batch}")[0] == 404
+    assert request(grants["xihu"], "/api/tasks")[0] == 404
+    evidence_file = storage.save_upload("proof.txt", b"verified-site-A")
+    registered = app.handle_test_request("POST", "/api/sites/evidence",
+        json.dumps({"batch_id": batch, "row_id": 1, "file_id": evidence_file.file_id}),
+        headers={"Authorization": f"Bearer {province.token}"})
+    evidence_id = json.loads(registered[2])["evidence_id"]
+    assert registered[0] == 200
+    evidence_path = f"/api/sites/1/evidence/{evidence_id}?batch_id={batch}"
+    assert app.handle_test_request("GET", evidence_path,
+        headers={"Authorization": f"Bearer {grants['xihu'].token}"})[2] == b"verified-site-A"
+    assert request(grants["binjiang"], evidence_path)[0] == 404
+    def update(grant, code):
+        return app.handle_test_request("POST", "/api/issues/status",
+                                       json.dumps({"issue_code": f"I-{code}", "status": "closed"}),
+                                       headers={"Authorization": f"Bearer {grant.token}"})[0]
+    assert update(grants["xihu"], "B") == 404
+    assert update(grants["xihu"], "D") == 404
+    assert update(grants["xihu"], "A") == 200
+    assert app.handle_test_request("POST", "/api/sites/jurisdiction",
+        json.dumps({"batch_id": batch, "row_id": 4, "city": "杭州", "district": "西湖", "reason": "现场确认"}),
+        headers={"Authorization": f"Bearer {grants['xihu'].token}"})[0] == 404
+    def assign(city, district):
+        return app.handle_test_request("POST", "/api/sites/jurisdiction",
+            json.dumps({"batch_id": batch, "row_id": 4, "city": city, "district": district, "reason": "现场确认"}),
+            headers={"Authorization": f"Bearer {province.token}"})
+    assert assign("杭州", "鄞州")[0] == 400
+    assert json.loads(assign("杭州", "西湖")[2])["updated"] is True
+    assert json.loads(assign("杭州", "西湖")[2])["updated"] is False
+    assert request(grants["xihu"], f"/api/ledger-rows?batch_id={batch}")[1]["total"] == 2
+    assert request(grants["xihu"], f"/api/issues?batch_id={batch}&limit=20")[1]["total"] == 2
+    assert request(grants["xihu"], f"/api/sites/summary?batch_id={batch}")[1] == {
+        "total": 2, "cities": {"杭州": 2}}
+    exported = app.handle_test_request("GET", f"/api/sites/export?batch_id={batch}",
+        headers={"Authorization": f"Bearer {grants['xihu'].token}"})
+    assert exported[0] == 200
+    assert "I-" not in exported[2].decode("utf-8")
+    assert "A" in exported[2].decode("utf-8") and "D" in exported[2].decode("utf-8")
+    assert "B" not in exported[2].decode("utf-8") and "C" not in exported[2].decode("utf-8")
+    with sqlite3.connect(app_config.database_path) as db:
+        assert db.execute("select count(*) from site_jurisdiction_events").fetchone()[0] == 1
 
 
 def test_failed_logins_lock_account_and_valid_session_can_logout(
@@ -893,14 +1000,14 @@ def test_security_authorization_permissions_and_resource_boundaries(
     assert authorize_request(
         config,
         "POST",
-        urlparse("/api/issues"),
+        urlparse("/api/issues/status"),
         json.dumps({"issue_code": "ISSUE-10"}),
         {"cookie": "session=valid"},
     )[1][0] == 403
     allowed, error = authorize_request(
         config,
         "POST",
-        urlparse("/api/issues"),
+        urlparse("/api/issues/status"),
         json.dumps({"issue_code": "ISSUE-10"}),
         {"cookie": "session=valid", "x-csrf-token": "csrf"},
     )
@@ -923,7 +1030,7 @@ def test_security_authorization_permissions_and_resource_boundaries(
     assert authorize_request(
         config,
         "POST",
-        urlparse("/api/issues"),
+        urlparse("/api/issues/status"),
         json.dumps({"issue_code": "ISSUE-11"}),
         {"authorization": "Bearer valid"},
     )[1][0] == 404
