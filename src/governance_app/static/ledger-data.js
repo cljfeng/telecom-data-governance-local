@@ -1,4 +1,4 @@
-import { fetchJson } from "/api.js?v=20260517-1";
+import { fetchJson, postJson } from "/api.js?v=20260517-1";
 import { state } from "/state.js?v=20260517-1";
 import { escapeHtml } from "/ui.js?v=20260517-1";
 
@@ -110,11 +110,80 @@ function renderLedgerDataRows(rows, ledgerLabel, total) {
               `,
             )
             .join("")}
+          ${state.runtimeMode === "local" && row.ledger_type === "site" ? `
+            <button class="secondary-button" type="button" data-site-authority="${row.id}">查看及维护权威值</button>
+            <div class="site-authority-panel" data-site-panel="${row.id}"></div>` : ""}
         </article>
       `,
     )
     .join("")}
   `;
+  container.querySelectorAll("[data-site-authority]").forEach((button) => {
+    button.addEventListener("click", () => showSiteAuthority(button.dataset.siteAuthority));
+  });
+}
+
+async function showSiteAuthority(rowId) {
+  const panel = document.querySelector(`[data-site-panel="${rowId}"]`);
+  if (!panel) return;
+  panel.textContent = "正在读取来源和版本…";
+  try {
+    const detail = await fetchJson(`/api/local/sites/${rowId}?batch_id=${encodeURIComponent(state.batchId)}`);
+    if (detail.identity_conflict) {
+      panel.textContent = "站址编码缺失或归属冲突，请先由省公司核对记录身份。";
+      return;
+    }
+    const fields = Object.keys(detail.current || {});
+    panel.innerHTML = `
+      <p>当前认可值：第 ${detail.version} 版${detail.version ? "（已留存更正依据）" : "（来源初始值，尚未单独核实）"}</p>
+      <details><summary>导入来源值</summary>${renderFieldTable(detail.source)}</details>
+      <details open><summary>当前值</summary>${renderFieldTable(detail.current)}</details>
+      <details><summary>历次生效更正（${detail.versions.length}）</summary>
+        ${detail.versions.map((version) => `<article class="ledger-row-card">
+          <strong>第 ${version.version} 版 · ${escapeHtml(version.effective_at)}</strong>
+          <p>操作者：${escapeHtml(version.operator)}；依据：${escapeHtml(version.evidence)}</p>
+          <p>原因：${escapeHtml(version.error_cause)}；来源：${escapeHtml(version.source)}</p>
+          <details><summary>更正前</summary>${renderFieldTable(version.old_value)}</details>
+          <details><summary>更正后</summary>${renderFieldTable(version.new_value)}</details>
+        </article>`).join("") || "暂无更正版本"}
+      </details>
+      <form class="site-correction-form">
+        <label>更正字段<select name="field" required>${fields.filter((field) => field !== "电信站址编码")
+          .map((field) => `<option value="${escapeHtml(field)}">${escapeHtml(field)}</option>`).join("")}</select></label>
+        <label>更正后值<input name="value" required></label>
+        <label>核实依据<input name="evidence" required></label>
+        <label>操作者<input name="operator" required></label>
+        <label>错误原因<input name="error_cause" required></label>
+        <label>错误来源<input name="source" required></label>
+        <button class="primary-button" type="submit">直接生效并留版本</button>
+        <p class="site-correction-result" role="status"></p>
+      </form>`;
+    const form = panel.querySelector("form");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const data = new FormData(form);
+      const status = form.querySelector(".site-correction-result");
+      const button = form.querySelector("button");
+      button.disabled = true;
+      try {
+        const saved = await postJson(`/api/local/sites/${rowId}/corrections`, {
+          batch_id: Number(state.batchId),
+          changes: { [data.get("field")]: data.get("value") },
+          evidence: data.get("evidence"), operator: data.get("operator"),
+          error_cause: data.get("error_cause"), source: data.get("source"),
+          idempotency_key: crypto.randomUUID(),
+        });
+        await showSiteAuthority(rowId);
+        const refreshed = document.querySelector(`[data-site-panel="${rowId}"] .site-correction-result`);
+        if (refreshed) refreshed.textContent = `第 ${saved.version} 版已生效，可重新执行稽核。`;
+      } catch (error) {
+        status.textContent = error.message;
+        button.disabled = false;
+      }
+    });
+  } catch (error) {
+    panel.textContent = error.message;
+  }
 }
 
 function renderLedgerPagination(data, context) {

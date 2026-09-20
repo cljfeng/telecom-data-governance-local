@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
 from sqlalchemy import (
     Column,
@@ -14,6 +14,7 @@ from sqlalchemy import (
     MetaData,
     String,
     Table,
+    UniqueConstraint,
     and_,
     case,
     cast,
@@ -289,6 +290,38 @@ _site_evidence_files = Table(
     Column("file_id", String, nullable=False),
     Column("actor_user_id", Integer, nullable=False),
     Column("created_at", String, nullable=False, server_default=_TIMESTAMP_DEFAULT),
+)
+
+_authoritative_sites = Table(
+    "authoritative_sites", _metadata,
+    Column("id", Integer, primary_key=True),
+    Column("site_code", String, nullable=False, unique=True),
+    Column("current_json", String, nullable=False),
+    Column("current_version", Integer, nullable=False, server_default="0"),
+)
+
+_authoritative_site_sources = Table(
+    "authoritative_site_sources", _metadata,
+    Column("ledger_row_id", Integer, ForeignKey("ledger_rows.id", ondelete="CASCADE"), primary_key=True),
+    Column("site_id", Integer, ForeignKey("authoritative_sites.id"), nullable=False),
+)
+
+_authoritative_site_versions = Table(
+    "authoritative_site_versions", _metadata,
+    Column("id", Integer, primary_key=True),
+    Column("site_id", Integer, ForeignKey("authoritative_sites.id"), nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("old_json", String, nullable=False),
+    Column("new_json", String, nullable=False),
+    Column("evidence", String, nullable=False),
+    Column("operator", String, nullable=False),
+    Column("error_cause", String, nullable=False),
+    Column("source", String, nullable=False),
+    Column("idempotency_key", String, nullable=False),
+    Column("request_json", String, nullable=False),
+    Column("effective_at", String, nullable=False, server_default=_TIMESTAMP_DEFAULT),
+    UniqueConstraint("site_id", "version"),
+    UniqueConstraint("site_id", "idempotency_key"),
 )
 
 _audit_runs = Table(
@@ -1012,7 +1045,7 @@ class SqliteLedgerRepository(LedgerRepository):
         primary_key = raw_result.inserted_primary_key
         if primary_key is None or primary_key[0] is None:
             raise RuntimeError("database did not return a raw row id")
-        self._connection.execute(
+        ledger_result = self._connection.execute(
             insert(_ledger_rows).values(
                 batch_id=batch_id,
                 ledger_type=row.ledger_type,
@@ -1028,6 +1061,126 @@ class SqliteLedgerRepository(LedgerRepository):
                 row_number=row.row_number,
             )
         )
+        if row.ledger_type == "site" and row.telecom_site_code and ledger_result.inserted_primary_key:
+            row_id = ledger_result.inserted_primary_key[0]
+            if row_id is not None:
+                self._link_site_source(batch_id, int(row_id), row)
+
+    def _link_site_source(self, batch_id: int, row_id: int, row: ImportedLedgerRow) -> None:
+        code = str(row.telecom_site_code).strip()
+        existing = self._connection.execute(select(_authoritative_sites).where(
+            _authoritative_sites.c.site_code == code)).mappings().one_or_none()
+        if existing is None:
+            result = self._connection.execute(insert(_authoritative_sites).values(
+                site_code=code, current_json=row.row_json, current_version=0))
+            primary_key = result.inserted_primary_key
+            if primary_key is None or primary_key[0] is None:
+                raise RuntimeError("database did not return a site authority id")
+            site_id = primary_key[0]
+        else:
+            site_id = existing["id"]
+            source_location = self._connection.execute(select(_ledger_rows.c.city, _ledger_rows.c.district)
+                .select_from(_ledger_rows.join(_authoritative_site_sources,
+                    _ledger_rows.c.id == _authoritative_site_sources.c.ledger_row_id))
+                .where(_authoritative_site_sources.c.site_id == site_id)
+                .order_by(_ledger_rows.c.id).limit(1)).first()
+            current = json.loads(existing["current_json"])
+            verified_location = (
+                current.get("地市"), current.get("区县")
+            ) if existing["current_version"] else None
+            if (source_location is not None and source_location != (row.city, row.district)
+                    and verified_location != (row.city, row.district)):
+                return  # A conflicting identity needs province verification.
+        already = self._connection.execute(select(_ledger_rows.c.id).where(
+            _ledger_rows.c.batch_id == batch_id, _ledger_rows.c.ledger_type == "site",
+            _ledger_rows.c.telecom_site_code == code, _ledger_rows.c.id != row_id)).scalars().all()
+        if already:
+            self._connection.execute(delete(_authoritative_site_sources).where(
+                _authoritative_site_sources.c.ledger_row_id.in_(already)))
+            return  # Duplicate identity in one batch is ambiguous.
+        self._connection.execute(insert(_authoritative_site_sources).values(
+            ledger_row_id=row_id, site_id=site_id))
+
+    def site_authorities(self, batch_id: int) -> list[LedgerRecord]:
+        statement = select(_ledger_rows.c.id.label("row_id"), _ledger_rows.c.telecom_site_code,
+                           _authoritative_sites.c.current_version).select_from(
+            _ledger_rows.outerjoin(_authoritative_site_sources,
+                _ledger_rows.c.id == _authoritative_site_sources.c.ledger_row_id)
+            .outerjoin(_authoritative_sites,
+                _authoritative_site_sources.c.site_id == _authoritative_sites.c.id)
+        ).where(_ledger_rows.c.batch_id == batch_id,
+                _ledger_rows.c.ledger_type == "site").order_by(_ledger_rows.c.id)
+        return [dict(row) for row in self._connection.execute(statement).mappings()]
+
+    def site_authority(self, batch_id: int, row_id: int) -> dict[str, Any] | None:
+        statement = select(_ledger_rows.c.id, _raw_rows.c.row_json.label("source_json"),
+                           _ledger_rows.c.row_json.label("ledger_json"),
+                           _authoritative_sites.c.id.label("site_id"),
+                           _authoritative_sites.c.current_json,
+                           _authoritative_sites.c.current_version).select_from(
+            _ledger_rows.outerjoin(_raw_rows, _ledger_rows.c.raw_row_id == _raw_rows.c.id)
+            .outerjoin(_authoritative_site_sources,
+                _ledger_rows.c.id == _authoritative_site_sources.c.ledger_row_id)
+            .outerjoin(_authoritative_sites,
+                _authoritative_site_sources.c.site_id == _authoritative_sites.c.id)
+        ).where(_ledger_rows.c.batch_id == batch_id, _ledger_rows.c.id == row_id,
+                _ledger_rows.c.ledger_type == "site")
+        row = self._connection.execute(statement).mappings().one_or_none()
+        if row is None:
+            return None
+        source = json.loads(row["source_json"] or row["ledger_json"])
+        site_id = row["site_id"]
+        versions = []
+        if site_id is not None:
+            versions = [
+                {"version": version["version"], "old_value": json.loads(version["old_json"]),
+                 "new_value": json.loads(version["new_json"]), "evidence": version["evidence"],
+                 "operator": version["operator"], "error_cause": version["error_cause"],
+                 "source": version["source"], "effective_at": version["effective_at"]}
+                for version in self._connection.execute(select(_authoritative_site_versions)
+                    .where(_authoritative_site_versions.c.site_id == site_id)
+                    .order_by(_authoritative_site_versions.c.version)).mappings()
+            ]
+        return {"row_id": row_id, "source": source,
+                "current": json.loads(row["current_json"]) if site_id is not None else None,
+                "version": row["current_version"], "versions": versions,
+                "identity_conflict": site_id is None}
+
+    def revise_site(self, batch_id: int, row_id: int, request: Mapping[str, Any]) -> tuple[int, bool]:
+        detail = self.site_authority(batch_id, row_id)
+        if detail is None:
+            raise ValueError("site record not found")
+        if detail["identity_conflict"]:
+            raise ValueError("site identity is missing or ambiguous")
+        site_id = self._connection.execute(select(_authoritative_site_sources.c.site_id).where(
+            _authoritative_site_sources.c.ledger_row_id == row_id)).scalar_one()
+        request_json = json.dumps(request, ensure_ascii=False, sort_keys=True)
+        existing = self._connection.execute(select(_authoritative_site_versions).where(
+            _authoritative_site_versions.c.site_id == site_id,
+            _authoritative_site_versions.c.idempotency_key == request["idempotency_key"])
+        ).mappings().one_or_none()
+        if existing is not None:
+            if existing["request_json"] != request_json:
+                raise ValueError("idempotency key was used with different changes")
+            return int(existing["version"]), False
+        current = detail["current"]
+        revised = dict(current)
+        revised.update(request["changes"])
+        if revised == current:
+            return int(detail["version"]), False
+        next_version = int(detail["version"]) + 1
+        self._connection.execute(insert(_authoritative_site_versions).values(
+            site_id=site_id, version=next_version,
+            old_json=json.dumps(current, ensure_ascii=False, sort_keys=True),
+            new_json=json.dumps(revised, ensure_ascii=False, sort_keys=True),
+            evidence=request["evidence"], operator=request["operator"],
+            error_cause=request["error_cause"], source=request["source"],
+            idempotency_key=request["idempotency_key"], request_json=request_json))
+        self._connection.execute(update(_authoritative_sites).where(
+            _authoritative_sites.c.id == site_id).values(
+                current_json=json.dumps(revised, ensure_ascii=False, sort_keys=True),
+                current_version=next_version))
+        return next_version, True
 
     def clear_batch_data(self, batch_id: int) -> None:
         run_ids = select(_audit_runs.c.id).where(_audit_runs.c.batch_id == batch_id)
@@ -1053,17 +1206,35 @@ class SqliteLedgerRepository(LedgerRepository):
                 _ledger_rows.c.telecom_site_code,
                 _ledger_rows.c.telecom_site_name,
                 effective_row_json,
+                _ledger_rows.c.row_json.label("ledger_override_json"),
+                _authoritative_sites.c.current_json.label("authoritative_json"),
             )
             .select_from(
                 _ledger_rows.outerjoin(
                     _raw_rows,
                     _raw_rows.c.id == _ledger_rows.c.raw_row_id,
+                ).outerjoin(_authoritative_site_sources,
+                    _ledger_rows.c.id == _authoritative_site_sources.c.ledger_row_id,
+                ).outerjoin(_authoritative_sites,
+                    _authoritative_site_sources.c.site_id == _authoritative_sites.c.id,
                 )
             )
             .where(_ledger_rows.c.batch_id == batch_id)
             .order_by(_ledger_rows.c.id)
         )
-        return [dict(row) for row in self._connection.execute(statement).mappings()]
+        rows: list[LedgerRecord] = []
+        for record in self._connection.execute(statement).mappings():
+            row = dict(record)
+            authoritative = row.pop("authoritative_json")
+            ledger_override = row.pop("ledger_override_json")
+            if row["ledger_type"] == "site" and authoritative is not None and ledger_override == "{}":
+                current = json.loads(authoritative)
+                row["effective_row_json"] = authoritative
+                row["city"] = current.get("地市")
+                row["district"] = current.get("区县")
+                row["telecom_site_name"] = current.get("电信站址名称")
+            rows.append(row)
+        return rows
 
 
 class SqliteAuditRepository(AuditRepository):

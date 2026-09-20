@@ -1,4 +1,5 @@
 import sqlite3
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -9,7 +10,7 @@ class Migration:
     apply: Callable[[sqlite3.Connection], None]
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def current_schema_version(conn: sqlite3.Connection) -> int:
@@ -391,10 +392,56 @@ def _upgrade_to_version_5(conn: sqlite3.Connection) -> None:
     )""")
 
 
+def _upgrade_to_version_6(conn: sqlite3.Connection) -> None:
+    conn.execute("""create table authoritative_sites (
+        id integer primary key autoincrement,
+        site_code text not null unique,
+        current_json text not null,
+        current_version integer not null default 0
+    )""")
+    conn.execute("""create table authoritative_site_sources (
+        ledger_row_id integer primary key references ledger_rows(id) on delete cascade,
+        site_id integer not null references authoritative_sites(id)
+    )""")
+    conn.execute("""create table authoritative_site_versions (
+        id integer primary key autoincrement,
+        site_id integer not null references authoritative_sites(id),
+        version integer not null,
+        old_json text not null, new_json text not null,
+        evidence text not null, operator text not null,
+        error_cause text not null, source text not null,
+        idempotency_key text not null, request_json text not null,
+        effective_at text not null default current_timestamp,
+        unique(site_id, version), unique(site_id, idempotency_key)
+    )""")
+    rows = conn.execute("""select ledger_rows.id, ledger_rows.batch_id,
+        ledger_rows.telecom_site_code, ledger_rows.city, ledger_rows.district,
+        case when ledger_rows.row_json != '{}' then ledger_rows.row_json
+             else coalesce(raw_rows.row_json, ledger_rows.row_json) end
+        from ledger_rows left join raw_rows on raw_rows.id = ledger_rows.raw_row_id
+        where ledger_rows.ledger_type = 'site' and ledger_rows.telecom_site_code is not null
+        order by ledger_rows.id""").fetchall()
+    grouped: dict[str, list[tuple]] = defaultdict(list)
+    for row in rows:
+        code = str(row[2]).strip()
+        if code:
+            grouped[code].append(tuple(row))
+    for code, group in grouped.items():
+        locations = {(row[3], row[4]) for row in group}
+        batches = [row[1] for row in group]
+        if len(locations) != 1 or len(batches) != len(set(batches)):
+            continue  # Ambiguous old records remain source-only until reconciled.
+        result = conn.execute("insert into authoritative_sites(site_code, current_json) values (?, ?)",
+                              (code, group[-1][5]))
+        conn.executemany("insert into authoritative_site_sources(ledger_row_id, site_id) values (?, ?)",
+                         [(row[0], result.lastrowid) for row in group])
+
+
 MIGRATIONS = (
     Migration(1, _create_version_1_schema),
     Migration(2, _upgrade_to_version_2),
     Migration(3, _upgrade_to_version_3),
     Migration(4, _upgrade_to_version_4),
     Migration(5, _upgrade_to_version_5),
+    Migration(6, _upgrade_to_version_6),
 )
