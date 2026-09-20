@@ -3,6 +3,7 @@ from urllib.parse import ParseResult, parse_qs
 from governance_app.config import AppConfig, RuntimeMode
 from governance_app.identity_store import (
     AuthenticationError,
+    AuthorizationError,
     identity_store_for,
 )
 from governance_app.request_context import (
@@ -95,9 +96,9 @@ def handle_auth_route(
         payload, error = json_body(body)
         if error:
             return error
-        if principal.data_scope != "all":
+        if "province_admin" not in principal.role_codes:
             return json_response(
-                {"error": "only platform administrators can create organizations"},
+                {"error": "only province business administrators can manage organizations"},
                 status=403,
             )
         try:
@@ -111,13 +112,32 @@ def handle_auth_route(
                 code=str(payload.get("code", "")),
                 name=str(payload.get("name", "")),
                 parent_id=parent_id,
+                actor=principal,
             )
         except (TypeError, ValueError) as exc:
             return json_response({"error": str(exc)}, status=400)
+        except AuthorizationError as exc:
+            return json_response({"error": str(exc)}, status=403)
         return json_response(
             {"organization_id": organization_id},
             status=201,
         )
+    parts = parsed.path.strip("/").split("/")
+    if method == "PATCH" and len(parts) == 4 and parts[:3] == ["api", "identity", "organizations"]:
+        payload, error = json_body(body)
+        if error:
+            return error
+        try:
+            store.update_organization(
+                actor=principal, organization_id=int(parts[3]),
+                name=str(payload.get("name", "")),
+                parent_id=int(str(payload.get("parent_id", ""))),
+            )
+        except (TypeError, ValueError) as exc:
+            return json_response({"error": str(exc)}, status=400)
+        except AuthorizationError as exc:
+            return json_response({"error": str(exc)}, status=403)
+        return json_response({"status": "updated"})
     if method == "GET" and parsed.path == "/api/identity/users":
         return json_response({"users": store.list_users(principal)})
     if method == "POST" and parsed.path == "/api/identity/users":
@@ -139,14 +159,6 @@ def handle_auth_route(
                     principal.organization_id,
                 )
             )
-            if (
-                principal.data_scope != "all"
-                and organization_id != principal.organization_id
-            ):
-                return json_response(
-                    {"error": "permission denied"},
-                    status=403,
-                )
             user_id = store.create_user(
                 actor=principal,
                 organization_id=organization_id,
@@ -157,8 +169,9 @@ def handle_auth_route(
             )
         except (TypeError, ValueError) as exc:
             return json_response({"error": str(exc)}, status=400)
+        except AuthorizationError as exc:
+            return json_response({"error": str(exc)}, status=403)
         return json_response({"user_id": user_id}, status=201)
-    parts = parsed.path.strip("/").split("/")
     if (
         method == "POST"
         and len(parts) == 5
@@ -200,6 +213,8 @@ def handle_auth_route(
                 return json_response({"error": "not found"}, status=404)
         except ValueError as exc:
             return json_response({"error": str(exc)}, status=400)
+        except AuthorizationError as exc:
+            return json_response({"error": str(exc)}, status=403)
         return json_response({"status": "updated"})
     if method == "GET" and parsed.path == "/api/audit-logs":
         query = parse_qs(parsed.query)
@@ -220,4 +235,5 @@ def _principal_payload(principal) -> dict:
         "username": principal.username,
         "permissions": sorted(principal.permissions),
         "data_scope": principal.data_scope,
+        "roles": sorted(principal.role_codes),
     }

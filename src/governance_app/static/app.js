@@ -1629,25 +1629,28 @@ async function renderAccounts() {
   ]);
   const organizations = organizationData.organizations || [];
   const users = userData.users || [];
+  const isProvinceAdmin = (state.user?.roles || []).includes("province_admin");
+  const parentOptions = organizations.filter((item) => item.domain_path.split("/").filter(Boolean).length < 3);
   mainContent.innerHTML = `
     <section class="card">
       ${shellHeader("账号与组织", "分权分域")}
       <div class="account-grid">
-        <form id="organization-form" class="operation-panel compact-form" ${state.user?.data_scope === "all" ? "" : "hidden"}>
+        <form id="organization-form" class="operation-panel compact-form" ${isProvinceAdmin ? "" : "hidden"}>
           <h3>新增组织</h3>
           <label>组织编码<input name="code" required placeholder="hangzhou"></label>
           <label>组织名称<input name="name" required placeholder="杭州分公司"></label>
-          <label>上级组织<select name="parent_id"><option value="">平台根组织</option>${organizations.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}</select></label>
+          <label>上级组织<select name="parent_id" required>${parentOptions.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}</select></label>
           <button class="primary-button" type="submit">创建组织</button>
         </form>
-        ${state.user?.data_scope === "all" ? "" : '<div class="operation-panel"><h3>当前组织域</h3><p>组织管理员可以维护本组织账号；新增组织由平台管理员完成。</p></div>'}
+        ${isProvinceAdmin ? "" : '<div class="operation-panel"><h3>当前组织域</h3><p>市州管理员可维护本辖区账号；组织目录由省级业务管理员维护。</p></div>'}
+        ${isProvinceAdmin ? `<form id="organization-edit-form" class="operation-panel compact-form"><h3>修改组织</h3><label>组织<select name="organization_id" required>${organizations.filter((item) => item.code !== "province").map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}</select></label><label>新名称<input name="name" required></label><label>上级组织<select name="parent_id" required>${parentOptions.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}</select></label><button class="secondary-button" type="submit">保存修改</button></form>` : ""}
         <form id="user-form" class="operation-panel compact-form">
           <h3>新增账号</h3>
           <label>所属组织<select name="organization_id" required>${organizations.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}</select></label>
           <label>登录账号<input name="username" autocomplete="off" required></label>
           <label>显示名称<input name="display_name" required></label>
           <label>初始密码<input name="password" type="password" minlength="12" autocomplete="new-password" required></label>
-          <label>角色<select name="role"><option value="organization_admin">组织管理员</option><option value="auditor">稽核人员</option><option value="operator">整改人员</option></select></label>
+          <label>角色<select name="role">${isProvinceAdmin ? '<option value="province_admin">省级业务管理员</option><option value="city_admin">市州管理员</option>' : ""}<option value="auditor">稽核人员</option><option value="operator">整改人员</option></select></label>
           <button class="primary-button" type="submit">创建账号</button>
         </form>
       </div>
@@ -1677,6 +1680,16 @@ async function renderAccounts() {
       display_name: values.get("display_name"),
       password: values.get("password"),
       roles: [values.get("role")],
+    });
+    await activateView("accounts", { updateHistory: false });
+  });
+  document.querySelector("#organization-edit-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    await fetchJson(`/api/identity/organizations/${Number(values.get("organization_id"))}`, {
+      method: "PATCH", body: JSON.stringify({
+        name: values.get("name"), parent_id: Number(values.get("parent_id")),
+      }),
     });
     await activateView("accounts", { updateHistory: false });
   });

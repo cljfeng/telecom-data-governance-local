@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.engine import URL
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import NullPool
 
 from governance_app.config import AppConfig, RuntimeMode
@@ -200,11 +202,17 @@ ALL_PERMISSIONS = frozenset(
 )
 
 ROLE_DEFINITIONS = {
-    "platform_admin": ("平台管理员", "all", ALL_PERMISSIONS),
+    "platform_admin": ("平台管理员", "organization", {"system.admin"}),
+    "province_admin": (
+        "省级业务管理员", "all", ALL_PERMISSIONS - {"system.admin"},
+    ),
     "organization_admin": (
-        "组织管理员",
-        "organization",
+        "市州管理员（兼容）", "organization",
         ALL_PERMISSIONS - {"system.admin"},
+    ),
+    "city_admin": (
+        "市州管理员", "organization",
+        {"dashboard.read", "identity.manage", "issue.manage", "report.export"},
     ),
     "auditor": (
         "稽核人员",
@@ -266,6 +274,10 @@ class AuthenticationError(ValueError):
     pass
 
 
+class AuthorizationError(PermissionError):
+    pass
+
+
 class IdentityStore:
     def __init__(
         self,
@@ -295,20 +307,45 @@ class IdentityStore:
         with self._engine.begin() as connection:
             organization_id = connection.execute(
                 select(organizations.c.id).where(
-                    organizations.c.code == "platform"
+                    organizations.c.code == "province"
                 )
             ).scalar_one_or_none()
             if organization_id is None:
                 result = connection.execute(
                     insert(organizations).values(
-                        code="platform",
-                        name="平台管理组织",
-                        domain_path="/platform/",
+                        code="province",
+                        name="省公司",
+                        domain_path="/province/",
                         active=1,
                         created_at=now,
                     )
                 )
                 organization_id = _primary_key(result)
+            legacy_roots = connection.execute(select(
+                organizations.c.id, organizations.c.domain_path,
+            ).where(
+                organizations.c.parent_id.is_(None),
+                organizations.c.code.not_in(("province", "platform")),
+            )).mappings().all()
+            for root in legacy_roots:
+                old_path = str(root["domain_path"])
+                descendants = connection.execute(select(
+                    organizations.c.id, organizations.c.domain_path,
+                ).where(organizations.c.domain_path.like(f"{old_path}%"))).mappings().all()
+                for descendant in descendants:
+                    connection.execute(update(organizations).where(
+                        organizations.c.id == descendant["id"]
+                    ).values(domain_path="/province/" + str(descendant["domain_path"])[len("/"):]))
+                connection.execute(update(organizations).where(
+                    organizations.c.id == root["id"]
+                ).values(parent_id=organization_id))
+            legacy_platform_id = connection.execute(select(organizations.c.id).where(
+                organizations.c.code == "platform"
+            )).scalar_one_or_none()
+            if legacy_platform_id is not None:
+                connection.execute(update(batch_organizations).where(
+                    batch_organizations.c.organization_id == legacy_platform_id
+                ).values(organization_id=organization_id))
             role_ids: dict[str, int] = {}
             for code, (name, data_scope, permissions) in ROLE_DEFINITIONS.items():
                 role_id = connection.execute(
@@ -325,6 +362,11 @@ class IdentityStore:
                         )
                     )
                 role_ids[code] = role_id
+                connection.execute(
+                    update(roles).where(roles.c.id == role_id).values(
+                        name=name, data_scope=data_scope,
+                    )
+                )
                 existing_permissions = set(
                     connection.execute(
                         select(role_permissions.c.permission).where(
@@ -339,6 +381,13 @@ class IdentityStore:
                             permission=permission,
                         )
                     )
+                for permission in existing_permissions - permissions:
+                    connection.execute(
+                        delete(role_permissions).where(
+                            role_permissions.c.role_id == role_id,
+                            role_permissions.c.permission == permission,
+                        )
+                    )
             user_id = connection.execute(
                 select(users.c.id).where(users.c.username == username)
             ).scalar_one_or_none()
@@ -348,7 +397,7 @@ class IdentityStore:
                         insert(users).values(
                             organization_id=organization_id,
                             username=username,
-                            display_name="平台管理员",
+                            display_name="省级业务管理员",
                             password_hash=hash_password(password),
                             active=1,
                             failed_attempts=0,
@@ -356,19 +405,16 @@ class IdentityStore:
                         )
                     )
                 )
-            assigned = connection.execute(
-                select(user_roles.c.user_id).where(
-                    user_roles.c.user_id == user_id,
-                    user_roles.c.role_id == role_ids["platform_admin"],
-                )
-            ).first()
-            if assigned is None:
+            else:
                 connection.execute(
-                    insert(user_roles).values(
-                        user_id=user_id,
-                        role_id=role_ids["platform_admin"],
+                    update(users).where(users.c.id == user_id).values(
+                        organization_id=organization_id,
                     )
                 )
+                connection.execute(delete(user_roles).where(user_roles.c.user_id == user_id))
+            connection.execute(insert(user_roles).values(
+                user_id=user_id, role_id=role_ids["province_admin"],
+            ))
             unclaimed_batch_ids = connection.execute(
                 text(
                     "select id from import_batches "
@@ -386,38 +432,106 @@ class IdentityStore:
                     )
                 )
 
+    def provision_platform_admin(self, *, username: str, password: str) -> None:
+        if not username.strip() or len(password) < 12:
+            raise ValueError("platform admin username and password are required (12+ characters)")
+        with self._engine.begin() as connection:
+            if connection.execute(select(users.c.id).where(
+                users.c.username == username.strip()
+            )).scalar_one_or_none() is not None:
+                raise ValueError("username already exists")
+            platform_id = connection.execute(select(organizations.c.id).where(
+                organizations.c.code == "platform"
+            )).scalar_one_or_none()
+            if platform_id is None:
+                platform_id = _primary_key(connection.execute(insert(organizations).values(
+                    code="platform", name="平台管理组织", domain_path="/platform/",
+                    active=1, created_at=int(time.time()),
+                )))
+            role_id = connection.execute(select(roles.c.id).where(
+                roles.c.code == "platform_admin"
+            )).scalar_one()
+            user_id = _primary_key(connection.execute(insert(users).values(
+                organization_id=platform_id, username=username.strip(),
+                display_name="平台管理员", password_hash=hash_password(password),
+                active=1, failed_attempts=0, created_at=int(time.time()),
+            )))
+            connection.execute(insert(user_roles).values(user_id=user_id, role_id=role_id))
+
     def create_organization(
         self,
         *,
         code: str,
         name: str,
         parent_id: int | None = None,
+        actor: Principal | None = None,
     ) -> int:
         code = code.strip()
         name = name.strip()
-        if not code or not name:
-            raise ValueError("organization code and name are required")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{1,79}", code) or not name:
+            raise ValueError("invalid organization code or name")
         now = int(time.time())
         with self._engine.begin() as connection:
-            parent_path = "/"
-            if parent_id is not None:
-                parent_path = connection.execute(
-                    select(organizations.c.domain_path).where(
-                        organizations.c.id == parent_id,
-                        organizations.c.active == 1,
-                    )
-                ).scalar_one()
-            result = connection.execute(
-                insert(organizations).values(
-                    parent_id=parent_id,
-                    code=code,
-                    name=name,
-                    domain_path=f"{parent_path}{code}/",
-                    active=1,
-                    created_at=now,
-                )
-            )
+            if parent_id is None:
+                parent_id = connection.execute(select(organizations.c.id).where(
+                    organizations.c.code == "province"
+                )).scalar_one()
+            parent = connection.execute(select(organizations).where(
+                organizations.c.id == parent_id, organizations.c.active == 1
+            )).mappings().one_or_none()
+            if (parent is None or not str(parent["domain_path"]).startswith("/province/")
+                    or str(parent["domain_path"]).count("/") not in (2, 3)):
+                raise ValueError("parent must be a province or city organization")
+            if actor is not None and "province_admin" not in actor.role_codes:
+                raise AuthorizationError("only province business administrators can manage organizations")
+            try:
+                result = connection.execute(insert(organizations).values(
+                    parent_id=parent_id, code=code, name=name,
+                    domain_path=f"{parent['domain_path']}{code}/",
+                    active=1, created_at=now,
+                ))
+            except IntegrityError as exc:
+                raise ValueError("organization code already exists") from exc
             return _primary_key(result)
+
+    def update_organization(
+        self, *, actor: Principal, organization_id: int,
+        name: str, parent_id: int,
+    ) -> None:
+        if "province_admin" not in actor.role_codes:
+            raise AuthorizationError("only province business administrators can manage organizations")
+        name = name.strip()
+        if not name:
+            raise ValueError("organization name is required")
+        with self._engine.begin() as connection:
+            target = connection.execute(select(organizations).where(
+                organizations.c.id == organization_id,
+                organizations.c.active == 1,
+            )).mappings().one_or_none()
+            parent = connection.execute(select(organizations).where(
+                organizations.c.id == parent_id,
+                organizations.c.active == 1,
+            )).mappings().one_or_none()
+            if (target is None or parent is None or not str(target["domain_path"]).startswith("/province/")
+                    or not str(parent["domain_path"]).startswith("/province/")
+                    or target["code"] in ("province", "platform")):
+                raise ValueError("organization not found")
+            old_path = str(target["domain_path"])
+            parent_path = str(parent["domain_path"])
+            expected_parent_depth = 2 if old_path.count("/") == 3 else 3
+            if parent_path.count("/") != expected_parent_depth or parent_path.startswith(old_path):
+                raise ValueError("invalid organization parent")
+            new_path = f"{parent_path}{target['code']}/"
+            descendants = connection.execute(select(
+                organizations.c.id, organizations.c.domain_path,
+            ).where(organizations.c.domain_path.like(f"{old_path}%"))).mappings()
+            for descendant in descendants:
+                connection.execute(update(organizations).where(
+                    organizations.c.id == descendant["id"]
+                ).values(domain_path=new_path + str(descendant["domain_path"])[len(old_path):]))
+            connection.execute(update(organizations).where(
+                organizations.c.id == organization_id
+            ).values(name=name, parent_id=parent_id))
 
     def create_user(
         self,
@@ -437,13 +551,20 @@ class IdentityStore:
             raise ValueError("password must be at least 12 characters")
         if not role_codes:
             raise ValueError("at least one role is required")
-        if actor.data_scope != "all":
-            if organization_id != actor.organization_id:
-                raise ValueError("organization is outside your data scope")
-            if "platform_admin" in role_codes:
-                raise ValueError("platform_admin can only be assigned by platform administrators")
         now = int(time.time())
         with self._engine.begin() as connection:
+            self._ensure_manageable_organization(connection, actor, organization_id)
+            target = connection.execute(select(organizations.c.domain_path).where(
+                organizations.c.id == organization_id,
+            )).scalar_one()
+            depth = str(target).count("/")
+            allowed = ({"province_admin", "auditor", "operator"}
+                       if depth == 2 else {"city_admin", "organization_admin", "auditor", "operator"}
+                       if depth == 3 else {"operator", "auditor"})
+            if not set(role_codes) <= allowed:
+                raise ValueError("roles are not valid for the target organization")
+            if actor.role_codes & {"city_admin", "organization_admin"} and not set(role_codes) <= {"operator", "auditor"}:
+                raise AuthorizationError("city administrators cannot grant administrator roles")
             role_rows = connection.execute(
                 select(roles.c.id, roles.c.code).where(
                     roles.c.code.in_(role_codes)
@@ -488,9 +609,12 @@ class IdentityStore:
             organizations.c.active,
         ).order_by(organizations.c.domain_path)
         with self._engine.connect() as connection:
-            if principal.data_scope != "all":
+            if principal.data_scope == "all":
+                statement = statement.where(organizations.c.domain_path.like("/province/%"))
+            else:
+                own_path = self._organization_path(connection, principal.organization_id)
                 statement = statement.where(
-                    organizations.c.id == principal.organization_id
+                    organizations.c.domain_path.like(f"{own_path}%")
                 )
             return [
                 dict(row)
@@ -518,11 +642,12 @@ class IdentityStore:
             )
             .order_by(users.c.id)
         )
-        if principal.data_scope != "all":
-            statement = statement.where(
-                users.c.organization_id == principal.organization_id
-            )
         with self._engine.connect() as connection:
+            if principal.data_scope == "all":
+                statement = statement.where(organizations.c.domain_path.like("/province/%"))
+            else:
+                own_path = self._organization_path(connection, principal.organization_id)
+                statement = statement.where(organizations.c.domain_path.like(f"{own_path}%"))
             payloads = [
                 dict(row)
                 for row in connection.execute(statement).mappings()
@@ -596,12 +721,34 @@ class IdentityStore:
     ) -> None:
         organization_id = connection.execute(
             select(users.c.organization_id).where(users.c.id == user_id)
-        ).scalar_one()
-        if (
-            actor.data_scope != "all"
-            and int(organization_id) != actor.organization_id
-        ):
-            raise ValueError("user is outside your data scope")
+        ).scalar_one_or_none()
+        if organization_id is None or actor.user_id == user_id:
+            raise AuthorizationError("user is outside your management scope")
+        self._ensure_manageable_organization(connection, actor, int(organization_id))
+        target_roles = set(connection.execute(select(roles.c.code).select_from(
+            user_roles.join(roles, roles.c.id == user_roles.c.role_id)
+        ).where(user_roles.c.user_id == user_id)).scalars())
+        if actor.role_codes & {"city_admin", "organization_admin"} and target_roles - {"operator", "auditor"}:
+            raise AuthorizationError("cannot manage administrator accounts")
+
+    def _organization_path(self, connection, organization_id: int) -> str:
+        path = connection.execute(select(organizations.c.domain_path).where(
+            organizations.c.id == organization_id, organizations.c.active == 1,
+        )).scalar_one_or_none()
+        if path is None:
+            raise ValueError("organization not found")
+        return str(path)
+
+    def _ensure_manageable_organization(self, connection, actor: Principal, organization_id: int) -> None:
+        target_path = self._organization_path(connection, organization_id)
+        if "province_admin" in actor.role_codes:
+            if target_path.startswith("/province/"):
+                return
+        if actor.role_codes & {"city_admin", "organization_admin"}:
+            own_path = self._organization_path(connection, actor.organization_id)
+            if own_path.count("/") == 3 and target_path.startswith(own_path):
+                return
+        raise AuthorizationError("organization is outside your management scope")
 
     def authenticate(
         self,
@@ -1089,6 +1236,7 @@ class IdentityStore:
         ).mappings().one()
         role_rows = connection.execute(
             select(
+                roles.c.code,
                 roles.c.data_scope,
                 role_permissions.c.permission,
             )
@@ -1104,8 +1252,10 @@ class IdentityStore:
             .where(user_roles.c.user_id == user_id)
         ).mappings()
         permissions: set[str] = set()
+        role_codes: set[str] = set()
         data_scope = "organization"
         for row in role_rows:
+            role_codes.add(str(row["code"]))
             permissions.add(str(row["permission"]))
             if row["data_scope"] == "all":
                 data_scope = "all"
@@ -1117,6 +1267,7 @@ class IdentityStore:
             data_scope=data_scope,
             session_id=session_id,
             auth_method=auth_method,
+            role_codes=frozenset(role_codes),
         )
 
 

@@ -13,6 +13,7 @@ class Principal:
     data_scope: str
     session_id: int | None = None
     auth_method: str = "local"
+    role_codes: frozenset[str] = frozenset()
 
     def has_permission(self, permission: str) -> bool:
         return "*" in self.permissions or permission in self.permissions
