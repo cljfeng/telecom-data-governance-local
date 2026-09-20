@@ -17,6 +17,7 @@ test = [
   "mypy>=1.15",
 ]
 package = ["pyinstaller>=6.0.0"]
+online = ["psycopg[binary]>=3.2", "boto3>=1.35"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

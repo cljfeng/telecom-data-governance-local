@@ -3,12 +3,17 @@ from dataclasses import dataclass
 from email.parser import BytesParser
 from email.policy import default
 from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import (
+    BaseHTTPRequestHandler,
+    SimpleHTTPRequestHandler,
+    ThreadingHTTPServer,
+)
 from pathlib import Path
 from urllib.parse import urlparse
 
-from governance_app.config import AppConfig
+from governance_app.config import AppConfig, OnlineConfig, load_runtime_config
 from governance_app.db import initialize_database
+from governance_app.online_runtime import check_online_dependencies
 from governance_app.routes.analysis import handle_analysis_route
 from governance_app.routes.audits import handle_audit_route
 from governance_app.routes.batches import handle_batch_route
@@ -51,7 +56,20 @@ class LocalApp:
         return error or _route_upload(self.config, path, fields, files)
 
 
-def create_app(config: AppConfig) -> LocalApp:
+@dataclass(frozen=True)
+class OnlineApp:
+    config: OnlineConfig
+
+    def handle_test_request(self, method: str, path: str, body: str = "") -> JsonResponse:
+        if method == "GET" and urlparse(path).path == "/api/health":
+            return json_response({"status": "ok", "mode": "online"})
+        return json_response({"error": "online business routes are not installed"}, status=503)
+
+
+def create_app(config: AppConfig | OnlineConfig) -> LocalApp | OnlineApp:
+    if isinstance(config, OnlineConfig):
+        return OnlineApp(config)
+    config.require_local_runtime()
     return LocalApp(config)
 
 
@@ -107,10 +125,12 @@ def _multipart_body(
         if part.get_content_disposition() != "form-data":
             continue
         name = part.get_param("name", header="content-disposition")
-        if not name:
+        if not isinstance(name, str) or not name:
             continue
         filename = part.get_filename()
-        content = part.get_payload(decode=True) or b""
+        content = part.get_payload(decode=True)
+        if not isinstance(content, bytes):
+            content = b""
         if filename:
             files[name] = (filename, content)
         else:
@@ -166,11 +186,38 @@ class RequestHandler(SimpleHTTPRequestHandler):
         self.wfile.write(body.encode("utf-8"))
 
 
-def run_server(config: AppConfig, host: str = "127.0.0.1", port: int = 8765) -> None:
+class OnlineRequestHandler(BaseHTTPRequestHandler):
+    app: OnlineApp
+
+    def do_GET(self) -> None:
+        self._write_response(self.app.handle_test_request("GET", self.path))
+
+    def do_POST(self) -> None:
+        self._write_response(self.app.handle_test_request("POST", self.path))
+
+    def _write_response(self, response: JsonResponse) -> None:
+        status, headers, body = response
+        self.send_response(status)
+        for key, value in headers.items():
+            self.send_header(key, value)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body.encode("utf-8"))
+
+
+def run_server(config: AppConfig | OnlineConfig, host: str = "127.0.0.1", port: int = 8765) -> None:
+    if isinstance(config, OnlineConfig):
+        check_online_dependencies(config)
+        online_handler = type("ConfiguredOnlineRequestHandler", (OnlineRequestHandler,), {"app": OnlineApp(config)})
+        server = ThreadingHTTPServer((host, port), online_handler)
+        print(f"Online governance service running at http://{host}:{port}")
+        server.serve_forever()
+        return
+    config.require_local_runtime()
     initialize_database(config)
     configured_handler = type("ConfiguredRequestHandler", (RequestHandler,), {"config": config})
-    handler = partial(configured_handler, directory=str(config.static_dir))
-    server = ThreadingHTTPServer((host, port), handler)
+    local_handler = partial(configured_handler, directory=str(config.static_dir))
+    server = ThreadingHTTPServer((host, port), local_handler)
     print(f"Local governance app running at http://{host}:{port}")
     server.serve_forever()
 
@@ -181,7 +228,7 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8765, type=int)
     args = parser.parse_args()
-    run_server(AppConfig.for_workspace(Path(args.workspace)), args.host, args.port)
+    run_server(load_runtime_config(Path(args.workspace)), args.host, args.port)
 
 
 if __name__ == "__main__":

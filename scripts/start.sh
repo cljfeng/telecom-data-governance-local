@@ -12,5 +12,4 @@ fi
 
 .venv/bin/python -m pip install -e ".[test]"
 
-echo "Local governance app running at http://127.0.0.1:${PORT}"
 PYTHONPATH=src .venv/bin/python -m governance_app.server --workspace . --port "$PORT"
