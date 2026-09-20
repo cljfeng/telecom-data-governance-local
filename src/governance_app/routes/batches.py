@@ -1,12 +1,7 @@
-import csv
-from io import StringIO
 from urllib.parse import ParseResult, parse_qs
 
 from governance_app.analytics import dashboard_summary
-from governance_app.config import AppConfig, RuntimeMode
-from governance_app.database_runtime import database_for
-from governance_app.identity_store import identity_store_for
-from governance_app.request_context import current_principal
+from governance_app.config import AppConfig
 from governance_app.routes.common import (
     JsonResponse,
     batch_id_from_payload,
@@ -36,56 +31,6 @@ def handle_batch_route(
     parsed: ParseResult,
     body: str,
 ) -> JsonResponse | None:
-    if method == "GET" and parsed.path in {"/api/sites/summary", "/api/sites/export"}:
-        batch_id, error = batch_id_from_query(parsed.query)
-        if error:
-            return error
-        total = count_ledger_rows(config, batch_id, {"ledger_type": "site"})
-        rows = []
-        for offset in range(0, total, 500):
-            rows.extend(list_ledger_rows(config, batch_id, {"ledger_type": "site"},
-                                         limit=500, offset=offset))
-        if parsed.path.endswith("/summary"):
-            cities: dict[str, int] = {}
-            for row in rows:
-                cities[row["city"]] = cities.get(row["city"], 0) + 1
-            return json_response({"total": total, "cities": cities})
-        output = StringIO()
-        writer = csv.writer(output)
-        writer.writerow(("记录ID", "市州", "区县", "站址编码", "站址名称"))
-        for row in rows:
-            writer.writerow((row["id"], row["city"], row["district"],
-                             row["telecom_site_code"], row["telecom_site_name"]))
-        return (200, {"content-type": "text/csv; charset=utf-8",
-                      "content-disposition": 'attachment; filename="sites.csv"'},
-                ("\ufeff" + output.getvalue()).encode("utf-8"))
-    if method == "POST" and parsed.path == "/api/sites/jurisdiction":
-        principal = current_principal()
-        if config.runtime_mode is not RuntimeMode.ONLINE or principal is None or principal.data_scope != "all":
-            return json_response({"error": "resource not found"}, status=404)
-        payload, error = json_body(body)
-        if error:
-            return error
-        try:
-            batch_id, row_id = int(payload["batch_id"]), int(payload["row_id"])
-            city, district, reason = (str(payload[key]).strip() for key in ("city", "district", "reason"))
-        except (KeyError, ValueError, TypeError):
-            return json_response({"error": "invalid jurisdiction correction"}, status=400)
-        if not reason or not identity_store_for(config).is_valid_site_jurisdiction(city, district):
-            return json_response({"error": "unrecognized jurisdiction or missing reason"}, status=400)
-        try:
-            with database_for(config).unit_of_work() as unit:
-                batch = unit.batches.get(batch_id)
-                if batch is None or batch["is_archived"]:
-                    raise ValueError("batch not found or archived")
-                changed = unit.ledgers.reassign_site(batch_id, row_id, city, district,
-                                                       reason, principal.user_id)
-                if changed:
-                    unit.batches.add_operation(batch_id, "site_jurisdiction",
-                                               f"站址记录 {row_id} 归属更正：{city}/{district}")
-        except ValueError as exc:
-            return json_response({"error": str(exc)}, status=404)
-        return json_response({"updated": changed})
     if method == "GET" and parsed.path == "/api/dashboard":
         batch_id, error = batch_id_from_query(parsed.query)
         if error:

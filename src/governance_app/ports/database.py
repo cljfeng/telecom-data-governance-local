@@ -57,6 +57,7 @@ class LedgerQuery:
     city: str | None = None
     district: str | None = None
     site_code: str | None = None
+    row_id: int | None = None
     limit: int = 500
     offset: int = 0
     jurisdictions: tuple[tuple[str, str], ...] | None = None
@@ -206,6 +207,11 @@ class LedgerRepository(Protocol):
 
     def reassign_site(self, batch_id: int, row_id: int, city: str, district: str,
                       reason: str, actor_user_id: int) -> bool: ...
+
+    def attach_site_evidence(self, batch_id: int, row_id: int, file_id: str,
+                             actor_user_id: int) -> int: ...
+
+    def site_evidence_file(self, batch_id: int, row_id: int, evidence_id: int) -> str | None: ...
 
 
 class AuditRepository(Protocol):

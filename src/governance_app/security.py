@@ -88,8 +88,8 @@ def _scoped_route(method: str, path: str) -> bool:
     if path.startswith("/api/auth/") or path.startswith("/api/identity/"):
         return True
     if method == "GET":
-        return path in {"/api/batches", "/api/ledger-rows", "/api/issues",
-                        "/api/sites/summary", "/api/sites/export"} or path.startswith("/api/tasks")
+        return path in {"/api/batches", "/api/ledger-rows", "/api/issues", "/api/issue-groups",
+                        "/api/sites/summary", "/api/sites/export"} or path.startswith("/api/sites/")
     return method == "POST" and path == "/api/issues/status"
 
 
@@ -114,7 +114,7 @@ def permission_for(method: str, path: str) -> str | None:
         "/api/corrections"
     ):
         return "issue.manage"
-    if path == "/api/sites/jurisdiction":
+    if path in {"/api/sites/jurisdiction", "/api/sites/evidence"}:
         return "issue.manage"
     if path.startswith("/api/batches/") and "analysis" in path:
         return (

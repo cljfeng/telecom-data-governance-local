@@ -81,6 +81,7 @@ def _add_identity_and_runtime_schema(connection: Connection) -> None:
 
 def _add_site_jurisdiction_events(connection: Connection) -> None:
     _metadata.tables["site_jurisdiction_events"].create(connection, checkfirst=True)
+    _metadata.tables["site_evidence_files"].create(connection, checkfirst=True)
 
 
 POSTGRES_MIGRATIONS = (

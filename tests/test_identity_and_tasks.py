@@ -198,8 +198,11 @@ def test_province_batch_site_records_are_scoped_by_verified_organization_pairs(a
     monkeypatch.setattr("governance_app.workflow.identity_store_for", lambda _config: store)
     from governance_app.database_runtime import database_for
     monkeypatch.setattr("governance_app.workflow.database_for", lambda _config: database_for(app_config))
-    monkeypatch.setattr("governance_app.routes.batches.database_for", lambda _config: database_for(app_config))
-    monkeypatch.setattr("governance_app.routes.batches.identity_store_for", lambda _config: store)
+    monkeypatch.setattr("governance_app.routes.sites.database_for", lambda _config: database_for(app_config))
+    monkeypatch.setattr("governance_app.routes.sites.identity_store_for", lambda _config: store)
+    from governance_app.file_storage_runtime import file_storage_for
+    storage = file_storage_for(app_config)
+    monkeypatch.setattr("governance_app.routes.sites.file_storage_for", lambda _config: storage)
     province = store.authenticate(username="admin", password="administrator-password",
                                   source_ip="", user_agent="", ttl_seconds=3600)
     hz = store.create_organization(code="hz", name="杭州")
@@ -246,9 +249,24 @@ def test_province_batch_site_records_are_scoped_by_verified_organization_pairs(a
         assert status == 200
         assert {issue["telecom_site_code"] for issue in issue_page["issues"]} == expected
         assert issue_page["total"] == len(expected)
+        assert {group["telecom_site_code"] for group in request(
+            grants[name], f"/api/issue-groups?batch_id={batch}")[1]["groups"]} == expected
     assert request(grants["xihu"], f"/api/ledger-rows?batch_id={batch}&city=宁波")[1]["total"] == 0
     for path in (f"/api/dashboard?batch_id={batch}", "/api/files/private", f"/api/city-progress?batch_id={batch}"):
         assert request(grants["xihu"], path)[0] == 404
+    assert request(grants["xihu"], f"/api/sites/1?batch_id={batch}")[1]["site"]["telecom_site_code"] == "A"
+    assert request(grants["xihu"], f"/api/sites/2?batch_id={batch}")[0] == 404
+    assert request(grants["xihu"], "/api/tasks")[0] == 404
+    evidence_file = storage.save_upload("proof.txt", b"verified-site-A")
+    registered = app.handle_test_request("POST", "/api/sites/evidence",
+        json.dumps({"batch_id": batch, "row_id": 1, "file_id": evidence_file.file_id}),
+        headers={"Authorization": f"Bearer {province.token}"})
+    evidence_id = json.loads(registered[2])["evidence_id"]
+    assert registered[0] == 200
+    evidence_path = f"/api/sites/1/evidence/{evidence_id}?batch_id={batch}"
+    assert app.handle_test_request("GET", evidence_path,
+        headers={"Authorization": f"Bearer {grants['xihu'].token}"})[2] == b"verified-site-A"
+    assert request(grants["binjiang"], evidence_path)[0] == 404
     def update(grant, code):
         return app.handle_test_request("POST", "/api/issues/status",
                                        json.dumps({"issue_code": f"I-{code}", "status": "closed"}),

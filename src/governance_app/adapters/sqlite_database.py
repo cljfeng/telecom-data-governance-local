@@ -31,6 +31,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import URL, Connection, Engine
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.pool import NullPool
+from sqlalchemy.sql.selectable import FromClause
 
 from governance_app.models import IssueStatus
 from governance_app.ports.database import (
@@ -278,6 +279,15 @@ _site_jurisdiction_events = Table(
     Column("old_city", String), Column("old_district", String),
     Column("new_city", String, nullable=False), Column("new_district", String, nullable=False),
     Column("reason", String, nullable=False), Column("actor_user_id", Integer, nullable=False),
+    Column("created_at", String, nullable=False, server_default=_TIMESTAMP_DEFAULT),
+)
+
+_site_evidence_files = Table(
+    "site_evidence_files", _metadata,
+    Column("id", Integer, primary_key=True),
+    Column("ledger_row_id", Integer, ForeignKey("ledger_rows.id", ondelete="CASCADE"), nullable=False),
+    Column("file_id", String, nullable=False),
+    Column("actor_user_id", Integer, nullable=False),
     Column("created_at", String, nullable=False, server_default=_TIMESTAMP_DEFAULT),
 )
 
@@ -631,6 +641,7 @@ class SqliteIssueRepository(IssueRepository):
                 grouped_issues.c.rule_id == _issues.c.rule_id,
                 func.coalesce(grouped_issues.c.telecom_site_code, "")
                 == func.coalesce(_issues.c.telecom_site_code, ""),
+                *_jurisdiction_conditions(grouped_issues, query.jurisdictions),
             )
             .correlate(_issues)
             .scalar_subquery()
@@ -965,6 +976,28 @@ class SqliteLedgerRepository(LedgerRepository):
             select(_audit_results.c.id).where(_audit_results.c.ledger_row_id == row_id)
         )).values(city=city, district=district))
         return True
+
+    def attach_site_evidence(self, batch_id: int, row_id: int, file_id: str,
+                             actor_user_id: int) -> int:
+        row = self._connection.execute(select(_ledger_rows.c.id).where(
+            _ledger_rows.c.id == row_id, _ledger_rows.c.batch_id == batch_id,
+            _ledger_rows.c.ledger_type == "site")).scalar_one_or_none()
+        if row is None:
+            raise ValueError("site record not found")
+        result = self._connection.execute(insert(_site_evidence_files).values(
+            ledger_row_id=row_id, file_id=file_id, actor_user_id=actor_user_id))
+        primary_key = result.inserted_primary_key
+        if primary_key is None or primary_key[0] is None:
+            raise RuntimeError("database did not return an evidence id")
+        return int(primary_key[0])
+
+    def site_evidence_file(self, batch_id: int, row_id: int, evidence_id: int) -> str | None:
+        return self._connection.execute(select(_site_evidence_files.c.file_id).select_from(
+            _site_evidence_files.join(_ledger_rows,
+                                      _site_evidence_files.c.ledger_row_id == _ledger_rows.c.id))
+            .where(_ledger_rows.c.batch_id == batch_id, _ledger_rows.c.id == row_id,
+                   _ledger_rows.c.ledger_type == "site", _site_evidence_files.c.id == evidence_id)
+        ).scalar_one_or_none()
 
     def add_imported_row(self, batch_id: int, row: ImportedLedgerRow) -> None:
         raw_result = self._connection.execute(
@@ -2269,6 +2302,8 @@ def _issue_group_selector_conditions(selector: IssueGroupSelector) -> list[Any]:
 
 def _ledger_conditions(query: LedgerQuery) -> list[Any]:
     conditions = [_ledger_rows.c.batch_id == query.batch_id]
+    if query.row_id is not None:
+        conditions.append(_ledger_rows.c.id == query.row_id)
     if query.jurisdictions is not None:
         conditions.extend(_jurisdiction_conditions(_ledger_rows, query.jurisdictions))
     for value, column in (
@@ -2282,7 +2317,7 @@ def _ledger_conditions(query: LedgerQuery) -> list[Any]:
     return conditions
 
 
-def _jurisdiction_conditions(table: Table, pairs: tuple[tuple[str, str], ...] | None) -> list[Any]:
+def _jurisdiction_conditions(table: FromClause, pairs: tuple[tuple[str, str], ...] | None) -> list[Any]:
     if pairs is None:
         return []
     return [table.c.ledger_type == "site", or_(*(

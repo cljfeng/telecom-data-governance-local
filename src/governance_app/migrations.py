@@ -383,6 +383,12 @@ def _upgrade_to_version_5(conn: sqlite3.Connection) -> None:
         reason text not null, actor_user_id integer not null,
         created_at text not null default current_timestamp
     )""")
+    conn.execute("""create table if not exists site_evidence_files (
+        id integer primary key autoincrement,
+        ledger_row_id integer not null references ledger_rows(id) on delete cascade,
+        file_id text not null, actor_user_id integer not null,
+        created_at text not null default current_timestamp
+    )""")
 
 
 MIGRATIONS = (

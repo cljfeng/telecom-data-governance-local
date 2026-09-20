@@ -598,6 +598,7 @@ def list_ledger_rows(
         city=filters.get("city"),
         district=filters.get("district"),
         site_code=filters.get("site_code"),
+        row_id=int(filters["row_id"]) if filters.get("row_id") else None,
         limit=max(1, min(limit, 500)),
         offset=max(offset, 0),
         jurisdictions=jurisdictions,

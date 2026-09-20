@@ -30,6 +30,7 @@ from governance_app.routes.batches import handle_batch_route
 from governance_app.routes.common import JsonResponse, json_response
 from governance_app.routes.imports import handle_import_route, handle_import_upload
 from governance_app.routes.reports import handle_report_route, handle_report_upload
+from governance_app.routes.sites import handle_site_route
 from governance_app.routes.system import handle_system_route
 from governance_app.routes.tasks import handle_task_route
 from governance_app.security import authorize_request, security_headers
@@ -40,6 +41,7 @@ ROUTE_HANDLERS = (
     handle_auth_route,
     handle_task_route,
     handle_system_route,
+    handle_site_route,
     handle_batch_route,
     handle_import_route,
     handle_audit_route,
