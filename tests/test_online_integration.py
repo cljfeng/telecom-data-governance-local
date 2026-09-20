@@ -1,6 +1,7 @@
 import json
 import os
 import time
+from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
@@ -132,6 +133,7 @@ def test_province_account_import_audit_export_survives_restart(
         for issue in list_issues(local, local_import.batch_id)
     )
     assert expected_count > 0
+    local_database_digest = sha256(local.database_path.read_bytes()).digest()
 
     config = AppConfig.for_online_workspace(
         tmp_path / "first-server",
@@ -239,6 +241,16 @@ def test_province_account_import_audit_export_survives_restart(
     )
     assert status == 200
     assert json.loads(raw)["task"]["status"] == "completed"
+    status, _, raw = restarted_app.handle_test_request(
+        "GET", "/api/import/recent", headers=headers,
+    )
+    assert status == 200
+    original_file_id = json.loads(raw)["files"][0]["file"]["file_id"]
+    status, _, original_bytes = restarted_app.handle_test_request(
+        "GET", f"/api/files/{original_file_id}", headers=headers,
+    )
+    assert status == 200
+    assert original_bytes == sample_workbook.read_bytes()
     principal = IdentityStore(restarted).session_principal(token, auth_method="bearer")
     assert principal is not None
     with principal_context(principal):
@@ -251,3 +263,4 @@ def test_province_account_import_audit_export_survives_restart(
         ).resolve(exported["files"][0]["file_id"])
     assert stored.local_path.read_bytes().startswith(b"PK")
     assert not restarted.database_path.exists()
+    assert sha256(local.database_path.read_bytes()).digest() == local_database_digest

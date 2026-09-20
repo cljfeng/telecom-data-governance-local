@@ -125,7 +125,7 @@ class OnlineConfig:
         if not database_url:
             raise ConfigurationError("DATABASE_URL is required for online mode")
         parsed = urlsplit(database_url)
-        if parsed.scheme not in {"postgresql", "postgres"} or not parsed.hostname or not parsed.path.strip("/"):
+        if parsed.scheme not in {"postgresql", "postgresql+psycopg"} or not parsed.hostname or not parsed.path.strip("/"):
             raise ConfigurationError("DATABASE_URL must name a PostgreSQL database")
         bucket = values.get("OBJECT_STORAGE_BUCKET", "").strip()
         if not bucket:

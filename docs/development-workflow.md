@@ -3,33 +3,15 @@
 ## 分支与工作树
 
 - `main` 始终保持本地版可运行、可测试、可打包。
-- 在线平台使用短生命周期 `feat/*` 分支开发，经完整质量检查后合并回 `main`。
+- 在线平台使用短生命周期功能分支开发，经完整质量检查后合并回 `main`。
 - 工作树只解决并行目录问题，不代替分支。
 - 不建立长期分叉的 `local` 和 `online` 分支。
 
-当前在线基础工作树：
-
-```text
-主工作树：仓库根目录                         main
-在线工作树：.worktrees/online-platform       feat/online-foundation
-```
-
-常用检查：
+查看当前工作树和分支：
 
 ```bash
 git worktree list
-git -C .worktrees/online-platform status --short --branch
-```
-
-后续功能建议按以下短分支拆分：
-
-```text
-feat/runtime-profiles
-feat/postgres-storage
-feat/server-file-storage
-feat/login-and-rbac
-feat/online-deployment
-feat/mobile-responsive
+git status --short --branch
 ```
 
 一个功能完成后先运行 `scripts/check.sh`，再合并回 `main`。线上能力未完整交付前，

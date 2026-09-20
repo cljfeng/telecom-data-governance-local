@@ -13,7 +13,10 @@ def check_online_dependencies(config: OnlineConfig) -> None:
         raise ConfigurationError("online mode requires the boto3 object storage client") from error
 
     try:
-        with psycopg.connect(config.database_url, connect_timeout=5) as connection:
+        database_url = config.database_url.replace(
+            "postgresql+psycopg://", "postgresql://", 1
+        )
+        with psycopg.connect(database_url, connect_timeout=5) as connection:
             connection.execute("SELECT 1")
     except Exception as error:
         raise ConfigurationError("PostgreSQL unavailable for online mode") from error
