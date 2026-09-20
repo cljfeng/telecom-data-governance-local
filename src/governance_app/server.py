@@ -78,9 +78,19 @@ class LocalApp:
         path: str,
         content_type: str,
         body: bytes,
+        *,
+        headers: dict[str, str] | None = None,
+        source_ip: str = "127.0.0.1",
     ) -> JsonResponse:
         fields, files, error = _multipart_body(content_type, body)
-        return error or _route_upload(self.config, path, fields, files)
+        return error or _route_upload(
+            self.config,
+            path,
+            fields,
+            files,
+            headers=headers,
+            source_ip=source_ip,
+        )
 
 
 def create_app(config: AppConfig | OnlineConfig) -> LocalApp:
