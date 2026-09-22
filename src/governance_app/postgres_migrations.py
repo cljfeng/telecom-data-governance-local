@@ -6,7 +6,7 @@ from sqlalchemy import Connection, text
 from governance_app.adapters.sqlite_database import _metadata
 from governance_app.identity_store import identity_metadata
 
-POSTGRES_SCHEMA_VERSION = 5
+POSTGRES_SCHEMA_VERSION = 6
 
 
 @dataclass(frozen=True)
@@ -151,10 +151,18 @@ def _backfill_related_ledger_jurisdiction(connection: Connection) -> None:
     """))
 
 
+def _add_site_change_requests(connection: Connection) -> None:
+    connection.execute(text(
+        "alter table authoritative_site_versions add column if not exists confirmer varchar"
+    ))
+    _metadata.tables["site_change_requests"].create(connection, checkfirst=True)
+
+
 POSTGRES_MIGRATIONS = (
     PostgresMigration(1, _create_initial_schema),
     PostgresMigration(2, _add_identity_and_runtime_schema),
     PostgresMigration(3, _add_site_jurisdiction_events),
     PostgresMigration(4, _add_authoritative_site_schema),
     PostgresMigration(5, _backfill_related_ledger_jurisdiction),
+    PostgresMigration(6, _add_site_change_requests),
 )

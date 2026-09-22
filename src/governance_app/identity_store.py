@@ -499,6 +499,25 @@ class IdentityStore:
                 raise ValueError("organization code already exists") from exc
             return _primary_key(result)
 
+    def organization(self, organization_id: int) -> dict[str, Any] | None:
+        with self._engine.connect() as connection:
+            row = connection.execute(select(organizations).where(
+                organizations.c.id == organization_id,
+                organizations.c.active == 1,
+            )).mappings().one_or_none()
+        return None if row is None else dict(row)
+
+    def correction_reviewer_organization_id(self, organization_id: int) -> int | None:
+        organization = self.organization(organization_id)
+        if organization is None:
+            return None
+        path = str(organization["domain_path"])
+        if path == "/province/":
+            return int(organization["id"])
+        if path.startswith("/province/") and path.count("/") in (3, 4):
+            return int(organization["parent_id"])
+        return None
+
     def update_organization(
         self, *, actor: Principal, organization_id: int,
         name: str, parent_id: int,

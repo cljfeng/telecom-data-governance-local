@@ -315,6 +315,7 @@ _authoritative_site_versions = Table(
     Column("new_json", String, nullable=False),
     Column("evidence", String, nullable=False),
     Column("operator", String, nullable=False),
+    Column("confirmer", String),
     Column("error_cause", String, nullable=False),
     Column("source", String, nullable=False),
     Column("idempotency_key", String, nullable=False),
@@ -322,6 +323,35 @@ _authoritative_site_versions = Table(
     Column("effective_at", String, nullable=False, server_default=_TIMESTAMP_DEFAULT),
     UniqueConstraint("site_id", "version"),
     UniqueConstraint("site_id", "idempotency_key"),
+)
+
+_site_change_requests = Table(
+    "site_change_requests", _metadata,
+    Column("id", Integer, primary_key=True),
+    Column("batch_id", Integer, ForeignKey("import_batches.id", ondelete="CASCADE"), nullable=False),
+    Column("ledger_row_id", Integer, ForeignKey("ledger_rows.id", ondelete="CASCADE"), nullable=False),
+    Column("issue_code", String),
+    Column("replaces_request_id", Integer, ForeignKey("site_change_requests.id")),
+    Column("kind", String, nullable=False),
+    Column("changes_json", String, nullable=False),
+    Column("evidence", String, nullable=False),
+    Column("error_cause", String, nullable=False),
+    Column("source", String, nullable=False),
+    Column("note", String, nullable=False),
+    Column("proposer_user_id", Integer, nullable=False),
+    Column("proposer_organization_id", Integer, nullable=False),
+    Column("proposer_username", String, nullable=False),
+    Column("reviewer_organization_id", Integer),
+    Column("reviewer_user_id", Integer),
+    Column("reviewer_username", String),
+    Column("status", String, nullable=False),
+    Column("review_note", String),
+    Column("applied_version", Integer),
+    Column("idempotency_key", String, nullable=False),
+    Column("request_json", String, nullable=False),
+    Column("created_at", String, nullable=False, server_default=_TIMESTAMP_DEFAULT),
+    Column("updated_at", String, nullable=False, server_default=_TIMESTAMP_DEFAULT),
+    UniqueConstraint("proposer_user_id", "idempotency_key"),
 )
 
 _audit_runs = Table(
@@ -1192,7 +1222,8 @@ class SqliteLedgerRepository(LedgerRepository):
             versions = [
                 {"version": version["version"], "old_value": json.loads(version["old_json"]),
                  "new_value": json.loads(version["new_json"]), "evidence": version["evidence"],
-                 "operator": version["operator"], "error_cause": version["error_cause"],
+                 "operator": version["operator"], "confirmer": version["confirmer"],
+                 "error_cause": version["error_cause"],
                  "source": version["source"], "effective_at": version["effective_at"]}
                 for version in self._connection.execute(select(_authoritative_site_versions)
                     .where(_authoritative_site_versions.c.site_id == site_id)
@@ -1231,6 +1262,7 @@ class SqliteLedgerRepository(LedgerRepository):
             old_json=json.dumps(current, ensure_ascii=False, sort_keys=True),
             new_json=json.dumps(revised, ensure_ascii=False, sort_keys=True),
             evidence=request["evidence"], operator=request["operator"],
+            confirmer=request.get("confirmer"),
             error_cause=request["error_cause"], source=request["source"],
             idempotency_key=request["idempotency_key"], request_json=request_json))
         self._connection.execute(update(_authoritative_sites).where(
@@ -1246,6 +1278,89 @@ class SqliteLedgerRepository(LedgerRepository):
             if site_code:
                 self._refresh_related_jurisdiction(int(source_batch_id), str(site_code))
         return next_version, True
+
+    def submit_site_change(self, request: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
+        request_json = json.dumps(request, ensure_ascii=False, sort_keys=True)
+        existing = self._connection.execute(select(_site_change_requests).where(
+            _site_change_requests.c.proposer_user_id == request["proposer_user_id"],
+            _site_change_requests.c.idempotency_key == request["idempotency_key"],
+        )).mappings().one_or_none()
+        if existing is not None:
+            if existing["request_json"] != request_json:
+                raise ValueError("idempotency key was used with a different request")
+            return dict(existing), False
+        if self.site_authority(int(request["batch_id"]), int(request["row_id"])) is None:
+            raise ValueError("site record not found")
+        issue_code = request.get("issue_code")
+        if issue_code and self._connection.execute(select(_issues.c.id).select_from(
+            _issues.join(_audit_results, _issues.c.audit_result_id == _audit_results.c.id)
+        ).where(
+            _issues.c.issue_code == issue_code,
+            _issues.c.batch_id == request["batch_id"],
+            _audit_results.c.ledger_row_id == request["row_id"],
+        )).scalar_one_or_none() is None:
+            raise ValueError("issue does not belong to the site record")
+        status = "recorded" if request["kind"] == "no_change" else "pending"
+        result = self._connection.execute(insert(_site_change_requests).values(
+            batch_id=request["batch_id"], ledger_row_id=request["row_id"],
+            issue_code=issue_code, replaces_request_id=request.get("replaces_request_id"),
+            kind=request["kind"], changes_json=json.dumps(request["changes"], ensure_ascii=False),
+            evidence=request["evidence"], error_cause=request["error_cause"],
+            source=request["source"], note=request["note"],
+            proposer_user_id=request["proposer_user_id"],
+            proposer_organization_id=request["proposer_organization_id"],
+            proposer_username=request["proposer_username"],
+            reviewer_organization_id=request.get("reviewer_organization_id"),
+            status=status, idempotency_key=request["idempotency_key"], request_json=request_json,
+        ))
+        primary_key = result.inserted_primary_key
+        if primary_key is None or primary_key[0] is None:
+            raise RuntimeError("database did not return a site change request id")
+        record = dict(self._connection.execute(select(_site_change_requests).where(
+            _site_change_requests.c.id == primary_key[0]
+        )).mappings().one())
+        return record, True
+
+    def site_change_request(self, request_id: int) -> dict[str, Any] | None:
+        row = self._connection.execute(select(_site_change_requests).where(
+            _site_change_requests.c.id == request_id)).mappings().one_or_none()
+        return None if row is None else dict(row)
+
+    def decide_site_change(self, request_id: int, *, action: str, note: str,
+                           reviewer_user_id: int, reviewer_organization_id: int,
+                           reviewer_username: str) -> tuple[dict[str, Any], bool]:
+        row = self.site_change_request(request_id)
+        if row is None or row["kind"] != "correction":
+            raise ValueError("site correction request not found")
+        if int(row["reviewer_organization_id"]) != reviewer_organization_id:
+            raise PermissionError("only the designated upper-level organization can review")
+        if row["status"] != "pending":
+            if action == "approve" and row["status"] == "approved":
+                return row, False
+            raise ValueError("site correction request is no longer pending")
+        values: dict[str, Any] = {
+            "reviewer_user_id": reviewer_user_id,
+            "reviewer_username": reviewer_username,
+            "review_note": note,
+            "updated_at": func.current_timestamp(),
+        }
+        if action == "reject":
+            values["status"] = "rejected"
+        else:
+            version, created = self.revise_site(int(row["batch_id"]), int(row["ledger_row_id"]), {
+                "changes": json.loads(row["changes_json"]), "evidence": row["evidence"],
+                "operator": row["proposer_username"], "confirmer": reviewer_username,
+                "error_cause": row["error_cause"], "source": row["source"],
+                "idempotency_key": f"online-site-change-{request_id}",
+            })
+            if not created:
+                raise ValueError(
+                    "correction does not change the authoritative value; record a no-change conclusion"
+                )
+            values.update(status="approved", applied_version=version)
+        self._connection.execute(update(_site_change_requests).where(
+            _site_change_requests.c.id == request_id).values(**values))
+        return self.site_change_request(request_id) or row, True
 
     def clear_batch_data(self, batch_id: int) -> None:
         run_ids = select(_audit_runs.c.id).where(_audit_runs.c.batch_id == batch_id)
