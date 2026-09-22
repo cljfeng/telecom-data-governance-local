@@ -7,6 +7,8 @@ from email.message import Message
 from io import BytesIO
 from urllib.parse import urlparse
 
+from openpyxl import load_workbook
+
 from governance_app import desktop, online_admin, server
 from governance_app.config import RuntimeMode
 from governance_app.db import initialize_database
@@ -15,6 +17,7 @@ from governance_app.identity_store import (
     IdentityStore,
     TaskRecord,
 )
+from governance_app.importer import import_workbook
 from governance_app.online_migration import migrate_sqlite_to_postgres
 from governance_app.request_context import (
     Principal,
@@ -296,6 +299,238 @@ def test_province_batch_site_records_are_scoped_by_verified_organization_pairs(a
     assert "B" not in exported[2].decode("utf-8") and "C" not in exported[2].decode("utf-8")
     with sqlite3.connect(app_config.database_path) as db:
         assert db.execute("select count(*) from site_jurisdiction_events").fetchone()[0] == 1
+
+
+def test_related_ledgers_follow_the_unique_site_jurisdiction(
+    app_config, sample_workbook, monkeypatch
+):
+    store = _prepared_store(app_config)
+    _patch_identity_store(monkeypatch, store)
+    monkeypatch.setattr(
+        "governance_app.workflow.identity_store_for", lambda _config: store
+    )
+    from governance_app.database_runtime import database_for
+
+    monkeypatch.setattr(
+        "governance_app.workflow.database_for", lambda _config: database_for(app_config)
+    )
+    monkeypatch.setattr(
+        "governance_app.routes.sites.database_for",
+        lambda _config: database_for(app_config),
+    )
+    monkeypatch.setattr(
+        "governance_app.routes.sites.identity_store_for", lambda _config: store
+    )
+    from governance_app.file_storage_runtime import file_storage_for
+
+    storage = file_storage_for(app_config)
+    monkeypatch.setattr(
+        "governance_app.routes.related_ledgers.database_for",
+        lambda _config: database_for(app_config),
+    )
+    monkeypatch.setattr(
+        "governance_app.routes.related_ledgers.file_storage_for",
+        lambda _config: storage,
+    )
+    province = store.authenticate(
+        username="admin",
+        password="administrator-password",
+        source_ip="",
+        user_agent="",
+        ttl_seconds=3600,
+    )
+    hz = store.create_organization(code="hz", name="杭州")
+    xihu = store.create_organization(code="xihu", name="西湖", parent_id=hz)
+    nb = store.create_organization(code="nb", name="宁波")
+    yinzhou = store.create_organization(code="yinzhou", name="鄞州", parent_id=nb)
+    grants = {}
+    for name, org in (("xihu", xihu), ("yinzhou", yinzhou)):
+        store.create_user(
+            actor=province.principal,
+            organization_id=org,
+            username=name,
+            display_name=name,
+            password="operator-password",
+            role_codes=["operator"],
+        )
+        grants[name] = store.authenticate(
+            username=name,
+            password="operator-password",
+            source_ip="",
+            user_agent="",
+            ttl_seconds=3600,
+        )
+
+    workbook = load_workbook(sample_workbook)
+    workbook["铁塔租费台账"]["D2"] = "宁波"
+    workbook["铁塔租费台账"]["E2"] = "鄞州"
+    workbook["电费台账"]["B2"] = "宁波"
+    workbook["电费台账"]["C2"] = "鄞州"
+    workbook["发电费台账"].append(
+        [2, "2026-04-11", "2026-04", "UNKNOWN", "未知站址", "", "", "WO002", 2]
+    )
+    path = sample_workbook.with_name("related-scope.xlsx")
+    workbook.save(path)
+    batch_id = import_workbook(app_config, path).batch_id
+    store.claim_batch(batch_id, province.principal)
+    with sqlite3.connect(app_config.database_path) as db:
+        run_id = db.execute(
+            "insert into audit_runs(batch_id, rule_count) values (?, 1)", (batch_id,)
+        ).lastrowid
+        scoped_rows = db.execute(
+            "select id, ledger_type, city, district, telecom_site_code from ledger_rows "
+            "where batch_id = ? and ledger_type != 'site'",
+            (batch_id,),
+        ).fetchall()
+        for row_id, ledger_type, city, district, code in scoped_rows:
+            result_id = db.execute(
+                "insert into audit_results(audit_run_id, ledger_row_id, rule_id, severity, message, result_json) "
+                "values (?, ?, 'scope-test', 'high', 'test', '{}')",
+                (run_id, row_id),
+            ).lastrowid
+            db.execute(
+                "insert into issues(issue_code, audit_result_id, batch_id, city, district, "
+                "telecom_site_code, ledger_type, rule_id, severity, message, suggestion) "
+                "values (?, ?, ?, ?, ?, ?, ?, 'scope-test', 'high', 'test', 'test')",
+                (
+                    f"I-{ledger_type}-{row_id}",
+                    result_id,
+                    batch_id,
+                    city,
+                    district,
+                    code,
+                    ledger_type,
+                ),
+            )
+    app = create_app(_online_config(app_config))
+
+    def rows(grant, ledger_type):
+        response = app.handle_test_request(
+            "GET",
+            f"/api/ledger-rows?batch_id={batch_id}&ledger_type={ledger_type}",
+            headers={"Authorization": f"Bearer {grant.token}"},
+        )
+        assert response[0] == 200
+        return json.loads(response[2])
+
+    for ledger_type in ("tower_rent", "electricity", "generator"):
+        payload = rows(grants["xihu"], ledger_type)
+        assert payload["total"] == 1
+        assert {(row["city"], row["district"]) for row in payload["rows"]} == {
+            ("杭州", "西湖")
+        }
+        assert rows(grants["yinzhou"], ledger_type)["total"] == 0
+    assert rows(province, "generator")["total"] == 2
+    summary = app.handle_test_request(
+        "GET",
+        f"/api/related-ledgers/summary?batch_id={batch_id}",
+        headers={"Authorization": f"Bearer {grants['xihu'].token}"},
+    )
+    assert json.loads(summary[2]) == {
+        "total": 3,
+        "ledger_types": {"electricity": 1, "generator": 1, "tower_rent": 1},
+    }
+    exported = app.handle_test_request(
+        "GET",
+        f"/api/related-ledgers/export?batch_id={batch_id}",
+        headers={"Authorization": f"Bearer {grants['xihu'].token}"},
+    )
+    assert exported[0] == 200
+    assert "HZ001" in exported[2].decode("utf-8")
+    assert "UNKNOWN" not in exported[2].decode("utf-8")
+    with sqlite3.connect(app_config.database_path) as db:
+        related_row_id = db.execute(
+            "select id from ledger_rows where batch_id = ? and ledger_type = 'electricity'",
+            (batch_id,),
+        ).fetchone()[0]
+    detail = app.handle_test_request(
+        "GET",
+        f"/api/related-ledgers/{related_row_id}?batch_id={batch_id}",
+        headers={"Authorization": f"Bearer {grants['xihu'].token}"},
+    )
+    assert json.loads(detail[2])["record"]["ledger_type"] == "electricity"
+    assert (
+        app.handle_test_request(
+            "GET",
+            f"/api/related-ledgers/{related_row_id}?batch_id={batch_id}",
+            headers={"Authorization": f"Bearer {grants['yinzhou'].token}"},
+        )[0]
+        == 404
+    )
+    evidence_file = storage.save_upload("electricity-proof.txt", b"meter-proof")
+    registered = app.handle_test_request(
+        "POST",
+        "/api/related-ledgers/evidence",
+        json.dumps(
+            {
+                "batch_id": batch_id,
+                "row_id": related_row_id,
+                "file_id": evidence_file.file_id,
+            }
+        ),
+        headers={"Authorization": f"Bearer {province.token}"},
+    )
+    assert registered[0] == 200
+    evidence_id = json.loads(registered[2])["evidence_id"]
+    evidence_path = f"/api/related-ledgers/{related_row_id}/evidence/{evidence_id}?batch_id={batch_id}"
+    assert (
+        app.handle_test_request(
+            "GET",
+            evidence_path,
+            headers={"Authorization": f"Bearer {grants['xihu'].token}"},
+        )[2]
+        == b"meter-proof"
+    )
+    assert (
+        app.handle_test_request(
+            "GET",
+            evidence_path,
+            headers={"Authorization": f"Bearer {grants['yinzhou'].token}"},
+        )[0]
+        == 404
+    )
+    xihu_issues = app.handle_test_request(
+        "GET",
+        f"/api/issues?batch_id={batch_id}&limit=20",
+        headers={"Authorization": f"Bearer {grants['xihu'].token}"},
+    )
+    assert json.loads(xihu_issues[2])["total"] == 3
+
+    with sqlite3.connect(app_config.database_path) as db:
+        site_row_id = db.execute(
+            "select id from ledger_rows where batch_id = ? and ledger_type = 'site'",
+            (batch_id,),
+        ).fetchone()[0]
+    moved = app.handle_test_request(
+        "POST",
+        "/api/sites/jurisdiction",
+        json.dumps(
+            {
+                "batch_id": batch_id,
+                "row_id": site_row_id,
+                "city": "宁波",
+                "district": "鄞州",
+                "reason": "省级核实归属",
+            }
+        ),
+        headers={"Authorization": f"Bearer {province.token}"},
+    )
+    assert moved[0] == 200
+    for ledger_type in ("tower_rent", "electricity", "generator"):
+        assert rows(grants["xihu"], ledger_type)["total"] == 0
+        assert rows(grants["yinzhou"], ledger_type)["total"] == 1
+    yinzhou_issues = app.handle_test_request(
+        "GET",
+        f"/api/issues?batch_id={batch_id}&limit=20",
+        headers={"Authorization": f"Bearer {grants['yinzhou'].token}"},
+    )
+    assert json.loads(yinzhou_issues[2])["total"] == 3
+
+    import_workbook(app_config, path, strategy="append", batch_id=batch_id)
+    for ledger_type in ("tower_rent", "electricity", "generator"):
+        assert rows(grants["xihu"], ledger_type)["total"] == 0
+        assert rows(grants["yinzhou"], ledger_type)["total"] == 0
+
 
 
 def test_failed_logins_lock_account_and_valid_session_can_logout(

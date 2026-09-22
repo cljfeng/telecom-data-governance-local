@@ -34,7 +34,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.pool import NullPool
 from sqlalchemy.sql.selectable import FromClause
 
-from governance_app.models import IssueStatus
+from governance_app.models import IssueStatus, LedgerType
 from governance_app.ports.database import (
     AnalysisOpportunityRecord,
     AnalysisQuery,
@@ -1008,15 +1008,21 @@ class SqliteLedgerRepository(LedgerRepository):
         self._connection.execute(update(_issues).where(_issues.c.audit_result_id.in_(
             select(_audit_results.c.id).where(_audit_results.c.ledger_row_id == row_id)
         )).values(city=city, district=district))
+        if row["telecom_site_code"]:
+            self._refresh_related_jurisdiction(batch_id, row["telecom_site_code"])
         return True
 
     def attach_site_evidence(self, batch_id: int, row_id: int, file_id: str,
                              actor_user_id: int) -> int:
+        return self.attach_record_evidence(batch_id, row_id, file_id, actor_user_id, ("site",))
+
+    def attach_record_evidence(self, batch_id: int, row_id: int, file_id: str,
+                               actor_user_id: int, ledger_types: tuple[LedgerType, ...]) -> int:
         row = self._connection.execute(select(_ledger_rows.c.id).where(
             _ledger_rows.c.id == row_id, _ledger_rows.c.batch_id == batch_id,
-            _ledger_rows.c.ledger_type == "site")).scalar_one_or_none()
+            _ledger_rows.c.ledger_type.in_(ledger_types))).scalar_one_or_none()
         if row is None:
-            raise ValueError("site record not found")
+            raise ValueError("record not found")
         result = self._connection.execute(insert(_site_evidence_files).values(
             ledger_row_id=row_id, file_id=file_id, actor_user_id=actor_user_id))
         primary_key = result.inserted_primary_key
@@ -1025,11 +1031,15 @@ class SqliteLedgerRepository(LedgerRepository):
         return int(primary_key[0])
 
     def site_evidence_file(self, batch_id: int, row_id: int, evidence_id: int) -> str | None:
+        return self.record_evidence_file(batch_id, row_id, evidence_id, ("site",))
+
+    def record_evidence_file(self, batch_id: int, row_id: int, evidence_id: int,
+                             ledger_types: tuple[LedgerType, ...]) -> str | None:
         return self._connection.execute(select(_site_evidence_files.c.file_id).select_from(
             _site_evidence_files.join(_ledger_rows,
                                       _site_evidence_files.c.ledger_row_id == _ledger_rows.c.id))
             .where(_ledger_rows.c.batch_id == batch_id, _ledger_rows.c.id == row_id,
-                   _ledger_rows.c.ledger_type == "site", _site_evidence_files.c.id == evidence_id)
+                   _ledger_rows.c.ledger_type.in_(ledger_types), _site_evidence_files.c.id == evidence_id)
         ).scalar_one_or_none()
 
     def add_imported_row(self, batch_id: int, row: ImportedLedgerRow) -> None:
@@ -1045,12 +1055,16 @@ class SqliteLedgerRepository(LedgerRepository):
         primary_key = raw_result.inserted_primary_key
         if primary_key is None or primary_key[0] is None:
             raise RuntimeError("database did not return a raw row id")
+        city, district = row.city, row.district
+        if row.ledger_type != "site" and row.telecom_site_code:
+            jurisdiction = self._unique_site_jurisdiction(batch_id, row.telecom_site_code)
+            city, district = jurisdiction if jurisdiction is not None else (None, None)
         ledger_result = self._connection.execute(
             insert(_ledger_rows).values(
                 batch_id=batch_id,
                 ledger_type=row.ledger_type,
-                city=row.city,
-                district=row.district,
+                city=city,
+                district=district,
                 telecom_site_code=row.telecom_site_code,
                 telecom_site_name=row.telecom_site_name,
                 tower_site_code=row.tower_site_code,
@@ -1065,6 +1079,49 @@ class SqliteLedgerRepository(LedgerRepository):
             row_id = ledger_result.inserted_primary_key[0]
             if row_id is not None:
                 self._link_site_source(batch_id, int(row_id), row)
+                self._refresh_related_jurisdiction(batch_id, row.telecom_site_code)
+
+    def _unique_site_jurisdiction(self, batch_id: int, site_code: str) -> tuple[str, str] | None:
+        sites = self._connection.execute(select(
+            _ledger_rows.c.id, _ledger_rows.c.city, _ledger_rows.c.district,
+        ).where(
+            _ledger_rows.c.batch_id == batch_id,
+            _ledger_rows.c.ledger_type == "site",
+            _ledger_rows.c.telecom_site_code == site_code,
+        )).all()
+        if len(sites) != 1:
+            return None
+        row_id, source_city, source_district = sites[0]
+        has_override = self._connection.execute(select(_site_jurisdiction_events.c.id).where(
+            _site_jurisdiction_events.c.ledger_row_id == row_id).limit(1)).first()
+        if has_override is not None:
+            return ((str(source_city), str(source_district))
+                    if source_city and source_district else None)
+        current_json = self._connection.execute(select(_authoritative_sites.c.current_json)
+            .select_from(_authoritative_site_sources.join(_authoritative_sites,
+                _authoritative_site_sources.c.site_id == _authoritative_sites.c.id))
+            .where(_authoritative_site_sources.c.ledger_row_id == row_id)
+        ).scalar_one_or_none()
+        if current_json is None:
+            return None
+        current = json.loads(current_json)
+        city, district = current.get("地市"), current.get("区县")
+        return (str(city), str(district)) if city and district else None
+
+    def _refresh_related_jurisdiction(self, batch_id: int, site_code: str) -> None:
+        jurisdiction = self._unique_site_jurisdiction(batch_id, site_code)
+        city, district = jurisdiction if jurisdiction is not None else (None, None)
+        related_row_ids = select(_ledger_rows.c.id).where(
+            _ledger_rows.c.batch_id == batch_id,
+            _ledger_rows.c.ledger_type != "site",
+            _ledger_rows.c.telecom_site_code == site_code,
+        )
+        self._connection.execute(update(_ledger_rows).where(
+            _ledger_rows.c.id.in_(related_row_ids)
+        ).values(city=city, district=district))
+        self._connection.execute(update(_issues).where(_issues.c.audit_result_id.in_(
+            select(_audit_results.c.id).where(_audit_results.c.ledger_row_id.in_(related_row_ids))
+        )).values(city=city, district=district))
 
     def _link_site_source(self, batch_id: int, row_id: int, row: ImportedLedgerRow) -> None:
         code = str(row.telecom_site_code).strip()
@@ -1180,6 +1237,14 @@ class SqliteLedgerRepository(LedgerRepository):
             _authoritative_sites.c.id == site_id).values(
                 current_json=json.dumps(revised, ensure_ascii=False, sort_keys=True),
                 current_version=next_version))
+        sources = self._connection.execute(select(
+            _ledger_rows.c.batch_id, _ledger_rows.c.telecom_site_code,
+        ).select_from(_ledger_rows.join(_authoritative_site_sources,
+            _ledger_rows.c.id == _authoritative_site_sources.c.ledger_row_id))
+            .where(_authoritative_site_sources.c.site_id == site_id)).all()
+        for source_batch_id, site_code in sources:
+            if site_code:
+                self._refresh_related_jurisdiction(int(source_batch_id), str(site_code))
         return next_version, True
 
     def clear_batch_data(self, batch_id: int) -> None:
@@ -2491,7 +2556,7 @@ def _ledger_conditions(query: LedgerQuery) -> list[Any]:
 def _jurisdiction_conditions(table: FromClause, pairs: tuple[tuple[str, str], ...] | None) -> list[Any]:
     if pairs is None:
         return []
-    return [table.c.ledger_type == "site", or_(*(
+    return [or_(*(
         and_(table.c.city == city, table.c.district == district)
         for city, district in pairs
     )) if pairs else table.c.id == -1]

@@ -4,7 +4,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
-from governance_app.models import IssueStatus
+from governance_app.models import IssueStatus, LedgerType
 
 BatchRecord = Mapping[str, Any]
 IssueRecord = Mapping[str, Any]
@@ -212,6 +212,12 @@ class LedgerRepository(Protocol):
                              actor_user_id: int) -> int: ...
 
     def site_evidence_file(self, batch_id: int, row_id: int, evidence_id: int) -> str | None: ...
+
+    def attach_record_evidence(self, batch_id: int, row_id: int, file_id: str,
+                               actor_user_id: int, ledger_types: tuple[LedgerType, ...]) -> int: ...
+
+    def record_evidence_file(self, batch_id: int, row_id: int, evidence_id: int,
+                             ledger_types: tuple[LedgerType, ...]) -> str | None: ...
 
     def site_authorities(self, batch_id: int) -> list[LedgerRecord]: ...
 

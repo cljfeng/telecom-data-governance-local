@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from collections import defaultdict
 from collections.abc import Callable
@@ -10,7 +11,7 @@ class Migration:
     apply: Callable[[sqlite3.Connection], None]
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def current_schema_version(conn: sqlite3.Connection) -> int:
@@ -437,6 +438,41 @@ def _upgrade_to_version_6(conn: sqlite3.Connection) -> None:
                          [(row[0], result.lastrowid) for row in group])
 
 
+def _upgrade_to_version_7(conn: sqlite3.Connection) -> None:
+    rows = conn.execute("""select id, batch_id, telecom_site_code
+        from ledger_rows where ledger_type != 'site'""").fetchall()
+    for row_id, batch_id, site_code in rows:
+        sites = conn.execute("""select id, city, district from ledger_rows
+            where batch_id = ? and ledger_type = 'site'
+              and telecom_site_code = ?""", (batch_id, site_code)).fetchall()
+        city, district = (None, None)
+        if len(sites) == 1:
+            site_row_id, source_city, source_district = sites[0]
+            override = conn.execute("""select 1 from site_jurisdiction_events
+                where ledger_row_id = ? limit 1""", (site_row_id,)).fetchone()
+            if override is not None:
+                city, district = source_city, source_district
+            else:
+                authority = conn.execute("""select authoritative_sites.current_json
+                    from authoritative_site_sources join authoritative_sites
+                      on authoritative_site_sources.site_id = authoritative_sites.id
+                    where authoritative_site_sources.ledger_row_id = ?""",
+                    (site_row_id,)).fetchone()
+                if authority is not None:
+                    current = json.loads(authority[0])
+                    city, district = current.get("地市"), current.get("区县")
+            if not city or not district:
+                city, district = (None, None)
+        conn.execute(
+            "update ledger_rows set city = ?, district = ? where id = ?",
+            (city, district, row_id),
+        )
+        conn.execute("""update issues set city = ?, district = ?
+            where audit_result_id in (
+                select id from audit_results where ledger_row_id = ?
+            )""", (city, district, row_id))
+
+
 MIGRATIONS = (
     Migration(1, _create_version_1_schema),
     Migration(2, _upgrade_to_version_2),
@@ -444,4 +480,5 @@ MIGRATIONS = (
     Migration(4, _upgrade_to_version_4),
     Migration(5, _upgrade_to_version_5),
     Migration(6, _upgrade_to_version_6),
+    Migration(7, _upgrade_to_version_7),
 )

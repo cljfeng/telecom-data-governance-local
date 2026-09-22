@@ -6,7 +6,7 @@ from sqlalchemy import Connection, text
 from governance_app.adapters.sqlite_database import _metadata
 from governance_app.identity_store import identity_metadata
 
-POSTGRES_SCHEMA_VERSION = 4
+POSTGRES_SCHEMA_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -89,9 +89,72 @@ def _add_authoritative_site_schema(connection: Connection) -> None:
         _metadata.tables[name].create(connection, checkfirst=True)
 
 
+def _backfill_related_ledger_jurisdiction(connection: Connection) -> None:
+    connection.execute(text("""
+        with site_scope as (
+            select batch_id, telecom_site_code, count(*) as site_count,
+                   min(id) as site_row_id, min(city) as source_city,
+                   min(district) as source_district
+            from ledger_rows
+            where ledger_type = 'site'
+            group by batch_id, telecom_site_code
+        ), effective_scope as (
+            select site_scope.*,
+                   case when exists (
+                            select 1 from site_jurisdiction_events
+                            where ledger_row_id = site_scope.site_row_id
+                        ) then site_scope.source_city
+                        else authoritative_sites.current_json::jsonb ->> '地市' end as city,
+                   case when exists (
+                            select 1 from site_jurisdiction_events
+                            where ledger_row_id = site_scope.site_row_id
+                        ) then site_scope.source_district
+                        else authoritative_sites.current_json::jsonb ->> '区县' end as district
+            from site_scope
+            left join authoritative_site_sources
+              on authoritative_site_sources.ledger_row_id = site_scope.site_row_id
+            left join authoritative_sites
+              on authoritative_sites.id = authoritative_site_sources.site_id
+        )
+        update ledger_rows as related
+        set city = case when effective_scope.site_count = 1
+                             and effective_scope.city is not null
+                             and effective_scope.district is not null
+                        then effective_scope.city else null end,
+            district = case when effective_scope.site_count = 1
+                                 and effective_scope.city is not null
+                                 and effective_scope.district is not null
+                            then effective_scope.district else null end
+        from effective_scope
+        where related.ledger_type != 'site'
+          and related.batch_id = effective_scope.batch_id
+          and related.telecom_site_code = effective_scope.telecom_site_code
+    """))
+    connection.execute(text("""
+        update ledger_rows as related
+        set city = null, district = null
+        where related.ledger_type != 'site'
+          and not exists (
+              select 1 from ledger_rows as site
+              where site.ledger_type = 'site'
+                and site.batch_id = related.batch_id
+                and site.telecom_site_code = related.telecom_site_code
+          )
+    """))
+    connection.execute(text("""
+        update issues
+        set city = ledger_rows.city, district = ledger_rows.district
+        from audit_results, ledger_rows
+        where issues.audit_result_id = audit_results.id
+          and audit_results.ledger_row_id = ledger_rows.id
+          and ledger_rows.ledger_type != 'site'
+    """))
+
+
 POSTGRES_MIGRATIONS = (
     PostgresMigration(1, _create_initial_schema),
     PostgresMigration(2, _add_identity_and_runtime_schema),
     PostgresMigration(3, _add_site_jurisdiction_events),
     PostgresMigration(4, _add_authoritative_site_schema),
+    PostgresMigration(5, _backfill_related_ledger_jurisdiction),
 )
