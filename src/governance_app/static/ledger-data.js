@@ -110,25 +110,26 @@ function renderLedgerDataRows(rows, ledgerLabel, total) {
               `,
             )
             .join("")}
-          ${state.runtimeMode === "local" && row.ledger_type === "site" ? `
-            <button class="secondary-button" type="button" data-site-authority="${row.id}">查看及维护权威值</button>
-            <div class="site-authority-panel" data-site-panel="${row.id}"></div>` : ""}
+          ${state.runtimeMode === "local" && ["site", "tower_rent"].includes(row.ledger_type) ? `
+            <button class="secondary-button" type="button" data-authority="${row.id}" data-authority-type="${row.ledger_type}">查看及维护权威值</button>
+            <div class="site-authority-panel" data-authority-panel="${row.id}"></div>` : ""}
         </article>
       `,
     )
     .join("")}
   `;
-  container.querySelectorAll("[data-site-authority]").forEach((button) => {
-    button.addEventListener("click", () => showSiteAuthority(button.dataset.siteAuthority));
+  container.querySelectorAll("[data-authority]").forEach((button) => {
+    button.addEventListener("click", () => showAuthority(button.dataset.authority, button.dataset.authorityType));
   });
 }
 
-async function showSiteAuthority(rowId) {
-  const panel = document.querySelector(`[data-site-panel="${rowId}"]`);
+async function showAuthority(rowId, type) {
+  const panel = document.querySelector(`[data-authority-panel="${rowId}"]`);
   if (!panel) return;
   panel.textContent = "正在读取来源和版本…";
   try {
-    const detail = await fetchJson(`/api/local/sites/${rowId}?batch_id=${encodeURIComponent(state.batchId)}`);
+    const collection = type === "site" ? "sites" : "tower-rents";
+    const detail = await fetchJson(`/api/local/${collection}/${rowId}?batch_id=${encodeURIComponent(state.batchId)}`);
     if (detail.identity_conflict) {
       panel.textContent = "站址编码缺失或归属冲突，请先由省公司核对记录身份。";
       return;
@@ -148,7 +149,11 @@ async function showSiteAuthority(rowId) {
         </article>`).join("") || "暂无更正版本"}
       </details>
       <form class="site-correction-form">
-        <label>更正字段<select name="field" required>${fields.filter((field) => field !== "电信站址编码")
+        <label>更正字段<select name="field" required>${fields.filter((field) => type === "site"
+          ? field !== "电信站址编码"
+          : !["电信站址编码", "铁塔站址编码", "需求单号", "业务确认单号",
+              "报账周期", "账期", "账单月份", "计费账期", "地市", "区县",
+              "电信站址名称", "铁塔站址名称"].includes(field))
           .map((field) => `<option value="${escapeHtml(field)}">${escapeHtml(field)}</option>`).join("")}</select></label>
         <label>更正后值<input name="value" required></label>
         <label>核实依据<input name="evidence" required></label>
@@ -166,15 +171,15 @@ async function showSiteAuthority(rowId) {
       const button = form.querySelector("button");
       button.disabled = true;
       try {
-        const saved = await postJson(`/api/local/sites/${rowId}/corrections`, {
+        const saved = await postJson(`/api/local/${collection}/${rowId}/corrections`, {
           batch_id: Number(state.batchId),
           changes: { [data.get("field")]: data.get("value") },
           evidence: data.get("evidence"), operator: data.get("operator"),
           error_cause: data.get("error_cause"), source: data.get("source"),
           idempotency_key: crypto.randomUUID(),
         });
-        await showSiteAuthority(rowId);
-        const refreshed = document.querySelector(`[data-site-panel="${rowId}"] .site-correction-result`);
+        await showAuthority(rowId, type);
+        const refreshed = document.querySelector(`[data-authority-panel="${rowId}"] .site-correction-result`);
         if (refreshed) refreshed.textContent = `第 ${saved.version} 版已生效，可重新执行稽核。`;
       } catch (error) {
         status.textContent = error.message;

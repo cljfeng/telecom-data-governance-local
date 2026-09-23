@@ -354,6 +354,54 @@ _site_change_requests = Table(
     UniqueConstraint("proposer_user_id", "idempotency_key"),
 )
 
+_authoritative_tower_rents = Table(
+    "authoritative_tower_rents", _metadata,
+    Column("id", Integer, primary_key=True),
+    Column("business_key", String, nullable=False, unique=True),
+    Column("current_json", String, nullable=False),
+    Column("current_version", Integer, nullable=False, server_default="0"),
+)
+_authoritative_tower_rent_sources = Table(
+    "authoritative_tower_rent_sources", _metadata,
+    Column("ledger_row_id", Integer, ForeignKey("ledger_rows.id", ondelete="CASCADE"), primary_key=True),
+    Column("rent_id", Integer, ForeignKey("authoritative_tower_rents.id"), nullable=False),
+    Column("frozen_json", String),
+    Column("frozen_version", Integer),
+)
+_authoritative_tower_rent_versions = Table(
+    "authoritative_tower_rent_versions", _metadata,
+    Column("id", Integer, primary_key=True),
+    Column("rent_id", Integer, ForeignKey("authoritative_tower_rents.id"), nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("old_json", String, nullable=False), Column("new_json", String, nullable=False),
+    Column("evidence", String, nullable=False), Column("operator", String, nullable=False),
+    Column("confirmer", String), Column("error_cause", String, nullable=False),
+    Column("source", String, nullable=False), Column("idempotency_key", String, nullable=False),
+    Column("request_json", String, nullable=False),
+    Column("effective_at", String, nullable=False, server_default=_TIMESTAMP_DEFAULT),
+    UniqueConstraint("rent_id", "version"), UniqueConstraint("rent_id", "idempotency_key"),
+)
+_tower_rent_change_requests = Table(
+    "tower_rent_change_requests", _metadata,
+    Column("id", Integer, primary_key=True),
+    Column("batch_id", Integer, ForeignKey("import_batches.id", ondelete="CASCADE"), nullable=False),
+    Column("ledger_row_id", Integer, ForeignKey("ledger_rows.id", ondelete="CASCADE"), nullable=False),
+    Column("replaces_request_id", Integer, ForeignKey("tower_rent_change_requests.id")),
+    Column("changes_json", String, nullable=False), Column("evidence", String, nullable=False),
+    Column("error_cause", String, nullable=False), Column("source", String, nullable=False),
+    Column("note", String, nullable=False), Column("proposer_user_id", Integer, nullable=False),
+    Column("proposer_organization_id", Integer, nullable=False),
+    Column("proposer_username", String, nullable=False),
+    Column("reviewer_organization_id", Integer, nullable=False),
+    Column("reviewer_user_id", Integer), Column("reviewer_username", String),
+    Column("status", String, nullable=False), Column("review_note", String),
+    Column("applied_version", Integer), Column("idempotency_key", String, nullable=False),
+    Column("request_json", String, nullable=False),
+    Column("created_at", String, nullable=False, server_default=_TIMESTAMP_DEFAULT),
+    Column("updated_at", String, nullable=False, server_default=_TIMESTAMP_DEFAULT),
+    UniqueConstraint("proposer_user_id", "idempotency_key"),
+)
+
 _audit_runs = Table(
     "audit_runs",
     _metadata,
@@ -632,6 +680,19 @@ class SqliteBatchRepository(BatchRepository):
     def update_status(self, batch_id: int, status: str, *, archive: bool = False) -> None:
         values: dict[str, Any] = {"status": status}
         if archive:
+            rents = self._connection.execute(select(
+                _authoritative_tower_rent_sources.c.ledger_row_id,
+                _authoritative_tower_rents.c.current_json,
+                _authoritative_tower_rents.c.current_version,
+            ).select_from(_authoritative_tower_rent_sources.join(
+                _ledger_rows, _authoritative_tower_rent_sources.c.ledger_row_id == _ledger_rows.c.id
+            ).join(_authoritative_tower_rents,
+                _authoritative_tower_rent_sources.c.rent_id == _authoritative_tower_rents.c.id
+            )).where(_ledger_rows.c.batch_id == batch_id)).all()
+            for row_id, current_json, version in rents:
+                self._connection.execute(update(_authoritative_tower_rent_sources).where(
+                    _authoritative_tower_rent_sources.c.ledger_row_id == row_id).values(
+                        frozen_json=current_json, frozen_version=version))
             values.update(is_archived=1, archived_at=func.current_timestamp())
         self._connection.execute(
             update(_import_batches).where(_import_batches.c.id == batch_id).values(**values)
@@ -975,6 +1036,10 @@ class SqliteLedgerRepository(LedgerRepository):
 
     def query(self, query: LedgerQuery) -> list[LedgerRecord]:
         effective_row_json = case(
+            (_ledger_rows.c.ledger_type == "tower_rent",
+             func.coalesce(_authoritative_tower_rent_sources.c.frozen_json,
+                           _authoritative_tower_rents.c.current_json,
+                           _raw_rows.c.row_json, _ledger_rows.c.row_json)),
             (_ledger_rows.c.row_json != "{}", _ledger_rows.c.row_json),
             else_=func.coalesce(_raw_rows.c.row_json, _ledger_rows.c.row_json),
         ).label("row_json")
@@ -994,7 +1059,10 @@ class SqliteLedgerRepository(LedgerRepository):
                 _ledger_rows.outerjoin(
                     _raw_rows,
                     _raw_rows.c.id == _ledger_rows.c.raw_row_id,
-                )
+                ).outerjoin(_authoritative_tower_rent_sources,
+                    _ledger_rows.c.id == _authoritative_tower_rent_sources.c.ledger_row_id
+                ).outerjoin(_authoritative_tower_rents,
+                    _authoritative_tower_rent_sources.c.rent_id == _authoritative_tower_rents.c.id)
             )
             .where(*_ledger_conditions(query))
             .order_by(
@@ -1110,6 +1178,140 @@ class SqliteLedgerRepository(LedgerRepository):
             if row_id is not None:
                 self._link_site_source(batch_id, int(row_id), row)
                 self._refresh_related_jurisdiction(batch_id, row.telecom_site_code)
+        if row.ledger_type == "tower_rent" and ledger_result.inserted_primary_key:
+            row_id = ledger_result.inserted_primary_key[0]
+            if row_id is not None:
+                self._link_tower_rent_source(batch_id, int(row_id), row.row_json)
+
+    def _link_tower_rent_source(self, batch_id: int, row_id: int, source_json: str) -> None:
+        from governance_app.tower_rent_identity import business_key
+        key = business_key(json.loads(source_json))
+        if key is None:
+            key = f"row:{row_id}"
+        existing = self._connection.execute(select(_authoritative_tower_rents).where(
+            _authoritative_tower_rents.c.business_key == key)).mappings().one_or_none()
+        if (existing is not None and existing["current_version"] == 0
+                and json.loads(existing["current_json"]) != json.loads(source_json)):
+            key = f"row:{row_id}"  # Conflicting unverified sources need explicit identity resolution.
+        duplicates = self._connection.execute(select(
+            _authoritative_tower_rent_sources.c.ledger_row_id,
+            _authoritative_tower_rent_sources.c.rent_id,
+        ).select_from(_authoritative_tower_rent_sources.join(
+            _ledger_rows, _authoritative_tower_rent_sources.c.ledger_row_id == _ledger_rows.c.id
+        ).join(_authoritative_tower_rents,
+            _authoritative_tower_rent_sources.c.rent_id == _authoritative_tower_rents.c.id
+        )).where(_ledger_rows.c.batch_id == batch_id,
+                 _authoritative_tower_rents.c.business_key == key)).all()
+        for previous_row_id, _ in duplicates:
+            self._connection.execute(delete(_authoritative_tower_rent_sources).where(
+                _authoritative_tower_rent_sources.c.ledger_row_id == previous_row_id))
+            previous_source = self._connection.execute(select(_raw_rows.c.row_json).select_from(
+                _ledger_rows.join(_raw_rows, _ledger_rows.c.raw_row_id == _raw_rows.c.id)
+            ).where(_ledger_rows.c.id == previous_row_id)).scalar_one()
+            self._create_tower_rent_source(int(previous_row_id), f"row:{previous_row_id}", previous_source)
+        if duplicates:
+            key = f"row:{row_id}"
+        self._create_tower_rent_source(row_id, key, source_json)
+
+    def _create_tower_rent_source(self, row_id: int, key: str, source_json: str) -> None:
+        rent_id = self._connection.execute(select(_authoritative_tower_rents.c.id).where(
+            _authoritative_tower_rents.c.business_key == key)).scalar_one_or_none()
+        if rent_id is None:
+            result = self._connection.execute(insert(_authoritative_tower_rents).values(
+                business_key=key, current_json=source_json, current_version=0))
+            primary_key = result.inserted_primary_key
+            if primary_key is None or primary_key[0] is None:
+                raise RuntimeError("database did not return a tower rent authority id")
+            rent_id = primary_key[0]
+        self._connection.execute(insert(_authoritative_tower_rent_sources).values(
+            ledger_row_id=row_id, rent_id=rent_id))
+
+    def tower_rent_authorities(self, batch_id: int) -> list[LedgerRecord]:
+        rows = self._connection.execute(select(
+            _ledger_rows.c.id.label("row_id"), _ledger_rows.c.telecom_site_code,
+            _ledger_rows.c.tower_site_code,
+            func.coalesce(_authoritative_tower_rent_sources.c.frozen_version,
+                          _authoritative_tower_rents.c.current_version).label("current_version"),
+        ).select_from(_ledger_rows.outerjoin(_authoritative_tower_rent_sources,
+            _ledger_rows.c.id == _authoritative_tower_rent_sources.c.ledger_row_id
+        ).outerjoin(_authoritative_tower_rents,
+            _authoritative_tower_rent_sources.c.rent_id == _authoritative_tower_rents.c.id
+        )).where(_ledger_rows.c.batch_id == batch_id,
+                 _ledger_rows.c.ledger_type == "tower_rent").order_by(_ledger_rows.c.id)).mappings()
+        return [dict(row) for row in rows]
+
+    def tower_rent_authority(self, batch_id: int, row_id: int) -> dict[str, Any] | None:
+        row = self._connection.execute(select(
+            _ledger_rows.c.id, _raw_rows.c.row_json.label("source_json"),
+            _authoritative_tower_rents.c.id.label("rent_id"),
+            _authoritative_tower_rents.c.current_json,
+            _authoritative_tower_rents.c.current_version,
+            _authoritative_tower_rent_sources.c.frozen_json,
+            _authoritative_tower_rent_sources.c.frozen_version,
+        ).select_from(_ledger_rows.join(_raw_rows,
+            _ledger_rows.c.raw_row_id == _raw_rows.c.id
+        ).outerjoin(_authoritative_tower_rent_sources,
+            _ledger_rows.c.id == _authoritative_tower_rent_sources.c.ledger_row_id
+        ).outerjoin(_authoritative_tower_rents,
+            _authoritative_tower_rent_sources.c.rent_id == _authoritative_tower_rents.c.id
+        )).where(_ledger_rows.c.id == row_id, _ledger_rows.c.batch_id == batch_id,
+                 _ledger_rows.c.ledger_type == "tower_rent")).mappings().one_or_none()
+        if row is None:
+            return None
+        versions = []
+        version = row["frozen_version"] if row["frozen_version"] is not None else row["current_version"]
+        if row["rent_id"] is not None:
+            versions = [{"version": item["version"], "old_value": json.loads(item["old_json"]),
+                         "new_value": json.loads(item["new_json"]), "evidence": item["evidence"],
+                         "operator": item["operator"], "confirmer": item["confirmer"],
+                         "error_cause": item["error_cause"], "source": item["source"],
+                         "effective_at": item["effective_at"]}
+                        for item in self._connection.execute(select(_authoritative_tower_rent_versions)
+                            .where(_authoritative_tower_rent_versions.c.rent_id == row["rent_id"],
+                                   _authoritative_tower_rent_versions.c.version <= version)
+                            .order_by(_authoritative_tower_rent_versions.c.version)).mappings()]
+        return {"row_id": row_id, "source": json.loads(row["source_json"]),
+                "current": json.loads(row["frozen_json"] or row["current_json"])
+                if row["rent_id"] is not None else None,
+                "version": version, "versions": versions}
+
+    def revise_tower_rent(self, batch_id: int, row_id: int,
+                          request: Mapping[str, Any]) -> tuple[int, bool]:
+        detail = self.tower_rent_authority(batch_id, row_id)
+        if detail is None or detail["current"] is None:
+            raise ValueError("tower rent record not found")
+        rent_id = self._connection.execute(select(_authoritative_tower_rent_sources.c.rent_id).where(
+            _authoritative_tower_rent_sources.c.ledger_row_id == row_id)).scalar_one()
+        request_json = json.dumps(request, ensure_ascii=False, sort_keys=True)
+        existing = self._connection.execute(select(_authoritative_tower_rent_versions).where(
+            _authoritative_tower_rent_versions.c.rent_id == rent_id,
+            _authoritative_tower_rent_versions.c.idempotency_key == request["idempotency_key"]
+        )).mappings().one_or_none()
+        if existing is not None:
+            if existing["request_json"] != request_json:
+                raise ValueError("idempotency key was used with different changes")
+            return int(existing["version"]), False
+        current = detail["current"]
+        if any(field not in current for field in request["changes"]):
+            raise ValueError("tower rent changes must reference existing fields")
+        revised = dict(current)
+        revised.update(request["changes"])
+        if revised == current:
+            return int(detail["version"]), False
+        next_version = int(detail["version"]) + 1
+        self._connection.execute(insert(_authoritative_tower_rent_versions).values(
+            rent_id=rent_id, version=next_version,
+            old_json=json.dumps(current, ensure_ascii=False, sort_keys=True),
+            new_json=json.dumps(revised, ensure_ascii=False, sort_keys=True),
+            evidence=request["evidence"], operator=request["operator"],
+            confirmer=request.get("confirmer"), error_cause=request["error_cause"],
+            source=request["source"], idempotency_key=request["idempotency_key"],
+            request_json=request_json))
+        self._connection.execute(update(_authoritative_tower_rents).where(
+            _authoritative_tower_rents.c.id == rent_id).values(
+                current_json=json.dumps(revised, ensure_ascii=False, sort_keys=True),
+                current_version=next_version))
+        return next_version, True
 
     def _unique_site_jurisdiction(self, batch_id: int, site_code: str) -> tuple[str, str] | None:
         sites = self._connection.execute(select(
@@ -1362,6 +1564,73 @@ class SqliteLedgerRepository(LedgerRepository):
             _site_change_requests.c.id == request_id).values(**values))
         return self.site_change_request(request_id) or row, True
 
+    def submit_tower_rent_change(self, request: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
+        request_json = json.dumps(request, ensure_ascii=False, sort_keys=True)
+        existing = self._connection.execute(select(_tower_rent_change_requests).where(
+            _tower_rent_change_requests.c.proposer_user_id == request["proposer_user_id"],
+            _tower_rent_change_requests.c.idempotency_key == request["idempotency_key"]
+        )).mappings().one_or_none()
+        if existing is not None:
+            if existing["request_json"] != request_json:
+                raise ValueError("idempotency key was used with a different request")
+            return dict(existing), False
+        if self.tower_rent_authority(int(request["batch_id"]), int(request["row_id"])) is None:
+            raise ValueError("tower rent record not found")
+        result = self._connection.execute(insert(_tower_rent_change_requests).values(
+            batch_id=request["batch_id"], ledger_row_id=request["row_id"],
+            replaces_request_id=request.get("replaces_request_id"),
+            changes_json=json.dumps(request["changes"], ensure_ascii=False),
+            evidence=request["evidence"], error_cause=request["error_cause"],
+            source=request["source"], note=request["note"],
+            proposer_user_id=request["proposer_user_id"],
+            proposer_organization_id=request["proposer_organization_id"],
+            proposer_username=request["proposer_username"],
+            reviewer_organization_id=request["reviewer_organization_id"],
+            status="pending", idempotency_key=request["idempotency_key"],
+            request_json=request_json))
+        primary_key = result.inserted_primary_key
+        if primary_key is None or primary_key[0] is None:
+            raise RuntimeError("database did not return a tower rent request id")
+        request_id = primary_key[0]
+        return self.tower_rent_change_request(int(request_id)) or {}, True
+
+    def tower_rent_change_request(self, request_id: int) -> dict[str, Any] | None:
+        row = self._connection.execute(select(_tower_rent_change_requests).where(
+            _tower_rent_change_requests.c.id == request_id)).mappings().one_or_none()
+        return dict(row) if row is not None else None
+
+    def decide_tower_rent_change(self, request_id: int, *, action: str, note: str,
+                                 reviewer_user_id: int, reviewer_organization_id: int,
+                                 reviewer_username: str) -> tuple[dict[str, Any], bool]:
+        row = self.tower_rent_change_request(request_id)
+        if row is None:
+            raise ValueError("tower rent correction request not found")
+        if int(row["reviewer_organization_id"]) != reviewer_organization_id:
+            raise PermissionError("only the designated upper-level organization can review")
+        if row["status"] != "pending":
+            if action == "approve" and row["status"] == "approved":
+                return row, False
+            raise ValueError("tower rent correction request is no longer pending")
+        values: dict[str, Any] = {
+            "reviewer_user_id": reviewer_user_id, "reviewer_username": reviewer_username,
+            "review_note": note, "updated_at": func.current_timestamp(),
+        }
+        if action == "reject":
+            values["status"] = "rejected"
+        else:
+            version, created = self.revise_tower_rent(int(row["batch_id"]), int(row["ledger_row_id"]), {
+                "changes": json.loads(row["changes_json"]), "evidence": row["evidence"],
+                "operator": row["proposer_username"], "confirmer": reviewer_username,
+                "error_cause": row["error_cause"], "source": row["source"],
+                "idempotency_key": f"online-tower-rent-change-{request_id}",
+            })
+            if not created:
+                raise ValueError("correction does not change the authoritative value")
+            values.update(status="approved", applied_version=version)
+        self._connection.execute(update(_tower_rent_change_requests).where(
+            _tower_rent_change_requests.c.id == request_id).values(**values))
+        return self.tower_rent_change_request(request_id) or row, True
+
     def clear_batch_data(self, batch_id: int) -> None:
         run_ids = select(_audit_runs.c.id).where(_audit_runs.c.batch_id == batch_id)
         self._connection.execute(delete(_issues).where(_issues.c.batch_id == batch_id))
@@ -1388,6 +1657,8 @@ class SqliteLedgerRepository(LedgerRepository):
                 effective_row_json,
                 _ledger_rows.c.row_json.label("ledger_override_json"),
                 _authoritative_sites.c.current_json.label("authoritative_json"),
+                func.coalesce(_authoritative_tower_rent_sources.c.frozen_json,
+                              _authoritative_tower_rents.c.current_json).label("tower_rent_authoritative_json"),
             )
             .select_from(
                 _ledger_rows.outerjoin(
@@ -1397,6 +1668,10 @@ class SqliteLedgerRepository(LedgerRepository):
                     _ledger_rows.c.id == _authoritative_site_sources.c.ledger_row_id,
                 ).outerjoin(_authoritative_sites,
                     _authoritative_site_sources.c.site_id == _authoritative_sites.c.id,
+                ).outerjoin(_authoritative_tower_rent_sources,
+                    _ledger_rows.c.id == _authoritative_tower_rent_sources.c.ledger_row_id,
+                ).outerjoin(_authoritative_tower_rents,
+                    _authoritative_tower_rent_sources.c.rent_id == _authoritative_tower_rents.c.id,
                 )
             )
             .where(_ledger_rows.c.batch_id == batch_id)
@@ -1406,6 +1681,7 @@ class SqliteLedgerRepository(LedgerRepository):
         for record in self._connection.execute(statement).mappings():
             row = dict(record)
             authoritative = row.pop("authoritative_json")
+            tower_authoritative = row.pop("tower_rent_authoritative_json")
             ledger_override = row.pop("ledger_override_json")
             if row["ledger_type"] == "site" and authoritative is not None and ledger_override == "{}":
                 current = json.loads(authoritative)
@@ -1413,6 +1689,8 @@ class SqliteLedgerRepository(LedgerRepository):
                 row["city"] = current.get("地市")
                 row["district"] = current.get("区县")
                 row["telecom_site_name"] = current.get("电信站址名称")
+            if row["ledger_type"] == "tower_rent" and tower_authoritative is not None:
+                row["effective_row_json"] = tower_authoritative
             rows.append(row)
         return rows
 
@@ -1720,6 +1998,10 @@ class SqliteExportRepository(ExportRepository):
 
     def issue_rows(self, batch_id: int) -> list[IssueRecord]:
         effective_row_json = case(
+            (_ledger_rows.c.ledger_type == "tower_rent",
+             func.coalesce(_authoritative_tower_rent_sources.c.frozen_json,
+                           _authoritative_tower_rents.c.current_json,
+                           _raw_rows.c.row_json, _ledger_rows.c.row_json)),
             (_ledger_rows.c.row_json != "{}", _ledger_rows.c.row_json),
             else_=func.coalesce(_raw_rows.c.row_json, _ledger_rows.c.row_json),
         ).label("row_json")
@@ -1743,6 +2025,10 @@ class SqliteExportRepository(ExportRepository):
                 .outerjoin(
                     _raw_rows,
                     _raw_rows.c.id == _ledger_rows.c.raw_row_id,
+                ).outerjoin(_authoritative_tower_rent_sources,
+                    _ledger_rows.c.id == _authoritative_tower_rent_sources.c.ledger_row_id,
+                ).outerjoin(_authoritative_tower_rents,
+                    _authoritative_tower_rent_sources.c.rent_id == _authoritative_tower_rents.c.id,
                 )
             )
             .where(
@@ -1788,6 +2074,10 @@ class SqliteAnalysisRepository(AnalysisRepository):
 
     def source_issues(self, batch_id: int, ledger_type: str) -> list[IssueRecord]:
         effective_row_json = case(
+            (_ledger_rows.c.ledger_type == "tower_rent",
+             func.coalesce(_authoritative_tower_rent_sources.c.frozen_json,
+                           _authoritative_tower_rents.c.current_json,
+                           _raw_rows.c.row_json, _ledger_rows.c.row_json)),
             (_ledger_rows.c.row_json != "{}", _ledger_rows.c.row_json),
             else_=func.coalesce(_raw_rows.c.row_json, _ledger_rows.c.row_json),
         ).label("row_json")
@@ -1818,6 +2108,10 @@ class SqliteAnalysisRepository(AnalysisRepository):
                 .outerjoin(
                     _raw_rows,
                     _raw_rows.c.id == _ledger_rows.c.raw_row_id,
+                ).outerjoin(_authoritative_tower_rent_sources,
+                    _ledger_rows.c.id == _authoritative_tower_rent_sources.c.ledger_row_id,
+                ).outerjoin(_authoritative_tower_rents,
+                    _authoritative_tower_rent_sources.c.rent_id == _authoritative_tower_rents.c.id,
                 )
             )
             .where(
@@ -1854,6 +2148,10 @@ class SqliteAnalysisRepository(AnalysisRepository):
 
     def ledger_payloads(self, batch_id: int, ledger_type: str) -> list[ReviewRecord]:
         effective_row_json = case(
+            (_ledger_rows.c.ledger_type == "tower_rent",
+             func.coalesce(_authoritative_tower_rent_sources.c.frozen_json,
+                           _authoritative_tower_rents.c.current_json,
+                           _raw_rows.c.row_json, _ledger_rows.c.row_json)),
             (_ledger_rows.c.row_json != "{}", _ledger_rows.c.row_json),
             else_=func.coalesce(_raw_rows.c.row_json, _ledger_rows.c.row_json),
         ).label("row_json")
@@ -1863,6 +2161,10 @@ class SqliteAnalysisRepository(AnalysisRepository):
                 _ledger_rows.outerjoin(
                     _raw_rows,
                     _raw_rows.c.id == _ledger_rows.c.raw_row_id,
+                ).outerjoin(_authoritative_tower_rent_sources,
+                    _ledger_rows.c.id == _authoritative_tower_rent_sources.c.ledger_row_id,
+                ).outerjoin(_authoritative_tower_rents,
+                    _authoritative_tower_rent_sources.c.rent_id == _authoritative_tower_rents.c.id,
                 )
             )
             .where(
