@@ -74,6 +74,7 @@ def _patch_identity_store(monkeypatch, store):
         "governance_app.server",
         "governance_app.security",
         "governance_app.routes.auth",
+        "governance_app.routes.site_changes",
         "governance_app.routes.tasks",
     ):
         monkeypatch.setattr(
@@ -531,6 +532,175 @@ def test_related_ledgers_follow_the_unique_site_jurisdiction(
         assert rows(grants["xihu"], ledger_type)["total"] == 0
         assert rows(grants["yinzhou"], ledger_type)["total"] == 0
 
+
+
+def test_online_site_corrections_follow_organization_review_chain(
+    app_config, sample_workbook, monkeypatch
+):
+    store = _prepared_store(app_config)
+    _patch_identity_store(monkeypatch, store)
+    monkeypatch.setattr(
+        "governance_app.workflow.identity_store_for", lambda _config: store
+    )
+    from governance_app.database_runtime import database_for
+
+    monkeypatch.setattr(
+        "governance_app.workflow.database_for", lambda _config: database_for(app_config)
+    )
+    monkeypatch.setattr(
+        "governance_app.routes.site_changes.database_for",
+        lambda _config: database_for(app_config),
+    )
+    province = store.authenticate(
+        username="admin", password="administrator-password",
+        source_ip="", user_agent="", ttl_seconds=3600,
+    )
+    city_id = store.create_organization(code="hz-review", name="杭州")
+    district_id = store.create_organization(
+        code="xihu-review", name="西湖", parent_id=city_id
+    )
+    grants = {"province": province}
+    for username, organization_id in (("city-review", city_id), ("district-review", district_id)):
+        store.create_user(
+            actor=province.principal, organization_id=organization_id,
+            username=username, display_name=username, password="operator-password",
+            role_codes=["operator"],
+        )
+        grants[username.split("-")[0]] = store.authenticate(
+            username=username, password="operator-password",
+            source_ip="", user_agent="", ttl_seconds=3600,
+        )
+    batch_id = import_workbook(app_config, sample_workbook).batch_id
+    store.claim_batch(batch_id, province.principal)
+    app = create_app(_online_config(app_config))
+
+    def post(grant, path, payload):
+        response = app.handle_test_request(
+            "POST", path, json.dumps(payload, ensure_ascii=False),
+            headers={"Authorization": f"Bearer {grant.token}"},
+        )
+        return response[0], json.loads(response[2])
+
+    def get(grant, path):
+        response = app.handle_test_request(
+            "GET", path, headers={"Authorization": f"Bearer {grant.token}"}
+        )
+        return response[0], json.loads(response[2])
+
+    def submit(grant, value, key):
+        return post(grant, "/api/site-corrections", {
+            "batch_id": batch_id, "row_id": 1,
+            "changes": {"电信站址名称": value}, "evidence": f"核实材料-{key}",
+            "note": "现场核实", "error_cause": "来源填报错误",
+            "source": "现场核实", "idempotency_key": key,
+        })
+
+    status, submitted = submit(grants["district"], "区县更正", "district-1")
+    request_id = submitted["request"]["id"]
+    assert status == 201 and submitted["request"]["status"] == "pending"
+    assert submit(grants["district"], "区县更正", "district-1")[1]["request"]["id"] == request_id
+    assert submit(grants["district"], "冲突重试", "district-1")[0] == 409
+    assert get(grants["district"], f"/api/site-corrections/{request_id}")[1]["request"]["id"] == request_id
+    assert get(grants["district"], "/api/site-corrections/not-a-number")[0] == 404
+    assert get(grants["district"], "/api/site-corrections/999999")[0] == 404
+    assert post(grants["district"], "/api/site-corrections/not-a-number/resubmit",
+                {"idempotency_key": "bad-id"})[0] == 404
+    assert post(grants["district"], "/api/site-corrections/999999/resubmit",
+                {"idempotency_key": "missing-id"})[0] == 404
+    with sqlite3.connect(app_config.database_path) as db:
+        before = db.execute(
+            "select current_json, current_version from authoritative_sites"
+        ).fetchone()
+    assert json.loads(before[0])["电信站址名称"] != "区县更正"
+    assert post(grants["district"], f"/api/site-corrections/{request_id}/decision",
+                {"action": "approve", "note": "越权"})[0] == 403
+    assert post(grants["province"], f"/api/site-corrections/{request_id}/decision",
+                {"action": "approve", "note": "越级"})[0] == 403
+    approved = post(grants["city"], f"/api/site-corrections/{request_id}/decision",
+                    {"action": "approve", "note": "市州确认"})
+    assert approved[0] == 200 and approved[1]["request"]["applied_version"] == 1
+    assert post(grants["district"], f"/api/site-corrections/{request_id}/resubmit",
+                {"idempotency_key": "not-rejected"})[0] == 409
+    repeated = post(grants["city"], f"/api/site-corrections/{request_id}/decision",
+                    {"action": "approve", "note": "重复确认"})
+    assert repeated[1]["changed"] is False
+
+    _, city_request = submit(grants["city"], "市州更正", "city-1")
+    city_request_id = city_request["request"]["id"]
+    rejected = post(grants["province"], f"/api/site-corrections/{city_request_id}/decision",
+                    {"action": "reject", "note": "证据不足"})
+    assert rejected[1]["request"]["status"] == "rejected"
+    assert post(grants["district"], f"/api/site-corrections/{city_request_id}/resubmit",
+                {"idempotency_key": "wrong-proposer"})[0] == 403
+    assert post(grants["province"], f"/api/site-corrections/{city_request_id}/decision",
+                {"action": "approve", "note": "不能确认已退回请求"})[0] == 409
+    assert app.handle_test_request(
+        "POST", f"/api/site-corrections/{city_request_id}/resubmit", "{",
+        headers={"Authorization": f"Bearer {grants['city'].token}"},
+    )[0] == 400
+    resubmitted = post(grants["city"],
+        f"/api/site-corrections/{city_request_id}/resubmit", {
+            "changes": {"电信站址名称": "市州修订后更正"},
+            "evidence": "补充核实材料", "note": "按退回意见补充",
+            "error_cause": "来源填报错误", "source": "现场核实",
+            "idempotency_key": "city-2",
+        })[1]
+    assert resubmitted["request"]["replaces_request_id"] == city_request_id
+    assert post(grants["province"],
+                f"/api/site-corrections/{resubmitted['request']['id']}/decision",
+                {"action": "approve", "note": "省级确认"})[1]["request"]["status"] == "approved"
+
+    _, province_request = submit(grants["province"], "省级更正", "province-1")
+    assert post(grants["province"],
+                f"/api/site-corrections/{province_request['request']['id']}/decision",
+                {"action": "approve", "note": "省级自行确认"})[1]["request"]["status"] == "approved"
+    _, no_op = submit(grants["province"], "省级更正", "province-no-op")
+    assert post(grants["province"],
+                f"/api/site-corrections/{no_op['request']['id']}/decision",
+                {"action": "approve", "note": "无变化"})[0] == 409
+    with sqlite3.connect(app_config.database_path) as db:
+        run_id = db.execute(
+            "insert into audit_runs(batch_id, rule_count) values (?, 1)", (batch_id,)
+        ).lastrowid
+        result_id = db.execute(
+            "insert into audit_results(audit_run_id, ledger_row_id, rule_id, severity, message, result_json) "
+            "values (?, 1, 'site-name', 'medium', '名称待核实', '{}')", (run_id,),
+        ).lastrowid
+        db.execute(
+            "insert into issues(issue_code, audit_result_id, batch_id, city, district, "
+            "ledger_type, rule_id, severity, message, suggestion) "
+            "values ('I-SITE-NC', ?, ?, '杭州', '西湖', 'site', 'site-name', "
+            "'medium', '名称待核实', '核实名称')", (result_id, batch_id),
+        )
+    conclusion = post(grants["district"], "/api/site-conclusions", {
+        "batch_id": batch_id, "row_id": 1, "evidence": "现场照片",
+        "note": "无需整改，现值正确", "idempotency_key": "no-change-1",
+        "issue_code": "I-SITE-NC",
+    })
+    assert conclusion[0] == 201 and conclusion[1]["request"]["status"] == "recorded"
+    assert post(grants["city"],
+                f"/api/site-corrections/{conclusion[1]['request']['id']}/decision",
+                {"action": "approve", "note": "不改值无需确认"})[0] == 409
+    assert post(grants["city"], f"/api/site-corrections/{request_id}/decision",
+                {"action": "invalid", "note": "无效动作"})[0] == 409
+    with sqlite3.connect(app_config.database_path) as db:
+        current, version = db.execute(
+            "select current_json, current_version from authoritative_sites"
+        ).fetchone()
+        history = db.execute(
+            "select operator, confirmer from authoritative_site_versions order by version"
+        ).fetchall()
+        issue_state = db.execute(
+            "select status, correction_note from issues where issue_code = 'I-SITE-NC'"
+        ).fetchone()
+    assert json.loads(current)["电信站址名称"] == "省级更正"
+    assert version == 3
+    assert issue_state == ("not_required", "现场照片")
+    assert history == [
+        ("district-review", "city-review"),
+        ("city-review", "admin"),
+        ("admin", "admin"),
+    ]
 
 
 def test_failed_logins_lock_account_and_valid_session_can_logout(

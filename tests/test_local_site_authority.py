@@ -106,7 +106,7 @@ def test_existing_related_ledgers_are_backfilled_from_unique_site_jurisdiction(
             "where batch_id = ? and ledger_type != 'site'",
             (batch_id,),
         )
-        db.execute("delete from schema_migrations where version = 7")
+        db.execute("delete from schema_migrations where version >= 7")
         db.commit()
         apply_migrations(db)
         locations = db.execute(

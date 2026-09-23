@@ -11,7 +11,7 @@ class Migration:
     apply: Callable[[sqlite3.Connection], None]
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def current_schema_version(conn: sqlite3.Connection) -> int:
@@ -473,6 +473,26 @@ def _upgrade_to_version_7(conn: sqlite3.Connection) -> None:
             )""", (city, district, row_id))
 
 
+def _upgrade_to_version_8(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "authoritative_site_versions", "confirmer", "text")
+    conn.execute("""create table if not exists site_change_requests (
+        id integer primary key autoincrement,
+        batch_id integer not null references import_batches(id) on delete cascade,
+        ledger_row_id integer not null references ledger_rows(id) on delete cascade,
+        issue_code text,
+        replaces_request_id integer references site_change_requests(id),
+        kind text not null, changes_json text not null, evidence text not null,
+        error_cause text not null, source text not null, note text not null,
+        proposer_user_id integer not null, proposer_organization_id integer not null,
+        proposer_username text not null, reviewer_organization_id integer,
+        reviewer_user_id integer, reviewer_username text, status text not null,
+        review_note text, applied_version integer, idempotency_key text not null,
+        request_json text not null, created_at text not null default current_timestamp,
+        updated_at text not null default current_timestamp,
+        unique(proposer_user_id, idempotency_key)
+    )""")
+
+
 MIGRATIONS = (
     Migration(1, _create_version_1_schema),
     Migration(2, _upgrade_to_version_2),
@@ -481,4 +501,5 @@ MIGRATIONS = (
     Migration(5, _upgrade_to_version_5),
     Migration(6, _upgrade_to_version_6),
     Migration(7, _upgrade_to_version_7),
+    Migration(8, _upgrade_to_version_8),
 )

@@ -29,6 +29,7 @@ def test_route_handler_order_is_explicit():
         "handle_system_route",
         "handle_site_route",
         "handle_related_ledger_route",
+        "handle_site_change_route",
         "handle_batch_route",
         "handle_local_site_route",
         "handle_import_route",
