@@ -11,7 +11,7 @@ class Migration:
     apply: Callable[[sqlite3.Connection], None]
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def current_schema_version(conn: sqlite3.Connection) -> int:
@@ -493,6 +493,73 @@ def _upgrade_to_version_8(conn: sqlite3.Connection) -> None:
     )""")
 
 
+def _upgrade_to_version_9(conn: sqlite3.Connection) -> None:
+    conn.execute("""create table if not exists authoritative_tower_rents (
+        id integer primary key autoincrement, business_key text not null unique,
+        current_json text not null, current_version integer not null default 0
+    )""")
+    conn.execute("""create table if not exists authoritative_tower_rent_sources (
+        ledger_row_id integer primary key references ledger_rows(id) on delete cascade,
+        rent_id integer not null references authoritative_tower_rents(id),
+        frozen_json text, frozen_version integer
+    )""")
+    _ensure_column(conn, "authoritative_tower_rent_sources", "frozen_json", "text")
+    _ensure_column(conn, "authoritative_tower_rent_sources", "frozen_version", "integer")
+    conn.execute("""create table if not exists authoritative_tower_rent_versions (
+        id integer primary key autoincrement,
+        rent_id integer not null references authoritative_tower_rents(id),
+        version integer not null, old_json text not null, new_json text not null,
+        evidence text not null, operator text not null, confirmer text,
+        error_cause text not null, source text not null, idempotency_key text not null,
+        request_json text not null, effective_at text not null default current_timestamp,
+        unique(rent_id, version), unique(rent_id, idempotency_key)
+    )""")
+    conn.execute("""create table if not exists tower_rent_change_requests (
+        id integer primary key autoincrement,
+        batch_id integer not null references import_batches(id) on delete cascade,
+        ledger_row_id integer not null references ledger_rows(id) on delete cascade,
+        replaces_request_id integer references tower_rent_change_requests(id),
+        changes_json text not null, evidence text not null, error_cause text not null,
+        source text not null, note text not null, proposer_user_id integer not null,
+        proposer_organization_id integer not null, proposer_username text not null,
+        reviewer_organization_id integer not null, reviewer_user_id integer,
+        reviewer_username text, status text not null, review_note text,
+        applied_version integer, idempotency_key text not null, request_json text not null,
+        created_at text not null default current_timestamp,
+        updated_at text not null default current_timestamp,
+        unique(proposer_user_id, idempotency_key)
+    )""")
+    from governance_app.tower_rent_identity import business_key
+    rows = conn.execute("""select ledger_rows.id, ledger_rows.batch_id,
+        raw_rows.row_json from ledger_rows join raw_rows on raw_rows.id = ledger_rows.raw_row_id
+        where ledger_rows.ledger_type = 'tower_rent' order by ledger_rows.id""").fetchall()
+    keys = [(row[0], row[1], business_key(json.loads(row[2])) or f"row:{row[0]}") for row in rows]
+    counts: dict[tuple[int, str], int] = {}
+    values_by_key: dict[str, set[str]] = {}
+    for row, (_, _, key) in zip(rows, keys, strict=True):
+        values_by_key.setdefault(key, set()).add(json.dumps(json.loads(row[2]),
+                                                    ensure_ascii=False, sort_keys=True))
+    for _, batch_id, key in keys:
+        counts[(batch_id, key)] = counts.get((batch_id, key), 0) + 1
+    for row, (_, batch_id, key) in zip(rows, keys, strict=True):
+        if counts[(batch_id, key)] > 1 or len(values_by_key[key]) > 1:
+            key = f"row:{row[0]}"
+        conn.execute("""insert or ignore into authoritative_tower_rents(business_key, current_json)
+            values (?, ?)""", (key, row[2]))
+        rent_id = conn.execute("select id from authoritative_tower_rents where business_key = ?", (key,)).fetchone()[0]
+        conn.execute("insert or ignore into authoritative_tower_rent_sources(ledger_row_id, rent_id) values (?, ?)",
+                     (row[0], rent_id))
+    conn.execute("""update authoritative_tower_rent_sources
+        set frozen_json = (select raw_rows.row_json from ledger_rows join raw_rows
+                           on raw_rows.id = ledger_rows.raw_row_id
+                           where ledger_rows.id = authoritative_tower_rent_sources.ledger_row_id),
+            frozen_version = 0
+        where ledger_row_id in (select ledger_rows.id from ledger_rows join import_batches
+                                on import_batches.id = ledger_rows.batch_id
+                                where import_batches.is_archived = 1)
+          and frozen_json is null""")
+
+
 MIGRATIONS = (
     Migration(1, _create_version_1_schema),
     Migration(2, _upgrade_to_version_2),
@@ -502,4 +569,5 @@ MIGRATIONS = (
     Migration(6, _upgrade_to_version_6),
     Migration(7, _upgrade_to_version_7),
     Migration(8, _upgrade_to_version_8),
+    Migration(9, _upgrade_to_version_9),
 )

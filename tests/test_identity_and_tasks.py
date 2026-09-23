@@ -703,6 +703,139 @@ def test_online_site_corrections_follow_organization_review_chain(
     ]
 
 
+def test_online_tower_rent_correction_requires_upper_level_confirmation(
+    app_config, sample_workbook, monkeypatch
+):
+    store = _prepared_store(app_config)
+    _patch_identity_store(monkeypatch, store)
+    monkeypatch.setattr("governance_app.workflow.identity_store_for", lambda _config: store)
+    from governance_app.database_runtime import database_for
+    monkeypatch.setattr("governance_app.workflow.database_for", lambda _config: database_for(app_config))
+    monkeypatch.setattr("governance_app.routes.tower_rent_changes.database_for",
+                        lambda _config: database_for(app_config))
+    monkeypatch.setattr("governance_app.routes.tower_rent_changes.identity_store_for",
+                        lambda _config: store)
+    province = store.authenticate(username="admin", password="administrator-password",
+                                  source_ip="", user_agent="", ttl_seconds=3600)
+    city_id = store.create_organization(code="hz-rent", name="杭州")
+    district_id = store.create_organization(code="xihu-rent", name="西湖", parent_id=city_id)
+    grants = {"province": province}
+    for username, organization_id in (("city-rent", city_id), ("district-rent", district_id)):
+        store.create_user(actor=province.principal, organization_id=organization_id,
+                          username=username, display_name=username, password="operator-password",
+                          role_codes=["operator"])
+        grants[username.split("-")[0]] = store.authenticate(
+            username=username, password="operator-password", source_ip="", user_agent="",
+            ttl_seconds=3600)
+    batch_id = import_workbook(app_config, sample_workbook).batch_id
+    store.claim_batch(batch_id, province.principal)
+    app = create_app(_online_config(app_config))
+
+    def request(grant, method, path, payload=None):
+        response = app.handle_test_request(
+            method, path, json.dumps(payload, ensure_ascii=False) if payload is not None else "",
+            headers={"Authorization": f"Bearer {grant.token}"})
+        return response[0], json.loads(response[2])
+
+    _, rows = request(grants["district"], "GET", f"/api/ledger-rows?batch_id={batch_id}&ledger_type=tower_rent")
+    row_id = rows["rows"][0]["id"]
+    detail_path = f"/api/tower-rents/{row_id}?batch_id={batch_id}"
+    assert request(grants["district"], "GET", detail_path)[1]["version"] == 0
+    payload = {"batch_id": batch_id, "row_id": row_id,
+               "changes": {"产品服务费合计（元/年）（不含税）": 9000},
+               "evidence": "合同核实", "note": "申请更正", "error_cause": "原值错误",
+               "source": "现场核实", "idempotency_key": "rent-online-1"}
+    status, submitted = request(grants["district"], "POST", "/api/tower-rent-corrections", payload)
+    assert status == 201 and submitted["request"]["status"] == "pending"
+    request_id = submitted["request"]["id"]
+    assert request(grants["district"], "POST", "/api/tower-rent-corrections", payload)[1]["request"]["id"] == request_id
+    assert request(grants["district"], "GET", detail_path)[1]["current"]["产品服务费合计（元/年）（不含税）"] == 10000
+    assert request(grants["province"], "POST", f"/api/tower-rent-corrections/{request_id}/decision",
+                   {"action": "approve", "note": "越级"})[0] == 403
+    assert request(grants["city"], "POST", f"/api/tower-rent-corrections/{request_id}/decision",
+                   {"action": "approve", "note": "市州确认"})[1]["request"]["applied_version"] == 1
+    detail = request(grants["district"], "GET", detail_path)[1]
+    assert detail["source"]["产品服务费合计（元/年）（不含税）"] == 10000
+    assert detail["current"]["产品服务费合计（元/年）（不含税）"] == 9000
+    assert detail["versions"][0]["confirmer"] == "city-rent"
+    assert request(grants["city"], "POST", f"/api/tower-rent-corrections/{request_id}/decision",
+                   {"action": "approve", "note": "重复"})[1]["changed"] is False
+    assert request(grants["district"], "GET", f"/api/tower-rent-corrections/{request_id}")[1]["request"]["status"] == "approved"
+    assert request(grants["district"], "POST", f"/api/tower-rent-corrections/{request_id}/resubmit",
+                   {"idempotency_key": "invalid"})[0] == 409
+    assert request(grants["district"], "POST", "/api/tower-rent-corrections",
+                   {**payload, "changes": {"铁塔站址编码": "other"},
+                    "idempotency_key": "invalid-identity"})[0] == 400
+
+    city_request = request(grants["city"], "POST", "/api/tower-rent-corrections",
+                           {**payload, "changes": {"产品服务费合计（元/年）（不含税）": 8000},
+                            "idempotency_key": "rent-online-2"})[1]["request"]
+    assert request(grants["province"], "POST",
+                   f"/api/tower-rent-corrections/{city_request['id']}/decision",
+                   {"action": "reject", "note": "补充合同"})[1]["request"]["status"] == "rejected"
+    assert request(grants["district"], "POST",
+                   f"/api/tower-rent-corrections/{city_request['id']}/resubmit",
+                   {"idempotency_key": "wrong-user"})[0] == 403
+    resubmitted = request(grants["city"], "POST",
+                   f"/api/tower-rent-corrections/{city_request['id']}/resubmit",
+                   {**payload, "changes": {"产品服务费合计（元/年）（不含税）": 8000},
+                    "idempotency_key": "rent-online-3"})[1]["request"]
+    assert resubmitted["replaces_request_id"] == city_request["id"]
+    assert request(grants["province"], "POST",
+                   f"/api/tower-rent-corrections/{resubmitted['id']}/decision",
+                   {"action": "approve", "note": "省级确认"})[1]["request"]["applied_version"] == 2
+    assert request(grants["province"], "GET", f"/api/tower-rents?batch_id={batch_id}")[1]["tower_rents"][0]["current_version"] == 2
+    assert request(grants["province"], "GET", f"/api/tower-rents?batch_id={batch_id}&offset=1")[1]["tower_rents"] == []
+    assert request(grants["province"], "GET", f"/api/tower-rents?batch_id={batch_id}&offset=bad")[0] == 400
+    no_change = request(grants["province"], "POST", "/api/tower-rent-corrections",
+                        {**payload, "changes": {"产品服务费合计（元/年）（不含税）": 8000},
+                         "idempotency_key": "rent-online-no-change"})[1]["request"]
+    assert request(grants["province"], "POST",
+                   f"/api/tower-rent-corrections/{no_change['id']}/decision",
+                   {"action": "approve", "note": "未变化"})[0] == 409
+    province_change = request(grants["province"], "POST", "/api/tower-rent-corrections",
+                              {**payload, "changes": {"产品服务费合计（元/年）（不含税）": 7000},
+                               "idempotency_key": "rent-online-province"})[1]["request"]
+    assert request(grants["province"], "POST",
+                   f"/api/tower-rent-corrections/{province_change['id']}/decision",
+                   {"action": "approve", "note": "省级自提确认"})[1]["request"]["applied_version"] == 3
+    assert request(grants["province"], "POST", "/api/tower-rent-corrections",
+                   {**payload, "changes": {"不存在的字段": 1},
+                    "idempotency_key": "rent-online-unknown"})[0] == 400
+    other_city_id = store.create_organization(code="nb-rent", name="宁波")
+    store.create_user(actor=province.principal, organization_id=other_city_id,
+                      username="nb-rent-user", display_name="宁波人员",
+                      password="operator-password", role_codes=["operator"])
+    other = store.authenticate(username="nb-rent-user", password="operator-password",
+                               source_ip="", user_agent="", ttl_seconds=3600)
+    assert request(other, "GET", detail_path)[0] == 404
+    assert request(other, "POST", "/api/tower-rent-corrections", {
+        **payload, "idempotency_key": "nb-unauthorized"})[0] == 404
+    assert request(other, "GET", f"/api/tower-rents?batch_id={batch_id}")[1]["tower_rents"] == []
+    assert request(grants["district"], "GET", f"/api/tower-rents/99999?batch_id={batch_id}")[0] == 404
+    assert request(grants["district"], "GET", f"/api/tower-rents/not-a-number?batch_id={batch_id}")[0] == 404
+    assert request(grants["district"], "GET", "/api/tower-rent-corrections/not-a-number")[0] == 404
+    assert request(grants["district"], "GET", "/api/tower-rent-corrections/99999")[0] == 404
+    assert request(grants["district"], "POST", "/api/tower-rent-corrections/99999/decision",
+                   {"action": "approve", "note": "找不到"})[0] == 409
+    assert request(grants["district"], "POST", f"/api/tower-rent-corrections/{request_id}/decision",
+                   {"action": "invalid", "note": "无效"})[0] == 400
+    assert request(grants["district"], "POST", "/api/tower-rent-corrections/not-a-number/resubmit",
+                   {"idempotency_key": "invalid"})[0] == 404
+    assert request(grants["district"], "POST", "/api/tower-rent-corrections/99999/resubmit",
+                   {"idempotency_key": "invalid"})[0] == 404
+    malformed = app.handle_test_request(
+        "POST", f"/api/tower-rent-corrections/{city_request['id']}/resubmit", "{",
+        headers={"Authorization": f"Bearer {grants['city'].token}"})
+    assert malformed[0] == 400
+    assert request(grants["district"], "POST", "/api/tower-rent-corrections",
+                   {**payload, "idempotency_key": "rent-online-1",
+                    "changes": {"产品服务费合计（元/年）（不含税）": 7000}})[0] == 409
+    assert request(grants["district"], "POST", "/api/tower-rent-corrections",
+                   {**payload, "idempotency_key": "invalid-evidence", "evidence": ""})[0] == 400
+    assert request(grants["district"], "GET", f"/api/tower-rents?batch_id={batch_id}&limit=1")[1]["tower_rents"][0]["row_id"] == row_id
+
+
 def test_failed_logins_lock_account_and_valid_session_can_logout(
     app_config,
 ):

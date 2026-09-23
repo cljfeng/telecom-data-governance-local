@@ -91,12 +91,14 @@ def _scoped_route(method: str, path: str) -> bool:
         return path in {"/api/batches", "/api/ledger-rows", "/api/issues", "/api/issue-groups",
                         "/api/sites/summary", "/api/sites/export"} or path.startswith(
                             ("/api/sites/", "/api/related-ledgers/",
-                             "/api/site-corrections/")
+                             "/api/site-corrections/", "/api/tower-rents",
+                             "/api/tower-rent-corrections/")
                         )
     return method == "POST" and (
         path == "/api/issues/status"
         or path.startswith("/api/site-corrections")
         or path == "/api/site-conclusions"
+        or path.startswith("/api/tower-rent-corrections")
     )
 
 
@@ -121,7 +123,8 @@ def permission_for(method: str, path: str) -> str | None:
         "/api/corrections"
     ):
         return "issue.manage"
-    if path.startswith(("/api/site-corrections", "/api/site-conclusions")):
+    if path.startswith(("/api/site-corrections", "/api/site-conclusions",
+                        "/api/tower-rent-corrections")):
         return "issue.manage"
     if path in {"/api/sites/jurisdiction", "/api/sites/evidence",
                 "/api/related-ledgers/evidence"}:
