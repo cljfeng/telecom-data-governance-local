@@ -4,6 +4,7 @@ from openpyxl import load_workbook
 
 from governance_app.database_runtime import database_for
 from governance_app.db import connect, initialize_database
+from governance_app.importer import import_workbook
 from governance_app.migrations import apply_migrations
 from governance_app.server import create_app
 
@@ -29,6 +30,13 @@ def test_local_site_source_authority_versions_and_reaudit(app_config, sample_wor
                                       json.dumps(payload, ensure_ascii=False))
     assert changed[0] == 200
     assert json.loads(changed[2])["version"] == 1
+    with connect(app_config) as db:
+        related_locations = db.execute(
+            "select distinct city, district from ledger_rows "
+            "where batch_id = ? and ledger_type != 'site'",
+            (batch_id,),
+        ).fetchall()
+    assert [tuple(row) for row in related_locations] == [(None, None)]
     repeated = app.handle_test_request("POST", f"/api/local/sites/{row_id}/corrections",
                                        json.dumps(payload, ensure_ascii=False))
     assert json.loads(repeated[2])["version"] == 1
@@ -69,7 +77,7 @@ def test_existing_site_sources_are_backfilled_without_rewriting_history(app_conf
         db.execute("drop table authoritative_site_versions")
         db.execute("drop table authoritative_site_sources")
         db.execute("drop table authoritative_sites")
-        db.execute("delete from schema_migrations where version = 6")
+        db.execute("delete from schema_migrations where version >= 6")
     with connect(app_config) as db:
         apply_migrations(db)
     rows = json.loads(app.handle_test_request("GET", f"/api/local/sites?batch_id={batch_id}")[2])["sites"]
@@ -77,6 +85,36 @@ def test_existing_site_sources_are_backfilled_without_rewriting_history(app_conf
     assert detail["source"] == detail["current"]
     assert detail["version"] == 0
     assert detail["versions"] == []
+
+
+def test_existing_related_ledgers_are_backfilled_from_unique_site_jurisdiction(
+    app_config, sample_workbook
+):
+    initialize_database(app_config)
+    batch_id = import_workbook(app_config, sample_workbook).batch_id
+    with connect(app_config) as db:
+        current = json.loads(
+            db.execute("select current_json from authoritative_sites").fetchone()[0]
+        )
+        current["区县"] = "滨江"
+        db.execute(
+            "update authoritative_sites set current_json = ?, current_version = 1",
+            (json.dumps(current, ensure_ascii=False),),
+        )
+        db.execute(
+            "update ledger_rows set city = null, district = null "
+            "where batch_id = ? and ledger_type != 'site'",
+            (batch_id,),
+        )
+        db.execute("delete from schema_migrations where version = 7")
+        db.commit()
+        apply_migrations(db)
+        locations = db.execute(
+            "select distinct city, district from ledger_rows "
+            "where batch_id = ? and ledger_type != 'site'",
+            (batch_id,),
+        ).fetchall()
+    assert [tuple(row) for row in locations] == [("杭州", "滨江")]
 
 
 def test_reimport_after_verified_site_move_reuses_authority(app_config, sample_workbook, tmp_path):

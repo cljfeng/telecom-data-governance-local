@@ -288,7 +288,7 @@ def test_import_audit_and_ledger_queries_share_database_port(
         database.dispose()
 
     assert ledger_count == 4
-    assert len(ledger_rows) == 3
+    assert len(ledger_rows) == 4
     assert audit.audit_run_id > 0
     assert audit.issue_count == 2
     assert dashboard["open_issue_count"] == 2
